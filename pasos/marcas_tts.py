@@ -269,6 +269,32 @@ def limpiar(texto):
     return " ".join(plano.split())
 
 
+#: Las pausas de Google, por familia, de la mas corta a la mas larga. Gemini TTS
+#: las lee dentro de `text`; Chirp 3 HD, dentro de `markup`.
+PAUSAS_GOOGLE = {"gemini": ("[short pause]", "[medium pause]", "[long pause]"),
+                 "chirp": ("[pause short]", "[pause]", "[pause long]")}
+
+
+def para_google(texto, familia="gemini"):
+    """El texto anotado, traducido a lo que entiende Google. -> str
+
+    Solo viajan las PAUSAS (<break>), convertidas a la etiqueta de la familia:
+    corta hasta 400 ms, media hasta 1 s, larga por encima. La velocidad, el
+    volumen y la emocion de Cartesia no tienen equivalente por palabra en
+    Google -- el tono lo lleva la instruccion de estilo del tramo -- y se
+    quitan; una etiqueta que se quedara la locutaria en voz alta.
+    """
+    corta, media, larga = PAUSAS_GOOGLE.get(familia, PAUSAS_GOOGLE["gemini"])
+
+    def pausa(encaje):
+        ms = float(encaje.group(1)) * (1000.0 if encaje.group(2).lower() == "s" else 1.0)
+        etiqueta = corta if ms <= 400 else media if ms <= 1000 else larga
+        return f" {etiqueta} "
+
+    con_pausas = _BREAK.sub(pausa, str(texto or ""))
+    return limpiar(con_pausas)
+
+
 def hay_marcas(texto):
     """True si el texto lleva alguna anotacion de voz."""
     return bool(_ALGO_ASI.search(str(texto or "")))
