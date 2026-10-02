@@ -37,9 +37,16 @@ foreach ($exe in 'ffmpeg', 'ffprobe') {
   }
 }
 
-foreach ($d in @($Datos, "$Datos\proyectos", "$Datos\banco", "$Datos\banco\presets", "$Datos\secretos")) {
+$Temporal = Join-Path (Split-Path $Datos -Parent) "temp"
+foreach ($d in @($Datos, "$Datos\proyectos", "$Datos\banco", "$Datos\banco\presets", "$Datos\secretos", $Temporal)) {
   New-Item -ItemType Directory -Force $d | Out-Null
 }
+
+# LOS TEMPORALES TAMBIEN EN E:. Python (tempfile), los Edge headless del render
+# y el CLI de Claude sacan su carpeta de trabajo de TEMP/TMP; sin esto irian a
+# C:\Users\...\AppData\Local\Temp. Los hijos heredan estas variables.
+$env:TEMP = $Temporal
+$env:TMP  = $Temporal
 
 $env:ESTUDIO_PROYECTOS       = "$Datos\proyectos"
 $env:ESTUDIO_PRESETS         = "$Datos\presets.json"
