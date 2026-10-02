@@ -38,7 +38,8 @@ foreach ($exe in 'ffmpeg', 'ffprobe') {
 }
 
 $Temporal = Join-Path (Split-Path $Datos -Parent) "temp"
-foreach ($d in @($Datos, "$Datos\proyectos", "$Datos\banco", "$Datos\banco\presets", "$Datos\secretos", $Temporal)) {
+$Modelos  = Join-Path (Split-Path $Datos -Parent) "modelos"
+foreach ($d in @($Datos, "$Datos\proyectos", "$Datos\banco", "$Datos\banco\presets", "$Datos\secretos", $Temporal, $Modelos)) {
   New-Item -ItemType Directory -Force $d | Out-Null
 }
 
@@ -47,6 +48,11 @@ foreach ($d in @($Datos, "$Datos\proyectos", "$Datos\banco", "$Datos\banco\prese
 # C:\Users\...\AppData\Local\Temp. Los hijos heredan estas variables.
 $env:TEMP = $Temporal
 $env:TMP  = $Temporal
+# Y los modelos que descarga el alineador de voz (Whisper, wav2vec2): ~1-2 GB que
+# sin esto irian a C:\Users\...\.cache.
+$env:ESTUDIO_MODELOS = $Modelos
+$env:HF_HOME         = "$Modelos\huggingface"
+$env:TORCH_HOME      = "$Modelos\torch"
 
 $env:ESTUDIO_PROYECTOS       = "$Datos\proyectos"
 $env:ESTUDIO_PRESETS         = "$Datos\presets.json"
