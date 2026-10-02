@@ -9752,7 +9752,8 @@ const CANDIDATOS_AB = [
   { id: 'gp-orus', etiqueta: 'Gemini 2.5 Pro · Orus', proveedor: 'google',
     modelo: 'gemini-2.5-pro-tts', voz_id: 'Orus', usd: 0.04 },
   { id: 'c-orus', etiqueta: 'Chirp 3 HD · Orus (sin estilos)', proveedor: 'google',
-    modelo: 'chirp3-hd', voz_id: 'Orus', usd: 0.03, porDefecto: true },
+    // fuera de las marcadas: en la primera escucha sonó monótona (01-10-2026)
+    modelo: 'chirp3-hd', voz_id: 'Orus', usd: 0.03 },
 ];
 const CLAVE_AB_VOZ = 'voz_ab';
 
