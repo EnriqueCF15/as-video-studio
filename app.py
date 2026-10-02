@@ -1900,10 +1900,18 @@ def _correr_regrabar(avisar, ctx, seccion_id, peticion, ajuste):
             if bloque["id"] in cambiados:
                 ediciones[bloque["id"]] = {"texto": bloque["texto"]}
         ctx.estado.actualizar_params("guion", {"bloques": ediciones})
+    # LA TOMA COSIDA, COMO VERSION NUEVA DE LA VOZ. Sin esto la seccion se
+    # grababa (y se pagaba), se cosia en voz/trabajo/ y ahi se quedaba: nadie
+    # llamaba a completar, la version activa seguia siendo la de antes y el
+    # regrabado no llegaba ni a la revision ni al montaje (medido el 02-10-2026:
+    # «SB003 regrabada» en trabajo/, y la voz activa intacta). Es lo mismo que
+    # hace _correr_paso al terminar cualquier paso.
+    salidas["bloques_cambiados"] = cambiados
+    ligeras, _recortadas = _aligerar(salidas)
+    ctx.estado.completar("voz", ligeras)
     ctx.bitacora.anotar("seccion_regrabada", "voz", {
         "seccion": seccion_id, "peticion": peticion[:200],
         "bloques_cambiados": cambiados})
-    salidas["bloques_cambiados"] = cambiados
     return salidas
 
 
