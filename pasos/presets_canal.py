@@ -155,10 +155,13 @@ TIPOS = {
     },
     "voz": {
         "nombre": "Voz",
-        "que_fija": ("modelo, voz, idioma de locucion, velocidad, emociones y "
-                     "aire entre bloques"),
+        "que_fija": ("proveedor, modelo, voz, idioma de locucion, velocidad, "
+                     "emociones, estilos por tramo y aire entre bloques"),
+        # `proveedor` (cartesia | google) y `estilos` ({intro, cuerpo, cierre}:
+        # la instruccion de estilo de cada tramo, solo Gemini) son del fork: van
+        # a los params del paso voz como el resto (ver p4_voz.resolver_params).
         "claves": ("modelo", "voz_id", "voz_nombre", "idioma", "velocidad",
-                   "emociones", "hueco_minimo"),
+                   "emociones", "hueco_minimo", "proveedor", "estilos"),
         "pasos": ("voz",),
     },
     "canal": {

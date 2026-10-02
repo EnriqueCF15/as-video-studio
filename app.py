@@ -1756,10 +1756,15 @@ def previsualizar_voz(pid: str, cuerpo: dict = Body(default=None)):
 def catalogo_voces_global(idioma: str = Query(default=None),
                           nativas: int = Query(default=0),
                           solo_nativas: int = Query(default=0),
-                          refrescar: int = Query(default=0)):
-    """Catalogo de voces de Cartesia, sin atarlo a ningun proyecto."""
+                          refrescar: int = Query(default=0),
+                          proveedor: str = Query(default=None)):
+    """Catalogo de voces (Cartesia, o Google con ?proveedor=google)."""
     if PASOS_MODULOS is None:
         raise ErrorApi(503, f"los pasos no se han podido cargar: {ERROR_PASOS}")
+    if str(proveedor or "").strip().lower() == "google":
+        voces = PASOS_MODULOS.p4_voz.listar_voces_google(idioma)
+        return {"voces": voces, "total": len(voces), "idioma": idioma,
+                "solo_nativas": False, "proveedor": "google"}
     try:
         voces = PASOS_MODULOS.p4_voz.listar_voces(
             idioma=idioma, refrescar=bool(refrescar),
@@ -2052,8 +2057,18 @@ def estimar_video(cuerpo: dict = Body(default=None)):
 
     caracteres = int(round(horquilla["presupuesto_palabras"] * 6.1))
     tarifas = COSTE.tarifas()
-    usd_caracter = float(((tarifas.get("tts") or {}).get("usd_por_caracter")) or 0.0)
-    usd_tts = round(caracteres * usd_caracter, 4)
+    proveedor_voz = str(datos.get("proveedor_voz") or "cartesia").strip().lower()
+    if proveedor_voz == "google":
+        # Google cobra el AUDIO (Gemini) o el caracter (Chirp 3 HD), y la
+        # instruccion de estilo viaja en cada peticion (~una cada 3.000 car.)
+        modelo_voz = str(datos.get("modelo_voz") or "gemini-2.5-flash-tts")
+        peticiones = max(1, -(-caracteres // 3000))
+        usd_tts, _ = COSTE.coste_google_tts(modelo_voz, caracteres, segundos,
+                                            caracteres_estilo=400 * peticiones)
+        usd_tts = round(usd_tts or 0.0, 4)
+    else:
+        usd_caracter = float(((tarifas.get("tts") or {}).get("usd_por_caracter")) or 0.0)
+        usd_tts = round(caracteres * usd_caracter, 4)
     usd_imagenes = round(imagenes * usd_imagen, 3)
 
     return {
@@ -2080,6 +2095,7 @@ def estimar_video(cuerpo: dict = Body(default=None)):
         "coste": {"imagenes": imagenes, "calidad": calidad,
                   "usd_por_imagen": usd_imagen,
                   "usd_imagenes": usd_imagenes, "usd_tts": usd_tts,
+                  "proveedor_voz": proveedor_voz,
                   "usd_total": round(usd_imagenes + usd_tts, 3)},
     }
 
@@ -7826,6 +7842,104 @@ def previsualizar_voz_light(preset_id: str, cuerpo: dict = Body(default=None)):
     _registrar_trabajo(trabajo_id, ctx.id)
     return {"trabajo_id": trabajo_id, "segundos": segundos,
             "voz_id": params["voz_id"],
+            "trabajo": ctx.gestor.estado(trabajo_id),
+            "eventos": f"/api/trabajos/{trabajo_id}/eventos"}
+
+
+# ------------------------------------------------------------ prueba A/B de voces
+#
+# El MISMO pasaje con varias voces, para escucharlas lado a lado antes de fijar
+# una en el estilo. Se graba con el camino de verdad (`sintetizar_bloques`):
+# secciones, estilos por tramo, alineador y medicion de las costuras, asi que lo
+# que se oye -- y los avisos que salen -- es lo que saldria en un video. Cada
+# toma se guarda por firma: volver a comparar con la misma voz no vuelve a pagar.
+
+MAX_CANDIDATOS_AB = 6
+
+
+def _correr_comparar_voces(avisar, ctx, base, candidatos, idioma):
+    p4 = PASOS_MODULOS.p4_voz
+    bloques = p4.bloques_ab(idioma)
+    resultados = []
+    for indice, candidato in enumerate(candidatos):
+        params = dict(base)
+        params.update(candidato)
+        params["idioma"] = idioma
+        etiqueta = candidato.get("etiqueta") or candidato.get("voz_id") or f"voz {indice + 1}"
+        params.pop("etiqueta", None)
+        try:
+            cfg = p4.resolver_params(params)
+        except ValueError as fallo:
+            resultados.append({"candidato": candidato, "error": str(fallo)})
+            continue
+        firma = hashlib.sha256(json.dumps([bloques, cfg, p4.simulado()], sort_keys=True,
+                                          ensure_ascii=False, default=str)
+                               .encode("utf-8")).hexdigest()[:12]
+        destino = os.path.join(ctx.proyecto.ruta("previsualizaciones"), f"ab_{firma}")
+        ruta_meta = os.path.join(destino, p4.NOMBRE_META)
+
+        def sub(fraccion, mensaje="", i=indice, e=etiqueta):
+            return avisar(min(0.99, (i + max(0.0, min(1.0, fraccion))) / len(candidatos)),
+                          f"{e}: {mensaje}")
+        try:
+            if os.path.exists(ruta_meta):
+                salidas = medios_json(ruta_meta)
+            else:
+                with COSTE.contexto(ctx.proyecto, "voz"):
+                    salidas = p4.sintetizar_bloques(bloques, destino, cfg, avisar=sub,
+                                                     proyecto_id=ctx.id)
+        except Exception as fallo:                              # noqa: BLE001
+            resultados.append({"candidato": candidato, "error": str(fallo)})
+            continue
+        pista = os.path.join(destino, salidas.get("archivo") or p4.NOMBRE_PISTA)
+        google = salidas.get("google") or {}
+        resultados.append({
+            "candidato": candidato,
+            "url": url_de(ctx.id, pista, ctx.proyecto.raiz),
+            "duracion": salidas.get("duracion"),
+            "secciones": [{"id": s.get("id"), "tramo": s.get("tramo"),
+                           "t_in": s.get("t_in"), "t_out": s.get("t_out")}
+                          for s in salidas.get("secciones") or []],
+            "avisos": google.get("avisos_texto") or [],
+            "cobertura": (google.get("alineado") or {}).get("cobertura"),
+        })
+    avisar(1.0, f"{len(resultados)} voces listas para comparar")
+    return {"idioma": idioma, "candidatos": resultados}
+
+
+@app.post("/api/presets-light/{preset_id}/voz/comparar", status_code=202)
+def comparar_voces_light(preset_id: str, cuerpo: dict = Body(default=None)):
+    """El pasaje de prueba con varias voces, para la comparacion A/B.
+
+    `candidatos`: [{proveedor, modelo, voz_id, etiqueta}]. Lo demas (estilos por
+    tramo, aire) es del estilo: que la comparacion cambie SOLO la voz.
+    """
+    if PASOS_MODULOS is None:
+        raise ErrorApi(503, f"los pasos no se han podido cargar: {ERROR_PASOS}")
+    presets = _presets()
+    datos = _cuerpo(cuerpo)
+    ficha = _preset_o_400(lambda p: p.leer(preset_id))
+    if ficha.get("tipo") != "canal":
+        raise ErrorApi(400, "esto no es un estilo")
+    candidatos = datos.get("candidatos")
+    if not isinstance(candidatos, list) or not candidatos:
+        raise ErrorApi(400, "hace falta al menos una voz candidata")
+    if len(candidatos) > MAX_CANDIDATOS_AB:
+        raise ErrorApi(400, f"como mucho {MAX_CANDIDATOS_AB} voces a la vez")
+    limpios = []
+    for crudo in candidatos:
+        if not isinstance(crudo, dict):
+            raise ErrorApi(400, "cada candidata es un objeto {proveedor, modelo, voz_id}")
+        limpios.append({c: str(crudo[c]) for c in ("proveedor", "modelo", "voz_id", "etiqueta")
+                        if crudo.get(c)})
+    ctx = _taller_de(ficha)
+    base = {c: v for c, v in ((ficha.get("datos") or {}).get("voz") or {}).items()
+            if c in ("estilos", "hueco_minimo")}
+    idioma = str(datos.get("idioma") or presets.idioma_de(ficha) or "en").lower()
+    trabajo_id = ctx.gestor.lanzar("voz:comparar", _correr_comparar_voces, ctx, base,
+                                   limpios, idioma, paso=None)
+    _registrar_trabajo(trabajo_id, ctx.id)
+    return {"trabajo_id": trabajo_id, "candidatos": len(limpios),
             "trabajo": ctx.gestor.estado(trabajo_id),
             "eventos": f"/api/trabajos/{trabajo_id}/eventos"}
 
