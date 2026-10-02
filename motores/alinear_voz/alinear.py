@@ -156,6 +156,7 @@ def emparejar(guion, oidas, duracion=None):
     b = [normalizar(o["w"]) for o in oidas]
     marcas = [{"w": t, "s": None, "e": None} for t in guion]
     iguales, faltan, sobran, insertos = 0, [], 0, []
+    faltan_idx = []      # QUE palabras del guion faltan (indices): para saber de que seccion
 
     comparador = difflib.SequenceMatcher(None, a, b, autojunk=False)
     for op, i1, i2, j1, j2 in comparador.get_opcodes():
@@ -183,9 +184,11 @@ def emparejar(guion, oidas, duracion=None):
                 iguales += i2 - i1
             else:
                 faltan.extend(guion[i1:i2])
+                faltan_idx.extend(range(i1, i2))
                 sobran += j2 - j1
         elif op == "delete":
             faltan.extend(guion[i1:i2])      # se quedan sin tiempo: se interpolan
+            faltan_idx.extend(range(i1, i2))
         elif op == "insert":
             sobran += j2 - j1
             insertos.append((j1, j2))
@@ -200,7 +203,8 @@ def emparejar(guion, oidas, duracion=None):
         reloj = e
     return {"palabras": marcas,
             "cobertura": round(iguales / len(guion), 4) if guion else 1.0,
-            "faltan": faltan, "sobran": sobran, "insertos": insertos}
+            "faltan": faltan, "faltan_idx": faltan_idx, "sobran": sobran,
+            "insertos": insertos}
 
 
 def frases_del_guion(guion, frases):
@@ -227,7 +231,8 @@ def frases_del_guion(guion, frases):
         if frases:
             reparto[0] = list(guion)
         return reparto, {"cobertura": 0.0 if guion else 1.0,
-                         "faltan": list(guion), "sobran": 0, "de_mas": []}
+                         "faltan": list(guion), "faltan_idx": list(range(len(guion))),
+                         "sobran": 0, "de_mas": []}
     casado = emparejar(guion, oidas, float(len(oidas)))
     for token, marca in zip(guion, casado["palabras"]):
         j = min(len(frase_de) - 1, int((marca["s"] + marca["e"]) / 2.0))
@@ -237,7 +242,7 @@ def frases_del_guion(guion, frases):
                "s": round(float(frases[frase_de[j1]]["start"]), 3),
                "e": round(float(frases[frase_de[j2 - 1]]["end"]), 3)}
               for j1, j2 in casado["insertos"]]
-    resumen = {k: casado[k] for k in ("cobertura", "faltan", "sobran")}
+    resumen = {k: casado[k] for k in ("cobertura", "faltan", "faltan_idx", "sobran")}
     resumen["de_mas"] = de_mas
     return reparto, resumen
 

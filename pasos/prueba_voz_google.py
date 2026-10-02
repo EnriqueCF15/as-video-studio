@@ -504,8 +504,9 @@ def prueba_fuga_de_estilo():
     try:
         cfg = p4_voz.resolver_params({"proveedor": "google", "idioma": "en",
                                       "estilos": {"intro": INTRO, "cuerpo": CUERPO}})
+        hablados = ["Your grandparents never read a blog.", "Habit one."]
         wav, segundos, alineado, info = p4_voz._google_verificado(
-            trozos, "Your grandparents never read a blog. Habit one.", cfg, lambda f, m="": None)
+            trozos, hablados, cfg, lambda f, m="": None)
     finally:
         p4_voz.motor_google, p4_voz.alineador = real_google, real_alin
         if simular is None:
@@ -516,15 +517,27 @@ def prueba_fuga_de_estilo():
     igual([t["seccion"] for t in doble_google.llamadas[1]], ["SB001"],
           "el regrabado es SOLO la seccion que leyo su instruccion")
     igual(doble_google.llamadas[1][0]["estilo"], INTRO, "y con su mismo estilo")
-    igual([r["seccion"] for r in info.get("regrabados_por_fuga") or []], ["SB001"],
-          "queda apuntado que se regrabo y por que")
-    comprobar("fugas" not in info, "y como la segunda salio limpia, no queda ninguna fuga")
+    igual([(r["seccion"], r["motivo"]) for r in info.get("regrabados") or []],
+          [("SB001", "fuga")], "queda apuntado que se regrabo y por que")
+    comprobar("sin_arreglar" not in info, "y como la segunda salio limpia, no queda nada mal")
     igual(doble_alin.vez, 2, "se vuelve a alinear despues de regrabar")
     comprobar(abs(segundos - (len(wav) - 44) / (goo.SR * 2)) < 0.01,
               "la pista cosida cuadra con su duracion")
     comprobar(any("se regrabó sola" in a for a in p4_voz._avisos_google(info, [
         {"id": "SB001", "tramo": "intro"}, {"id": "SB002", "tramo": "cuerpo"}])),
               "y se le dice a quien escucha")
+
+    print("\n[10] la voz que se salta texto")
+    hablados = ["Your grandparents never read a finance blog. No apps, no charts. And "
+                "somehow they saved anyway.", "Habit one: pay yourself first, every month."]
+    igual(p4_voz.omisiones_por_seccion({"faltan_idx": list(range(0, 10))}, hablados), {0: 10},
+          "diez palabras que faltan en la primera seccion: se regraba esa")
+    igual(p4_voz.omisiones_por_seccion({"faltan_idx": [16, 17]}, hablados), {},
+          "dos palabras (una contraccion, una cifra dicha distinta) no son una omision")
+    # la primera seccion tiene 16 palabras: la segunda empieza en el indice 16
+    igual(p4_voz.omisiones_por_seccion({"faltan_idx": list(range(16, 23))}, hablados), {1: 7},
+          "y se sabe en QUE seccion faltan")
+    igual(p4_voz.omisiones_por_seccion({}, hablados), {}, "sin nada que falte, nada")
 
 
 def prueba_coste():

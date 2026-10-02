@@ -1061,6 +1061,36 @@ def fugas_de_estilo(alineado, info, trozos):
     return fugas
 
 
+#: Y LA OTRA CARA: LA VOZ QUE SE SALTA TEXTO. Medido el 02-10-2026: en una de
+#: tres tomas de la misma intro, Gemini se salto el gancho entero («Your
+#: grandparents never read a finance blog. No apps, no spreadsheets, no
+#: charts.») y siguio como si nada. En un video de 25 min eso son unas palabras
+#: entre miles: la cobertura GLOBAL ni se mueve. Por eso se mira por seccion: a
+#: partir de cuantas palabras que faltan, y de que parte de la seccion, se
+#: regraba. Por debajo es ruido normal (una contraccion, «do not» oido como
+#: «don't»).
+OMISION_MIN_PALABRAS = 4
+OMISION_PARTE = 0.12
+
+
+def omisiones_por_seccion(alineado, hablados):
+    """Secciones a las que les falta texto de verdad. -> {indice: palabras que faltan}
+
+    `hablados` es lo que se locuta de cada seccion, en orden: con eso se sabe a
+    que seccion pertenece cada palabra del guion que el alineador no oyo
+    (`faltan_idx`, indices sobre las palabras con letras de todo el texto).
+    """
+    faltan = set((alineado or {}).get("faltan_idx") or [])
+    salida, inicio = {}, 0
+    for indice, texto in enumerate(hablados):
+        cuantas = sum(1 for palabra in str(texto or "").split() if _norm(palabra))
+        dentro = sum(1 for k in range(inicio, inicio + cuantas) if k in faltan)
+        if cuantas and dentro >= OMISION_MIN_PALABRAS and dentro / cuantas >= OMISION_PARTE:
+            salida[indice] = dentro
+        inicio += cuantas
+    return salida
+
+
 def _sustituir_trozo(wav, info, indice, wav_nuevo, info_nuevo):
     """La pista con el trozo `indice` cambiado por otra grabacion. -> (wav, segundos)
 
@@ -1092,30 +1122,46 @@ def _sustituir_trozo(wav, info, indice, wav_nuevo, info_nuevo):
     return motor_google.wav_desde_pcm(pista), len(pista) / (sr * 2)
 
 
-def _google_verificado(trozos, hablado, cfg, progreso):
+def _secciones_mal(alineado, info, trozos, hablados):
+    """Lo que hay que regrabar: {indice: (motivo, dato)} -- la fuga manda."""
+    malas = {i: ("omision", n) for i, n in omisiones_por_seccion(alineado, hablados).items()}
+    malas.update({i: ("fuga", t) for i, t in fugas_de_estilo(alineado, info, trozos).items()})
+    return malas
+
+
+def _google_verificado(trozos, hablados, cfg, progreso):
     """Graba con Google, alinea y regraba las secciones que leyeron su
-    instruccion. -> (wav, segundos, alineado, info)"""
+    instruccion o se saltaron texto. -> (wav, segundos, alineado, info)
+
+    `hablados`: lo que se locuta de cada trozo, en el mismo orden.
+    """
+    hablado = " ".join(hablados)
     wav, duracion, info = _sintesis_google(trozos, cfg, lambda f, m="": progreso(0.5 * f, m))
     alineado = _alinear(wav, hablado, cfg, lambda f, m="": progreso(0.5 + 0.4 * f, m))
     regrabados = []
     for intento in range(REINTENTOS_FUGA):
-        fugas = fugas_de_estilo(alineado, info, trozos)
-        if not fugas:
+        malas = _secciones_mal(alineado, info, trozos, hablados)
+        if not malas:
             break
-        for indice, texto in fugas.items():
+        for indice, (motivo, dato) in malas.items():
             seccion = trozos[indice].get("seccion", indice)
             progreso(0.9, f"AVISO: la voz leyó en voz alta su instrucción de estilo en "
-                          f"{seccion} («{texto[:70]}»): se regraba esa sección")
+                          f"{seccion} («{str(dato)[:70]}»): se regraba esa sección"
+                     if motivo == "fuga" else
+                     f"AVISO: la voz se saltó {dato} palabras en {seccion}: se regraba "
+                     f"esa sección")
             wav_nuevo, _d, info_nuevo = _sintesis_google([trozos[indice]], cfg,
                                                          lambda f, m="": None)
             wav, duracion = _sustituir_trozo(wav, info, indice, wav_nuevo, info_nuevo)
-            regrabados.append({"seccion": seccion, "dijo": texto, "intento": intento + 1})
+            regrabados.append({"seccion": seccion, "motivo": motivo,
+                               "detalle": dato, "intento": intento + 1})
         alineado = _alinear(wav, hablado, cfg, lambda f, m="": progreso(0.92, m))
     if regrabados:
-        info["regrabados_por_fuga"] = regrabados
-    restantes = fugas_de_estilo(alineado, info, trozos)
+        info["regrabados"] = regrabados
+    restantes = _secciones_mal(alineado, info, trozos, hablados)
     if restantes:
-        info["fugas"] = {trozos[i].get("seccion", i): t for i, t in restantes.items()}
+        info["sin_arreglar"] = [{"seccion": trozos[i].get("seccion", i), "motivo": m,
+                                 "detalle": d} for i, (m, d) in restantes.items()]
     return wav, duracion, alineado, info
 
 
@@ -1135,13 +1181,14 @@ def _toma_google(secciones, bloques, cfg, progreso):
         trozos.append({"texto": texto, "seccion": seccion["id"],
                        "estilo": estilo_de(seccion.get("tramo"), cfg)
                        if familia == "gemini" else None})
-    hablado = " ".join(marcas_tts.limpiar(por_id[b]["texto"])
-                       for s in secciones for b in s["bloques"])
+    hablados = [" ".join(marcas_tts.limpiar(por_id[b]["texto"]) for b in s["bloques"])
+                for s in secciones]
+    hablado = " ".join(hablados)
     if simulado():
         wav, duracion, palabras = _toma_simulada(hablado, cfg)
         return wav, duracion, palabras, {"simulado": True, "peticiones": len(trozos)}
 
-    wav, duracion, alineado, info = _google_verificado(trozos, hablado, cfg, progreso)
+    wav, duracion, alineado, info = _google_verificado(trozos, hablados, cfg, progreso)
     info["alineado"] = _resumen_alineado(alineado)
     return wav, duracion, alineado["palabras"], info
 
@@ -1195,13 +1242,16 @@ def _avisos_google(info, secciones):
                           f"se ha igualado, pero escucha esa costura")
         else:
             avisos.append(f"cambio de ritmo del {aviso['cambio'] * 100:+.0f} % {donde}")
-    for regrabado in (info or {}).get("regrabados_por_fuga") or []:
+    for regrabado in (info or {}).get("regrabados") or []:
         avisos.append(f"{regrabado['seccion']} se regrabó sola: la voz había leído en voz "
-                      f"alta su instrucción de estilo («{regrabado['dijo'][:60]}»)")
-    for seccion, texto in ((info or {}).get("fugas") or {}).items():
-        avisos.append(f"¡OJO! en {seccion} la voz sigue leyendo su instrucción de estilo "
-                      f"(«{texto[:60]}») tras {REINTENTOS_FUGA} intentos: regrábala en "
-                      f"la revisión de audio")
+                      f"alta su instrucción de estilo («{str(regrabado['detalle'])[:60]}»)"
+                      if regrabado["motivo"] == "fuga" else
+                      f"{regrabado['seccion']} se regrabó sola: la voz se había saltado "
+                      f"{regrabado['detalle']} palabras")
+    for mala in (info or {}).get("sin_arreglar") or []:
+        avisos.append(f"¡OJO! {mala['seccion']} sigue saliendo mal tras {REINTENTOS_FUGA} "
+                      f"intentos ({'lee su instrucción de estilo' if mala['motivo'] == 'fuga' else 'se salta texto'}): "
+                      f"regrábala en la revisión de audio")
     alineado = (info or {}).get("alineado") or {}
     if alineado.get("cobertura") is not None and alineado["cobertura"] < 0.9:
         avisos.append(f"solo el {alineado['cobertura'] * 100:.0f} % del guion se oye "
@@ -2255,11 +2305,12 @@ def regrabar_seccion(bloques, seccion_id, cfg, meta, destino, peticion="",
         hablado = " ".join(marcas_tts.limpiar(b["texto"]) for b in nuevos
                            if b["id"] in dentro)
         wav_nuevo, dur_nueva, alineado, info_regrabado = _google_verificado(
-            con_estilo, hablado, cfg, progreso)
+            con_estilo, [hablado], cfg, progreso)
         marcas_nuevas = alineado["palabras"]
-        for seccion_fuga, texto in (info_regrabado.get("fugas") or {}).items():
-            avisa(0.78, f"AVISO: la voz sigue leyendo su instrucción de estilo en "
-                        f"{seccion_fuga} («{texto[:70]}»): vuelve a regrabarla")
+        for mala in info_regrabado.get("sin_arreglar") or []:
+            avisa(0.78, f"AVISO: {mala['seccion']} sigue saliendo mal "
+                        f"({'lee su instrucción de estilo' if mala['motivo'] == 'fuga' else 'se salta texto'}): "
+                        f"vuelve a regrabarla")
     elif cfg.get("proveedor") == "elevenlabs":
         # sola, pero con el texto de alrededor como contexto: la entonacion
         # de la costura sabe que viene de algo y que sigue algo
