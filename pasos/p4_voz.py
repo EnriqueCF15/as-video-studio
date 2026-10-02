@@ -434,7 +434,15 @@ def normalizar_bloques(crudo):
             continue
         if not texto:
             continue
-        bloques.append({"id": identificador, "texto": texto})
+        ficha = {"id": identificador, "texto": texto}
+        # La marca de seccion que pone el redactor (regla 11 de p3_guion) tiene
+        # que llegar a `agrupar_secciones`, que corta por ella. Se perdia aqui,
+        # y las secciones salian de las pausas o cada seis bloques en vez de en
+        # los cambios de tema -- y con Google, el cambio de estilo de la intro al
+        # cuerpo caia donde no acababa el gancho.
+        if isinstance(elemento, dict) and elemento.get("abre_seccion"):
+            ficha["abre_seccion"] = True
+        bloques.append(ficha)
     return bloques
 
 
