@@ -99,6 +99,21 @@ MODELOS = ("sonic-3.5", "sonic-3", "sonic-turbo", "sonic-2")
 
 MODELO_POR_DEFECTO = "sonic-3.5"
 IDIOMA_POR_DEFECTO = "es"
+
+#: Quien pone la voz. SIN el param, Cartesia: es lo que tenian todos los
+#: proyectos de antes y su firma no puede moverse por esto. Los videos nuevos lo
+#: reciben escrito desde el Estilo del canal (o Configuracion) al crearse.
+PROVEEDORES = ("cartesia", "google")
+PROVEEDOR_POR_DEFECTO = "cartesia"
+
+#: Los tramos del video, cada uno con su instruccion de estilo (solo Gemini).
+#: La voz es la MISMA en todos: lo unico que cambia es como habla.
+TRAMOS = ("intro", "cuerpo", "cierre")
+#: El gancho: la primera seccion del guion. Si sale mas larga que INTRO_MAXIMO_S
+#: se parte en la frontera de bloque mas cercana a INTRO_OBJETIVO_S, para que el
+#: estilo de intro no se coma un minuto de video.
+INTRO_OBJETIVO_S = 35.0
+INTRO_MAXIMO_S = 60.0
 HUECO_POR_DEFECTO = 1.0
 NOMBRE_PISTA = "narracion.wav"
 NOMBRE_META = "audio_meta.json"
@@ -132,13 +147,23 @@ class _MotorVoz:
     esto el atributo se resuelve contra el modulo que este cargado AHORA, y las
     llamadas de mas abajo (motor.espaciar, motor.VOCES, motor.wav_desde_pcm) se
     quedan escritas igual que estaban.
+
+    Sirve igual para los otros motores de la voz (Google, el alineador): cada
+    uno es un `_MotorVoz` con su carpeta.
     """
 
+    def __init__(self, carpeta="voz_cartesia", fichero="voz.py"):
+        self._carpeta, self._fichero = carpeta, fichero
+
     def __getattr__(self, nombre):
-        return getattr(comun.cargar_motor("voz_cartesia", "voz.py"), nombre)
+        return getattr(comun.cargar_motor(self._carpeta, self._fichero), nombre)
 
 
 motor = _MotorVoz()
+#: Google Cloud TTS (Gemini TTS / Chirp 3 HD) y el alineador local que le pone
+#: las marcas de palabra que Google no da.
+motor_google = _MotorVoz("voz_google", "voz.py")
+alineador = _MotorVoz("alinear_voz", "alinear.py")
 #: La frecuencia de muestreo de la API. Se resuelve UNA vez a proposito: no
 #: cambia entre versiones del motor y se usa en aritmetica en todo el fichero.
 SR = motor.SR
@@ -329,11 +354,18 @@ def resolver_params(params):
             return por_defecto
         return valor
 
+    proveedor = str(crudos.get("proveedor") or PROVEEDOR_POR_DEFECTO).strip().lower()
+    if proveedor not in PROVEEDORES:
+        raise ValueError(f"proveedor de voz desconocido: {proveedor!r}. "
+                         f"Validos: {', '.join(PROVEEDORES)}")
+    idioma = str(elegir("idioma", IDIOMA_POR_DEFECTO)).strip().lower()
+    if proveedor == "google":
+        return _resolver_google(crudos, base, idioma, nombre_preset)
+
     modelo = str(elegir("modelo", MODELO_POR_DEFECTO)).strip()
     if modelo not in MODELOS:
         raise ValueError(f"modelo de voz desconocido: {modelo!r}. "
                          f"Validos: {', '.join(MODELOS)}")
-    idioma = str(elegir("idioma", IDIOMA_POR_DEFECTO)).strip().lower()
 
     emociones_crudas = crudos.get("emociones")
     if emociones_crudas is None:
@@ -342,6 +374,10 @@ def resolver_params(params):
     velocidad = normalizar_velocidad(elegir("velocidad", None))
 
     voz_id = str(elegir("voz_id", "")).strip()
+    if voz_id in motor_google.VOCES_MASCULINAS + motor_google.VOCES_FEMENINAS:
+        # una voz de Google que se quedo puesta al volver el estilo a Cartesia:
+        # mandarsela seria un 400 de Cartesia, asi que va la de por defecto
+        voz_id = ""
     if not voz_id:
         sugeridas = base.get("voces_sugeridas") or []
         if sugeridas:
@@ -370,6 +406,74 @@ def resolver_params(params):
         "controles_por": ("generation_config" if usa_generation_config(modelo)
                           else "experimental_controls"),
     }
+
+
+def normalizar_estilos(estilos):
+    """{tramo: instruccion} con solo los tramos conocidos y con texto. -> dict"""
+    if not isinstance(estilos, dict):
+        return {}
+    limpios = {}
+    for tramo in TRAMOS:
+        texto = " ".join(str(estilos.get(tramo) or "").split())
+        if texto:
+            if len(texto.encode("utf-8")) > 3000:
+                raise ValueError(f"la instruccion de estilo «{tramo}» es demasiado "
+                                 f"larga (maximo ~3.000 caracteres)")
+            limpios[tramo] = texto
+    return limpios
+
+
+def _resolver_google(crudos, base, idioma, nombre_preset):
+    """La configuracion de una toma con Google. Ver `resolver_params`.
+
+    Del preset de voz (los de Cartesia) solo se hereda el aire entre bloques: su
+    modelo y sus voces son de Cartesia, y mandarlos a Google seria un 400.
+    """
+    modelo = str(crudos.get("modelo") or motor_google.MODELO_POR_DEFECTO).strip()
+    if modelo not in motor_google.MODELOS:
+        raise ValueError(f"modelo de Google desconocido: {modelo!r}. "
+                         f"Validos: {', '.join(motor_google.MODELOS)}")
+    voz_id = str(crudos.get("voz_id") or "").strip()
+    if not voz_id or re.fullmatch(r"[0-9a-f-]{36}", voz_id):
+        # vacio, o un id de Cartesia que llego de un preset viejo
+        voz_id = motor_google.VOCES.get(idioma, motor_google.VOCES["en"])["id"]
+    conocidas = motor_google.VOCES_MASCULINAS + motor_google.VOCES_FEMENINAS
+    if voz_id not in conocidas:
+        raise ValueError(f"voz de Google desconocida: {voz_id!r}")
+    hueco_crudo = crudos.get("hueco_minimo")
+    if hueco_crudo in (None, ""):
+        hueco_crudo = base.get("hueco_minimo", HUECO_POR_DEFECTO)
+    try:
+        hueco = float(hueco_crudo)
+    except (TypeError, ValueError):
+        raise ValueError(f"hueco_minimo debe ser un numero de segundos, "
+                         f"llego {hueco_crudo!r}")
+    if hueco < 0:
+        raise ValueError("hueco_minimo no puede ser negativo")
+    tramos = crudos.get("tramos") if isinstance(crudos.get("tramos"), dict) else {}
+    tramos = {str(s): str(t) for s, t in tramos.items() if t in TRAMOS}
+    return {
+        "proveedor": "google",
+        "preset": nombre_preset or None,
+        "modelo": modelo,
+        "familia": motor_google.MODELOS[modelo],
+        "voz_id": voz_id,
+        "idioma": idioma,
+        "velocidad": None,
+        "emociones": [],
+        "hueco_minimo": round(hueco, 3),
+        "estilos": normalizar_estilos(crudos.get("estilos")),
+        "tramos": tramos,
+        "experimental_controls": {},
+        "generation_config": {},
+        "controles_por": "estilo" if motor_google.MODELOS[modelo] == "gemini" else "ninguno",
+    }
+
+
+def estilo_de(tramo, cfg):
+    """La instruccion de estilo de un tramo, o None. Sin la suya, la del cuerpo."""
+    estilos = (cfg or {}).get("estilos") or {}
+    return estilos.get(tramo) or estilos.get("cuerpo") or None
 
 
 def _factor_velocidad(velocidad):
@@ -758,6 +862,154 @@ def agrupar_secciones(bloques, umbral_ms=UMBRAL_SECCION_MS, maximo=MAX_SECCIONES
     return secciones
 
 
+# ------------------------------------------------- tramos y toma con Google
+#
+# Google graba cada seccion en una peticion aparte (ver motores/voz_google), y
+# eso da justo lo que hace falta para los ESTILOS POR TRAMO: cada seccion lleva
+# la instruccion de su tramo, y como las secciones se cortan donde el relato
+# cambia de asunto, el cambio de estilo cae en un limite natural y nunca a mitad
+# de frase. La voz es la misma en todas.
+
+def _segundos_estimados(texto, cfg):
+    _, duracion = _estimar_marcas(marcas_tts.limpiar(texto),
+                                  _factor_velocidad((cfg or {}).get("velocidad")))
+    return duracion
+
+
+def separar_intro(secciones, bloques, cfg):
+    """Si la primera seccion es larga, el gancho se queda en su propia seccion.
+
+    Se corta en la frontera de BLOQUE cuya duracion estimada acumulada quede mas
+    cerca de INTRO_OBJETIVO_S (los bloques acaban en final de frase). Solo hace
+    falta si la intro tiene un estilo distinto del cuerpo: si no, cortar es
+    poner una costura de mas sin ganar nada.
+    """
+    estilos = (cfg or {}).get("estilos") or {}
+    if not secciones or not estilos.get("intro") or estilos.get("intro") == estilos.get("cuerpo"):
+        return secciones
+    por_id = {b["id"]: b for b in bloques}
+    primera = secciones[0]
+    duraciones = [_segundos_estimados(por_id[b]["texto"], cfg) for b in primera["bloques"]]
+    if sum(duraciones) <= INTRO_MAXIMO_S or len(duraciones) < 2:
+        return secciones
+    acumulado, mejor, distancia = 0.0, 1, None
+    for corte in range(1, len(duraciones)):
+        acumulado += duraciones[corte - 1]
+        if distancia is None or abs(acumulado - INTRO_OBJETIVO_S) < distancia:
+            mejor, distancia = corte, abs(acumulado - INTRO_OBJETIVO_S)
+    nuevas = [{"bloques": primera["bloques"][:mejor]},
+              {"bloques": primera["bloques"][mejor:]}] + [
+        {"bloques": s["bloques"]} for s in secciones[1:]]
+    for indice, seccion in enumerate(nuevas, 1):
+        seccion["id"] = f"SB{indice:03d}"
+    return nuevas
+
+
+def asignar_tramos(secciones, cfg):
+    """Pone a cada seccion su tramo: intro la primera, cierre la ultima (solo si
+    hay estilo de cierre), cuerpo el resto. Lo fijado a mano (`tramos`, por id
+    de seccion) manda."""
+    estilos = (cfg or {}).get("estilos") or {}
+    manual = (cfg or {}).get("tramos") or {}
+    total = len(secciones)
+    for indice, seccion in enumerate(secciones):
+        tramo = "cuerpo"
+        if indice == 0 and total > 1:
+            tramo = "intro"
+        elif indice == total - 1 and total > 2 and estilos.get("cierre"):
+            tramo = "cierre"
+        seccion["tramo"] = manual.get(seccion["id"], tramo)
+    return secciones
+
+
+def _sintesis_google(trozos, cfg, progreso):
+    """La llamada que se PAGA: los trozos a Google, en una pista igualada.
+
+    -> (wav, segundos, info). Esta aparte para que el medidor de coste la
+    envuelva a ella sola (nucleo/coste.py), se pida desde donde se pida.
+    """
+    return comun.llamar_motor(
+        motor_google.sintetizar_trozos, trozos, voz=cfg["voz_id"],
+        modelo=cfg["modelo"], idioma=cfg["idioma"], avisar=progreso)
+
+
+def _alinear(wav, hablado, cfg, progreso):
+    """Marcas de palabra de una pista ya grabada, con el alineador local."""
+    import tempfile
+    carpeta = tempfile.mkdtemp(prefix="voz_alinear_")
+    ruta = os.path.join(carpeta, "toma.wav")
+    try:
+        with open(ruta, "wb") as fh:
+            fh.write(wav)
+        return alineador.alinear(ruta, hablado, cfg.get("idioma") or "en",
+                                 avisar=progreso)
+    finally:
+        try:
+            os.remove(ruta)
+            os.rmdir(carpeta)
+        except OSError:
+            pass
+
+
+def _resumen_alineado(alineado):
+    return {"cobertura": alineado.get("cobertura"),
+            "faltan": list(alineado.get("faltan") or [])[:25],
+            "sobran": alineado.get("sobran"),
+            "dispositivo": alineado.get("dispositivo"),
+            "modelo": alineado.get("modelo"),
+            "segundos": alineado.get("segundos")}
+
+
+def _toma_google(secciones, bloques, cfg, progreso):
+    """Toda la toma con Google. -> (wav, segundos, palabras, info)
+
+    Una peticion por seccion (o varias si no cabe), cada una con el estilo de
+    su tramo; despues el alineador pone las marcas sobre la pista entera, asi
+    que los tiempos salen ABSOLUTOS y continuos como los de Cartesia.
+    """
+    familia = motor_google.familia_de(cfg["modelo"])
+    por_id = {b["id"]: b for b in bloques}
+    trozos = []
+    for seccion in secciones:
+        texto = " ".join(marcas_tts.para_google(por_id[b]["texto"], familia)
+                         for b in seccion["bloques"])
+        trozos.append({"texto": texto, "seccion": seccion["id"],
+                       "estilo": estilo_de(seccion.get("tramo"), cfg)
+                       if familia == "gemini" else None})
+    hablado = " ".join(marcas_tts.limpiar(por_id[b]["texto"])
+                       for s in secciones for b in s["bloques"])
+    if simulado():
+        wav, duracion, palabras = _toma_simulada(hablado, cfg)
+        return wav, duracion, palabras, {"simulado": True, "peticiones": len(trozos)}
+
+    wav, duracion, info = _sintesis_google(
+        trozos, cfg, lambda f, m="": progreso(0.55 * f, m))
+    alineado = _alinear(wav, hablado, cfg, lambda f, m="": progreso(0.55 + 0.45 * f, m))
+    info["alineado"] = _resumen_alineado(alineado)
+    return wav, duracion, alineado["palabras"], info
+
+
+def _avisos_google(info, secciones):
+    """Lo que hay que decirle a quien escucha, en sus palabras. -> [str]"""
+    nombres = {i: s for i, s in enumerate(secciones)}
+    avisos = []
+    for aviso in (info or {}).get("avisos") or []:
+        a, b = (nombres.get(i, {}) for i in aviso["entre"])
+        donde = (f"entre {a.get('id')} ({a.get('tramo')}) y {b.get('id')} "
+                 f"({b.get('tramo')})")
+        if aviso["tipo"] == "volumen":
+            avisos.append(f"salto de volumen de {aviso['db']:+.1f} dB {donde}: ya "
+                          f"se ha igualado, pero escucha esa costura")
+        else:
+            avisos.append(f"cambio de ritmo del {aviso['cambio'] * 100:+.0f} % {donde}")
+    alineado = (info or {}).get("alineado") or {}
+    if alineado.get("cobertura") is not None and alineado["cobertura"] < 0.9:
+        avisos.append(f"solo el {alineado['cobertura'] * 100:.0f} % del guion se oye "
+                      f"tal cual: la voz puede haberse saltado o cambiado algo "
+                      f"({' '.join(alineado.get('faltan') or [])[:120]})")
+    return avisos
+
+
 def _toma_por_contexto(trozos, cfg, progreso):
     """Una toma en varias entradas del MISMO contexto. (wav, dur, palabras).
 
@@ -916,7 +1168,29 @@ def sintetizar_toma(texto, cfg, progreso=None):
     if simulado():
         avisa(0.5, "simulando toma")
         return _toma_simulada(texto, cfg)
+    if cfg.get("proveedor") == "google":
+        return _toma_google_suelta(texto, cfg, avisa)
     return _toma_real(texto, cfg, avisa)
+
+
+def _toma_google_suelta(texto, cfg, avisa):
+    """Un texto corto con Google, para ESCUCHAR la voz (previsualizar).
+
+    Va con el estilo de la intro, que es lo primero que suena del video. Las
+    marcas son estimadas y estiradas a la duracion real: para escuchar no hace
+    falta arrancar el alineador.
+    """
+    familia = motor_google.familia_de(cfg["modelo"])
+    wav, duracion, _info = _sintesis_google(
+        [{"texto": marcas_tts.para_google(texto, familia),
+          "estilo": estilo_de("intro", cfg) if familia == "gemini" else None}],
+        cfg, avisa)
+    palabras, estimada = _estimar_marcas(marcas_tts.limpiar(texto))
+    escala = duracion / estimada if estimada else 1.0
+    for palabra in palabras:
+        palabra["s"] = round(palabra["s"] * escala, 3)
+        palabra["e"] = round(palabra["e"] * escala, 3)
+    return wav, duracion, palabras
 
 
 def _reparto(bloques, palabras):
@@ -1004,7 +1278,19 @@ def sintetizar_bloques(bloques, destino, cfg, avisar=None,
     trozos = [" ".join(por_bloque[bid] for bid in sec["bloques"])
               for sec in secciones]
     wav = duracion = palabras = None
-    if len(trozos) > 1 and not simulado():
+    info_google = None
+    if cfg.get("proveedor") == "google":
+        # Una peticion por seccion con el estilo de su tramo, y el alineador
+        # local para las marcas. Sin caida a otro camino: si Google falla, el
+        # fallo se dice; grabar con otra voz a escondidas seria peor.
+        secciones = asignar_tramos(separar_intro(secciones, anotados, cfg), cfg)
+        avisa(0.05, f"{len(secciones)} secciones con Google "
+                    f"({cfg['modelo']}, voz {cfg['voz_id']})")
+        wav, duracion, palabras, info_google = _toma_google(
+            secciones, anotados, cfg, progreso)
+        for aviso in _avisos_google(info_google, secciones):
+            avisa(0.86, f"AVISO: {aviso}")
+    elif len(trozos) > 1 and not simulado():
         avisa(0.05, f"{len(trozos)} secciones en un solo contexto")
         try:
             wav, duracion, palabras = _toma_por_contexto(trozos, cfg, progreso)
@@ -1068,6 +1354,9 @@ def sintetizar_bloques(bloques, destino, cfg, avisar=None,
         "resumen": (f"{len(anotados)} bloques, {round(duracion, 1)}s, "
                     f"{cfg['modelo']} {cfg.get('preset') or 'sin preset'}"),
     }
+    if info_google is not None:
+        salidas["google"] = dict(info_google, avisos_texto=_avisos_google(
+            info_google, secciones))
     if extra_meta:
         salidas.update(extra_meta)
 
@@ -1131,12 +1420,17 @@ def _fichas_de_seccion(secciones, fichas):
     for seccion in secciones or []:
         dentro = [por_id[b] for b in seccion["bloques"] if b in por_id]
         tiempos = [f for f in dentro if f.get("t_in") is not None]
-        salida.append({
+        ficha = {
             "id": seccion["id"],
             "bloques": list(seccion["bloques"]),
             "t_in": tiempos[0]["t_in"] if tiempos else None,
             "t_out": tiempos[-1]["t_out"] if tiempos else None,
-        })
+        }
+        # el tramo (intro/cuerpo/cierre) solo existe con Google: es lo que hace
+        # que regrabar la seccion use el estilo que le toca
+        if seccion.get("tramo"):
+            ficha["tramo"] = seccion["tramo"]
+        salida.append(ficha)
     return salida
 
 
@@ -1200,7 +1494,11 @@ def previsualizar(proyecto, params, segundos=20):
 
     firma = hashlib.sha256(json.dumps(
         [texto, cfg["modelo"], cfg["voz_id"], cfg["idioma"],
-         cfg["experimental_controls"], simulado()],
+         cfg["experimental_controls"], simulado()]
+        # con Google, el estilo de la intro cambia lo que suena; sin Google la
+        # lista se queda como era y los wav ya cacheados siguen valiendo
+        + ([cfg.get("proveedor"), estilo_de("intro", cfg)]
+           if cfg.get("proveedor") == "google" else []),
         sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()[:12]
     carpeta = proyecto.ruta("previsualizaciones")
     os.makedirs(carpeta, exist_ok=True)
@@ -1355,6 +1653,84 @@ def _hay_clave():
         return bool(comun.cargar_motor("voz_cartesia", "voz.py").cargar_api_key())
     except BaseException:                                     # noqa: BLE001
         return False
+
+
+# --------------------------------------------------------------- prueba A/B
+#
+# EL MISMO TEXTO PARA TODAS LAS VOCES, y con dos secciones: un gancho y el
+# arranque del cuerpo. Asi se oye cada voz con los dos estilos y, sobre todo, la
+# COSTURA entre ellos, que es lo que no se puede juzgar con doce segundos.
+# ~140 palabras, unos 70 s: lo bastante para cansarse de una voz, lo bastante
+# poco para que comparar cuatro cueste centimos.
+
+TEXTOS_AB = {
+    "en": [
+        {"id": "AB01", "abre_seccion": True, "texto":
+            "Most people have never been told this, but the families who quietly "
+            "built real wealth during the Great Depression followed a handful of "
+            "simple rules. Not secret investments. Not lucky breaks. Just small "
+            "habits, repeated every single week."},
+        {"id": "AB02", "texto": "And almost nobody talks about them today. So let's fix that."},
+        {"id": "AB03", "abre_seccion": True, "texto":
+            "Habit number one: they paid themselves first. Before rent, before "
+            "groceries, before anything else, a small part of every paycheck went "
+            "straight into a jar, a tin, or a savings account."},
+        {"id": "AB04", "texto":
+            "It didn't matter if it was ten percent or just a few dollars. What "
+            "mattered was that it happened automatically, every time, without a "
+            "second thought."},
+        {"id": "AB05", "texto":
+            "Today you can do the same thing in about five minutes. Set up an "
+            "automatic transfer for the day after payday, and you'll never even "
+            "miss the money."},
+    ],
+    "es": [
+        {"id": "AB01", "abre_seccion": True, "texto":
+            "Casi nadie te lo ha contado, pero las familias que construyeron un "
+            "patrimonio de verdad durante la Gran Depresión seguían unas pocas "
+            "reglas muy sencillas. Ni inversiones secretas ni golpes de suerte. "
+            "Solo pequeños hábitos, repetidos cada semana."},
+        {"id": "AB02", "texto": "Y hoy casi nadie habla de ellos. Vamos a arreglarlo."},
+        {"id": "AB03", "abre_seccion": True, "texto":
+            "Hábito número uno: se pagaban primero a sí mismos. Antes del alquiler, "
+            "antes de la compra, antes de cualquier otra cosa, una parte de cada "
+            "sueldo iba directa a un frasco, a una lata o a una cuenta de ahorro."},
+        {"id": "AB04", "texto":
+            "Daba igual que fuera el diez por ciento o unas pocas monedas. Lo que "
+            "importaba es que pasara solo, cada vez, sin pensarlo."},
+        {"id": "AB05", "texto":
+            "Hoy puedes hacer lo mismo en cinco minutos. Programa una transferencia "
+            "automática para el día después de cobrar y ni siquiera echarás de "
+            "menos ese dinero."},
+    ],
+}
+
+
+def bloques_ab(idioma):
+    """El pasaje de la prueba A/B en ese idioma (ingles si no lo hay). -> [bloques]"""
+    return copy.deepcopy(TEXTOS_AB.get(str(idioma or "en").lower(), TEXTOS_AB["en"]))
+
+
+def listar_voces_google(idioma=None):
+    """Las voces de Google (Gemini TTS / Chirp 3 HD), con la misma forma de
+    ficha que las de Cartesia para que la pantalla las pinte igual.
+
+    Es una lista fija: son las que publica Google para estas dos familias, y
+    hablan todos los idiomas del modelo (el acento lo pone el idioma, no la voz).
+    """
+    codigo = str(idioma or "en").strip().lower() or "en"
+    fichas = []
+    for genero, nombres in (("masculina", motor_google.VOCES_MASCULINAS),
+                            ("femenina", motor_google.VOCES_FEMENINAS)):
+        for nombre in nombres:
+            fichas.append({"id": nombre, "nombre": nombre, "descripcion": f"voz {genero}",
+                           "idioma": codigo, "genero": genero, "pais": "",
+                           "locales": [], "locales_nativos": [], "pro": False,
+                           "publica": True, "nativa": True, "proveedor": "google"})
+    # Orus la primera (la del canal), despues las masculinas y luego las femeninas
+    fichas.sort(key=lambda f: (f["nombre"] != "Orus", f["genero"] != "masculina",
+                               f["nombre"]))
+    return fichas
 
 
 def listar_voces(idioma=None, refrescar=False, solo_nativas=False):
@@ -1595,6 +1971,22 @@ def regrabar_seccion(bloques, seccion_id, cfg, meta, destino, peticion="",
 
     if simulado():
         wav_nuevo, dur_nueva, marcas_nuevas = _toma_simulada(trozo, cfg)
+    elif cfg.get("proveedor") == "google":
+        # con el estilo de SU tramo: una intro regrabada sigue sonando a intro.
+        # El motor la deja al mismo nivel que el resto de la toma (todas las
+        # piezas se igualan al mismo objetivo), asi que la costura no salta.
+        tramo = seccion.get("tramo") or "cuerpo"
+        familia = motor_google.familia_de(cfg["modelo"])
+        con_estilo = [{"texto": " ".join(marcas_tts.para_google(b["texto"], familia)
+                                         for b in nuevos if b["id"] in dentro),
+                       "seccion": seccion_id,
+                       "estilo": estilo_de(tramo, cfg) if familia == "gemini" else None}]
+        hablado = " ".join(marcas_tts.limpiar(b["texto"]) for b in nuevos
+                           if b["id"] in dentro)
+        wav_nuevo, dur_nueva, _info = _sintesis_google(
+            con_estilo, cfg, lambda f, m="": progreso(0.5 * f, m))
+        marcas_nuevas = _alinear(wav_nuevo, hablado, cfg,
+                                 lambda f, m="": progreso(0.5 + 0.5 * f, m))["palabras"]
     else:
         wav_nuevo, dur_nueva, marcas_nuevas = _toma_por_contexto(
             [trozo], cfg, progreso)
@@ -1646,7 +2038,7 @@ def regrabar_seccion(bloques, seccion_id, cfg, meta, destino, peticion="",
         "duracion": round(len(_pcm_de(wav)) / bytes_seg, 3),
         "palabras": ordenadas, "bloques": fichas,
         "secciones": _fichas_de_seccion(
-            [{"id": s["id"], "bloques": s["bloques"]}
+            [{"id": s["id"], "bloques": s["bloques"], "tramo": s.get("tramo")}
              for s in (meta.get("secciones") or [])], fichas),
         "resumen": f"{seccion_id} regrabada ({len(trozo.split())} palabras)",
     })
