@@ -15,6 +15,21 @@ bitacora_global.jsonl
 # LAS CLAVES. Nunca, y no se arregla borrandolas de un commit: se rotan.
 secretos/
 .env
+# Las credenciales de Google Cloud (ADC de gcloud o el JSON de una cuenta de
+# servicio), por si alguna vez se copian dentro del arbol. El fork es PUBLICO.
+application_default_credentials.json
+*credentials*.json
+*service-account*.json
+*cuenta-servicio*.json
+
+# Las carpetas de arrancar.ps1 (datos, temporales, modelos descargados) y el
+# encargo de la adaptacion: viven fuera del repo, y si se copian dentro, aqui
+# tampoco entran.
+# Ancladas a la raiz: motores/capa_vectorial/datos/ SI es del producto.
+/datos/
+/temp/
+/modelos/
+PLAN-ADAPTACION*.md
 
 # Y lo de Python
 __pycache__/
