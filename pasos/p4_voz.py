@@ -103,7 +103,7 @@ IDIOMA_POR_DEFECTO = "es"
 #: Quien pone la voz. SIN el param, Cartesia: es lo que tenian todos los
 #: proyectos de antes y su firma no puede moverse por esto. Los videos nuevos lo
 #: reciben escrito desde el Estilo del canal (o Configuracion) al crearse.
-PROVEEDORES = ("cartesia", "google")
+PROVEEDORES = ("cartesia", "google", "elevenlabs")
 PROVEEDOR_POR_DEFECTO = "cartesia"
 
 #: Los tramos del video, cada uno con su instruccion de estilo (solo Gemini).
@@ -164,6 +164,12 @@ motor = _MotorVoz()
 #: las marcas de palabra que Google no da.
 motor_google = _MotorVoz("voz_google", "voz.py")
 alineador = _MotorVoz("alinear_voz", "alinear.py")
+#: ElevenLabs: la voz premium. Trae sus propias marcas (por caracter).
+motor_eleven = _MotorVoz("voz_elevenlabs", "voz.py")
+
+#: Un id de voz de ElevenLabs: 20 letras y numeros, sin guiones (los de
+#: Cartesia son UUID, con guiones).
+_ID_ELEVENLABS = re.compile(r"^[A-Za-z0-9]{20}$")
 #: La frecuencia de muestreo de la API. Se resuelve UNA vez a proposito: no
 #: cambia entre versiones del motor y se usa en aritmetica en todo el fichero.
 SR = motor.SR
@@ -361,6 +367,8 @@ def resolver_params(params):
     idioma = str(elegir("idioma", IDIOMA_POR_DEFECTO)).strip().lower()
     if proveedor == "google":
         return _resolver_google(crudos, base, idioma, nombre_preset)
+    if proveedor == "elevenlabs":
+        return _resolver_elevenlabs(crudos, base, idioma, nombre_preset)
 
     modelo = str(elegir("modelo", MODELO_POR_DEFECTO)).strip()
     if modelo not in MODELOS:
@@ -374,9 +382,10 @@ def resolver_params(params):
     velocidad = normalizar_velocidad(elegir("velocidad", None))
 
     voz_id = str(elegir("voz_id", "")).strip()
-    if voz_id in motor_google.VOCES_MASCULINAS + motor_google.VOCES_FEMENINAS:
-        # una voz de Google que se quedo puesta al volver el estilo a Cartesia:
-        # mandarsela seria un 400 de Cartesia, asi que va la de por defecto
+    if (voz_id in motor_google.VOCES_MASCULINAS + motor_google.VOCES_FEMENINAS
+            or _ID_ELEVENLABS.match(voz_id)):
+        # una voz de Google o de ElevenLabs que se quedo puesta al volver el
+        # estilo a Cartesia: mandarsela seria un 400, asi que va la de defecto
         voz_id = ""
     if not voz_id:
         sugeridas = base.get("voces_sugeridas") or []
@@ -467,6 +476,51 @@ def _resolver_google(crudos, base, idioma, nombre_preset):
         "experimental_controls": {},
         "generation_config": {},
         "controles_por": "estilo" if motor_google.MODELOS[modelo] == "gemini" else "ninguno",
+    }
+
+
+def _resolver_elevenlabs(crudos, base, idioma, nombre_preset):
+    """La configuracion de una toma con ElevenLabs. Ver `resolver_params`.
+
+    Del preset de voz (los de Cartesia) se heredan el aire y la velocidad, que
+    ElevenLabs entiende como `speed` (0,7 a 1,2). Sus emociones y su modelo son
+    de Cartesia y no viajan. Sin estilos por tramo: ElevenLabs no lee
+    instrucciones en lenguaje natural.
+    """
+    modelo = str(crudos.get("modelo") or motor_eleven.MODELO_POR_DEFECTO).strip()
+    if modelo not in motor_eleven.MODELOS:
+        raise ValueError(f"modelo de ElevenLabs desconocido: {modelo!r}. "
+                         f"Validos: {', '.join(motor_eleven.MODELOS)}")
+    voz_id = str(crudos.get("voz_id") or "").strip()
+    if not _ID_ELEVENLABS.match(voz_id):
+        # vacio, o la voz de otro proveedor que llego de un preset
+        voz_id = motor_eleven.VOCES.get(idioma, motor_eleven.VOCES["en"])["id"]
+    velocidad = normalizar_velocidad(crudos.get("velocidad") or base.get("velocidad"))
+    hueco_crudo = crudos.get("hueco_minimo")
+    if hueco_crudo in (None, ""):
+        hueco_crudo = base.get("hueco_minimo", HUECO_POR_DEFECTO)
+    try:
+        hueco = float(hueco_crudo)
+    except (TypeError, ValueError):
+        raise ValueError(f"hueco_minimo debe ser un numero de segundos, "
+                         f"llego {hueco_crudo!r}")
+    if hueco < 0:
+        raise ValueError("hueco_minimo no puede ser negativo")
+    return {
+        "proveedor": "elevenlabs",
+        "preset": nombre_preset or None,
+        "modelo": modelo,
+        "voz_id": voz_id,
+        "idioma": idioma,
+        "velocidad": velocidad,
+        "speed": _speed_sonic3(velocidad),
+        "emociones": [],
+        "hueco_minimo": round(hueco, 3),
+        "estilos": {},
+        "tramos": {},
+        "experimental_controls": {},
+        "generation_config": {},
+        "controles_por": "speed",
     }
 
 
@@ -989,6 +1043,42 @@ def _toma_google(secciones, bloques, cfg, progreso):
     return wav, duracion, alineado["palabras"], info
 
 
+def _sintesis_elevenlabs(trozos, cfg, progreso, antes="", despues=""):
+    """La llamada que se PAGA a ElevenLabs (en creditos del plan).
+
+    -> (wav, segundos, palabras o None, info). Aparte, como la de Google, para
+    que el medidor la envuelva a ella sola (nucleo/coste.py).
+    """
+    return comun.llamar_motor(
+        motor_eleven.sintetizar_trozos, trozos, voz=cfg["voz_id"], modelo=cfg["modelo"],
+        idioma=cfg.get("idioma"), velocidad=cfg.get("speed"), avisar=progreso,
+        antes=antes, despues=despues)
+
+
+def _toma_elevenlabs(secciones, bloques, cfg, progreso, antes="", despues=""):
+    """Toda la toma (o una seccion) con ElevenLabs. -> (wav, segundos, palabras, info)
+
+    Las marcas vienen de la propia API, por caracter. Si alguna pieza vuelve
+    sin ellas, el alineador local las pone sobre la pista entera: es el
+    respaldo, no el camino normal.
+    """
+    por_id = {b["id"]: b for b in bloques}
+    trozos = [{"texto": " ".join(marcas_tts.limpiar(por_id[b]["texto"])
+                                 for b in seccion["bloques"]),
+               "seccion": seccion["id"]} for seccion in secciones]
+    hablado = " ".join(t["texto"] for t in trozos)
+    if simulado():
+        wav, duracion, palabras = _toma_simulada(hablado, cfg)
+        return wav, duracion, palabras, {"simulado": True, "peticiones": len(trozos)}
+    wav, duracion, palabras, info = _sintesis_elevenlabs(
+        trozos, cfg, lambda f, m="": progreso(0.85 * f, m), antes, despues)
+    if palabras is None:
+        alineado = _alinear(wav, hablado, cfg, lambda f, m="": progreso(0.85 + 0.15 * f, m))
+        palabras = alineado["palabras"]
+        info["alineado"] = _resumen_alineado(alineado)
+    return wav, duracion, palabras, info
+
+
 def _avisos_google(info, secciones):
     """Lo que hay que decirle a quien escucha, en sus palabras. -> [str]"""
     nombres = {i: s for i, s in enumerate(secciones)}
@@ -1170,6 +1260,11 @@ def sintetizar_toma(texto, cfg, progreso=None):
         return _toma_simulada(texto, cfg)
     if cfg.get("proveedor") == "google":
         return _toma_google_suelta(texto, cfg, avisa)
+    if cfg.get("proveedor") == "elevenlabs":
+        bloque = [{"id": "PREV", "texto": texto}]
+        wav, duracion, palabras, _info = _toma_elevenlabs(
+            [{"id": "SB001", "bloques": ["PREV"]}], bloque, cfg, avisa)
+        return wav, duracion, palabras
     return _toma_real(texto, cfg, avisa)
 
 
@@ -1278,7 +1373,7 @@ def sintetizar_bloques(bloques, destino, cfg, avisar=None,
     trozos = [" ".join(por_bloque[bid] for bid in sec["bloques"])
               for sec in secciones]
     wav = duracion = palabras = None
-    info_google = None
+    info_google = info_eleven = None
     if cfg.get("proveedor") == "google":
         # Una peticion por seccion con el estilo de su tramo, y el alineador
         # local para las marcas. Sin caida a otro camino: si Google falla, el
@@ -1290,6 +1385,12 @@ def sintetizar_bloques(bloques, destino, cfg, avisar=None,
             secciones, anotados, cfg, progreso)
         for aviso in _avisos_google(info_google, secciones):
             avisa(0.86, f"AVISO: {aviso}")
+    elif cfg.get("proveedor") == "elevenlabs":
+        # una peticion por seccion, cada una con el texto vecino como contexto;
+        # las marcas vienen de la API. Sin caida a otro proveedor, como Google.
+        avisa(0.05, f"{len(secciones)} secciones con ElevenLabs ({cfg['modelo']})")
+        wav, duracion, palabras, info_eleven = _toma_elevenlabs(
+            secciones, anotados, cfg, progreso)
     elif len(trozos) > 1 and not simulado():
         avisa(0.05, f"{len(trozos)} secciones en un solo contexto")
         try:
@@ -1357,6 +1458,8 @@ def sintetizar_bloques(bloques, destino, cfg, avisar=None,
     if info_google is not None:
         salidas["google"] = dict(info_google, avisos_texto=_avisos_google(
             info_google, secciones))
+    if info_eleven is not None:
+        salidas["elevenlabs"] = info_eleven
     if extra_meta:
         salidas.update(extra_meta)
 
@@ -1498,7 +1601,10 @@ def previsualizar(proyecto, params, segundos=20):
         # con Google, el estilo de la intro cambia lo que suena; sin Google la
         # lista se queda como era y los wav ya cacheados siguen valiendo
         + ([cfg.get("proveedor"), estilo_de("intro", cfg)]
-           if cfg.get("proveedor") == "google" else []),
+           if cfg.get("proveedor") == "google" else [])
+        # con ElevenLabs suena distinto segun la velocidad (speed)
+        + ([cfg.get("proveedor"), cfg.get("speed")]
+           if cfg.get("proveedor") == "elevenlabs" else []),
         sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()[:12]
     carpeta = proyecto.ruta("previsualizaciones")
     os.makedirs(carpeta, exist_ok=True)
@@ -1731,6 +1837,61 @@ def listar_voces_google(idioma=None):
     fichas.sort(key=lambda f: (f["nombre"] != "Orus", f["genero"] != "masculina",
                                f["nombre"]))
     return fichas
+
+
+RUTA_CACHE_VOCES_ELEVEN = os.path.join(RUTA_CACHE, "voces_elevenlabs.json")
+
+
+def _huella_clave_eleven():
+    """Huella (nunca la clave) de la clave de ElevenLabs en uso, o ""."""
+    try:
+        clave = motor_eleven.cargar_api_key()
+    except BaseException:                                       # noqa: BLE001
+        return ""
+    return hashlib.sha256(str(clave).encode("utf-8")).hexdigest()[:12]
+
+
+def listar_voces_elevenlabs(idioma=None, refrescar=False):
+    """Las voces de la cuenta de ElevenLabs (las propias primero), cacheadas.
+
+    Con la misma regla que el catalogo de Cartesia: el cache sabe con que clave
+    se bajo, y sin clave (o en simulado) no se pide nada y se devuelve lo que
+    haya, o la voz por defecto. Las voces de ElevenLabs hablan todos los idiomas
+    del modelo, asi que no se filtran por idioma.
+    """
+    cache = None
+    if os.path.exists(RUTA_CACHE_VOCES_ELEVEN):
+        try:
+            with open(RUTA_CACHE_VOCES_ELEVEN, "r", encoding="utf-8") as fh:
+                cache = json.load(fh)
+        except ValueError:
+            cache = None
+    huella = _huella_clave_eleven()
+    lista = cache.get("voces") if isinstance(cache, dict) else None
+    fresca = bool(lista) and (time.time() - float(cache.get("epoch", 0))
+                              < DIAS_CACHE_VOCES * 86400) and cache.get("clave") == huella
+    if not refrescar and fresca:
+        return copy.deepcopy(lista)
+    if simulado() or not huella:
+        if lista:
+            return copy.deepcopy(lista)
+        defecto = motor_eleven.VOCES.get(str(idioma or "en"), motor_eleven.VOCES["en"])
+        return [{"id": defecto["id"], "nombre": defecto["nombre"], "descripcion": "voz de la libreria",
+                 "idioma": "", "genero": "", "pais": "", "publica": True, "nativa": True,
+                 "proveedor": "elevenlabs"}]
+    try:
+        fichas = comun.llamar_motor(motor_eleven.listar_voces)
+    except Exception:                                           # noqa: BLE001
+        if lista:
+            return copy.deepcopy(lista)
+        raise
+    for ficha in fichas:
+        ficha["nativa"] = True
+    os.makedirs(RUTA_CACHE, exist_ok=True)
+    comun.escribir_json(RUTA_CACHE_VOCES_ELEVEN, {
+        "epoch": time.time(), "fecha": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "clave": huella, "voces": fichas})
+    return copy.deepcopy(fichas)
 
 
 def listar_voces(idioma=None, refrescar=False, solo_nativas=False):
@@ -1987,6 +2148,16 @@ def regrabar_seccion(bloques, seccion_id, cfg, meta, destino, peticion="",
             con_estilo, cfg, lambda f, m="": progreso(0.5 * f, m))
         marcas_nuevas = _alinear(wav_nuevo, hablado, cfg,
                                  lambda f, m="": progreso(0.5 + 0.5 * f, m))["palabras"]
+    elif cfg.get("proveedor") == "elevenlabs":
+        # sola, pero con el texto de alrededor como contexto: la entonacion
+        # de la costura sabe que viene de algo y que sigue algo
+        orden = [b["id"] for b in nuevos]
+        primero, ultimo = orden.index(seccion["bloques"][0]), orden.index(seccion["bloques"][-1])
+        antes = " ".join(marcas_tts.limpiar(b["texto"]) for b in nuevos[:primero])
+        despues = " ".join(marcas_tts.limpiar(b["texto"]) for b in nuevos[ultimo + 1:])
+        wav_nuevo, dur_nueva, marcas_nuevas, _info = _toma_elevenlabs(
+            [{"id": seccion_id, "bloques": [b["id"] for b in nuevos if b["id"] in dentro]}],
+            nuevos, cfg, progreso, antes=antes, despues=despues)
     else:
         wav_nuevo, dur_nueva, marcas_nuevas = _toma_por_contexto(
             [trozo], cfg, progreso)
