@@ -9810,9 +9810,9 @@ const CANDIDATOS_AB = [
   { id: 'c-orus', etiqueta: 'Chirp 3 HD · Orus (sin estilos)', proveedor: 'google',
     // fuera de las marcadas: en la primera escucha sonó monótona (01-10-2026)
     modelo: 'chirp3-hd', voz_id: 'Orus', usd: 0.03 },
-  // ElevenLabs no son dólares sino créditos del plan: ~800 caracteres a 0,5
+  // ElevenLabs no son dólares sino créditos del plan: ~800 caracteres a 0,2
   { id: 'e-flash', etiqueta: 'ElevenLabs Flash v2.5 · Adam', proveedor: 'elevenlabs',
-    modelo: 'eleven_flash_v2_5', voz_id: 'pNInz6obpgDQGcFmaJgB', usd: 0, creditos: 400 },
+    modelo: 'eleven_flash_v2_5', voz_id: 'pNInz6obpgDQGcFmaJgB', usd: 0, creditos: 160 },
 ];
 const CLAVE_AB_VOZ = 'voz_ab';
 
@@ -9935,11 +9935,11 @@ const PROVEEDORES_VOZ = [
 ];
 /* Los modelos de ElevenLabs: el gemelo de `motores/voz_elevenlabs.MODELOS`. */
 const MODELOS_ELEVEN = [
-  { valor: 'eleven_flash_v2_5', nombre: 'Flash v2.5 — recomendado (0,5 créditos por carácter)' },
-  { valor: 'eleven_turbo_v2_5', nombre: 'Turbo v2.5 — 0,5 créditos por carácter' },
-  { valor: 'eleven_multilingual_v2', nombre: 'Multilingual v2 — más expresivo, 1 crédito por carácter' },
-  { valor: 'eleven_v3', nombre: 'v3 — 1 crédito por carácter' },
-  { valor: 'eleven_v4', nombre: 'v4 — precio en créditos sin publicar: se mide al grabar' },
+  { valor: 'eleven_flash_v2_5', nombre: 'Flash v2.5 — recomendado (0,2 créditos por carácter, medido)' },
+  { valor: 'eleven_turbo_v2_5', nombre: 'Turbo v2.5 — 0,2 créditos por carácter' },
+  { valor: 'eleven_multilingual_v2', nombre: 'Multilingual v2 — más expresivo; hasta 1 crédito por carácter, se mide al grabar' },
+  { valor: 'eleven_v3', nombre: 'v3 — hasta 1 crédito por carácter, se mide al grabar' },
+  { valor: 'eleven_v4', nombre: 'v4 — hasta 1 crédito por carácter, se mide al grabar' },
 ];
 const VOZ_ELEVEN_POR_DEFECTO = { voz_id: 'pNInz6obpgDQGcFmaJgB', voz_nombre: 'Adam' };
 const MODELOS_GOOGLE = [

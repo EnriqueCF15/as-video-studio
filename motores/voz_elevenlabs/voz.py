@@ -15,15 +15,16 @@ Lo que hay que saber de la API, medido y documentado
   dollars») y no casa con las palabras del guion.
 - Formato: MP3 a 44,1 kHz. El PCM/WAV a 44,1 kHz es solo del plan Pro; el
   plan Starter recibe MP3 y aqui se decodifica con ffmpeg a PCM 16 bits.
-- Se cobra en CREDITOS del plan, no en dolares. El precio por caracter de
-  cada modelo esta en MODELOS, pero manda lo medido: `suscripcion()` antes y
-  despues de la toma dice cuantos se gastaron de verdad.
+- Se cobra en CREDITOS del plan, no en dolares. Cada respuesta trae la
+  cabecera `character-cost` con lo que costo: eso es lo que se anota. La
+  suscripcion NO sirve para medir: su contador tarda en moverse (medido: 0
+  creditos justo despues de una toma de 64).
 - Sin etiquetas: el texto va limpio. Las pausas entre bloques las pone el
   Estudio despues (motor.espaciar), igual que con los demas.
 
 Interfaz
 --------
-    sintetizar(texto, voz, modelo, ...) -> (pcm, segundos, marcas o None)
+    sintetizar(texto, voz, modelo, ...) -> (pcm, segundos, marcas o None, creditos)
     sintetizar_trozos(trozos, voz, modelo, ...) -> (wav, segundos, palabras o None, info)
       (None: la alineacion no casaba con el texto; las pone el alineador local)
     listar_voces() -> [ficha] ; suscripcion() -> dict ; cargar_api_key()
@@ -51,14 +52,20 @@ API = "https://api.elevenlabs.io"
 SR = 44100
 FORMATO = "mp3_44100_128"
 
-#: Modelos: creditos por caracter (API) y tope de caracteres por peticion. v4 no
-#: publica su precio en creditos: None, y lo dice la medicion.
+#: Modelos: creditos por caracter y tope de caracteres por peticion.
+#:
+#: LO QUE SE ANOTA NO SALE DE AQUI: cada respuesta trae la cabecera
+#: `character-cost` con lo que costo de verdad, y eso es lo que se mide. Esta
+#: tabla solo sirve para ESTIMAR antes de grabar (y no empezar una toma que no
+#: cabe en el saldo). Flash/Turbo: 0,2 MEDIDO el 02-10-2026 (64 creditos por
+#: 322 caracteres; la documentacion decia 0,5). Multilingual, v3 y v4: sin
+#: medir; 1 por caracter es el techo de la web y aqui hace de tope prudente.
 MODELOS = {
-    "eleven_flash_v2_5": {"creditos": 0.5, "max": 40000, "costuras": True},
-    "eleven_turbo_v2_5": {"creditos": 0.5, "max": 40000, "costuras": True},
+    "eleven_flash_v2_5": {"creditos": 0.2, "max": 40000, "costuras": True},
+    "eleven_turbo_v2_5": {"creditos": 0.2, "max": 40000, "costuras": True},
     "eleven_multilingual_v2": {"creditos": 1.0, "max": 10000, "costuras": True},
     "eleven_v3": {"creditos": 1.0, "max": 5000, "costuras": False},
-    "eleven_v4": {"creditos": None, "max": 10000, "costuras": False},
+    "eleven_v4": {"creditos": 1.0, "max": 10000, "costuras": False},
 }
 MODELO_POR_DEFECTO = "eleven_flash_v2_5"
 
@@ -282,7 +289,11 @@ def _espera(respuesta, intento):
 
 def sintetizar(texto, voz, modelo=MODELO_POR_DEFECTO, idioma=None, anterior="",
                siguiente="", velocidad=None):
-    """Una peticion. -> (pcm, segundos, marcas relativas al inicio de la pieza)"""
+    """Una peticion. -> (pcm, segundos, marcas relativas o None, creditos o None)
+
+    Los creditos son los de la cabecera `character-cost`: lo que costo DE
+    VERDAD esta peticion.
+    """
     ficha = MODELOS.get(modelo)
     if not ficha:
         raise ValueError(f"modelo de ElevenLabs desconocido: {modelo!r}")
@@ -311,7 +322,12 @@ def sintetizar(texto, voz, modelo=MODELO_POR_DEFECTO, idioma=None, anterior="",
             if respuesta.status_code == 200:
                 datos = respuesta.json()
                 pcm = mp3_a_pcm(base64.b64decode(datos["audio_base64"]))
-                return pcm, len(pcm) / (SR * 2), palabras_de_alineacion(texto, datos.get("alignment"))
+                try:
+                    creditos = int(respuesta.headers.get("character-cost"))
+                except (TypeError, ValueError):
+                    creditos = None
+                return (pcm, len(pcm) / (SR * 2),
+                        palabras_de_alineacion(texto, datos.get("alignment")), creditos)
             ultimo = f"HTTP {respuesta.status_code}: {respuesta.text[:300]}"
             if "quota_exceeded" in respuesta.text:
                 raise SinCreditos(f"ElevenLabs: no quedan creditos ({ultimo})")
@@ -328,7 +344,7 @@ def sintetizar_trozos(trozos, voz, modelo=MODELO_POR_DEFECTO, idioma=None,
 
     trozos: [{"texto", "seccion"}] en orden. Antes de pagar nada se mira que
     queden creditos para todo (cortarse a mitad de video deja pagada la
-    mitad); despues se vuelve a mirar para saber lo que se gasto DE VERDAD.
+    mitad); lo gastado DE VERDAD es la suma de la cabecera de cada peticion.
 
     `antes` / `despues`: el texto que rodea a estos trozos en el video, cuando
     se graba solo una parte (regrabar una seccion). Va como contexto de la
@@ -373,7 +389,8 @@ def sintetizar_trozos(trozos, voz, modelo=MODELO_POR_DEFECTO, idioma=None,
         resultados = list(pool.map(una, range(len(piezas))))
 
     pista, palabras, reloj = [], [], 0.0
-    for posicion, (pieza, (pcm, segundos, marcas)) in enumerate(zip(piezas, resultados)):
+    costes = [r[3] for r in resultados]
+    for posicion, (pieza, (pcm, segundos, marcas, _c)) in enumerate(zip(piezas, resultados)):
         if posicion:
             mismo = piezas[posicion - 1]["seccion"] == pieza["seccion"]
             hueco = silencio(PAUSA_DENTRO_S if mismo else PAUSA_ENTRE_SECCIONES_S)
@@ -394,13 +411,11 @@ def sintetizar_trozos(trozos, voz, modelo=MODELO_POR_DEFECTO, idioma=None,
             "caracteres": caracteres, "peticiones": len(piezas),
             "creditos_estimados": creditos_estimados(caracteres, modelo),
             "modelo": modelo, "voz": voz}
-    if comprobar_creditos and saldo is not None:
-        try:
-            final = suscripcion()
-            info["creditos"] = max(0, final["usados"] - saldo["usados"])
-            info["creditos_restantes"] = final["restantes"]
-        except Exception as fallo:                              # noqa: BLE001
-            info["creditos_error"] = str(fallo)
+    # lo medido: la suma de las cabeceras. Si alguna no vino, None y quien anota
+    # usa la estimacion (marcada como tal).
+    info["creditos"] = sum(costes) if all(c is not None for c in costes) else None
+    if saldo is not None and info["creditos"] is not None:
+        info["creditos_restantes"] = max(0, saldo["restantes"] - info["creditos"])
     pcm_total = b"".join(pista)
     return wav_desde_pcm(pcm_total), len(pcm_total) / (SR * 2), palabras, info
 
@@ -470,7 +485,7 @@ def sintetizar_plan(plan, out_dir, idioma="en", voz=None, modelo=MODELO_POR_DEFE
             meta["escenas"].append({"id": escena["id"], "archivo": None,
                                     "duracion": 0.0, "palabras": []})
             continue
-        pcm, duracion, marcas = sintetizar(texto, voz, modelo, idioma)
+        pcm, duracion, marcas, _creditos = sintetizar(texto, voz, modelo, idioma)
         destino = os.path.join(out_dir, f"{escena['id']}.wav")
         with open(destino, "wb") as fh:
             fh.write(wav_desde_pcm(pcm))

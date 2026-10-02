@@ -102,10 +102,10 @@ def prueba_marcas():
     comprobar(len(trozos) > 1 and all(len(t) <= 300 for t in trozos),
               f"un texto largo se parte bajo el tope ({len(trozos)} trozos)")
     igual(" ".join(trozos), largo, "sin perder nada")
-    igual(ele.creditos_estimados(1000, "eleven_flash_v2_5"), 500, "Flash: medio credito "
-          "por caracter")
-    igual(ele.creditos_estimados(1000, "eleven_multilingual_v2"), 1000, "Multilingual v2: uno")
-    igual(ele.creditos_estimados(1000, "eleven_v4"), None, "v4 sin precio publicado: None")
+    igual(ele.creditos_estimados(1000, "eleven_flash_v2_5"), 200, "Flash: 0,2 creditos por "
+          "caracter (medido)")
+    igual(ele.creditos_estimados(1000, "eleven_multilingual_v2"), 1000,
+          "Multilingual v2: el tope prudente de uno por caracter")
 
 
 def prueba_trozos():
@@ -114,10 +114,12 @@ def prueba_trozos():
     original_s, original_sus = ele.sintetizar, ele.suscripcion
 
     def sintetizar(texto, voz, modelo, idioma, anterior, siguiente, velocidad):
+        # el coste de verdad va en la cabecera; aqui, 7 por pieza para que se
+        # vea que se SUMA lo de la cabecera y no se estima
         llamadas.append({"texto": texto, "anterior": anterior, "siguiente": siguiente})
-        usados[0] += ele.creditos_estimados(len(texto), modelo)
         segundos = 0.05 * len(texto)
-        return tono(segundos), segundos, ele.palabras_de_alineacion(texto, alineacion_de(texto))
+        return (tono(segundos), segundos,
+                ele.palabras_de_alineacion(texto, alineacion_de(texto)), 7)
 
     def suscripcion():
         return {"plan": "starter", "usados": usados[0], "limite": 30000,
@@ -136,8 +138,8 @@ def prueba_trozos():
         igual(llamadas[0]["siguiente"], "Second part now.", "y la pieza siguiente")
         igual(llamadas[1]["anterior"], "First part here.", "la segunda, la anterior")
         igual(llamadas[1]["siguiente"], "What comes after.", "y lo de despues")
-        igual(info["creditos"], 16, "los creditos son los MEDIDOS (suscripcion antes y despues)")
-        igual(info["creditos_restantes"], 30000 - 1016, "y se dice cuantos quedan")
+        igual(info["creditos"], 14, "los creditos son los MEDIDOS: la suma de las cabeceras")
+        igual(info["creditos_restantes"], 30000 - 1000 - 14, "y se dice cuantos quedan")
         segunda = [p for p in palabras if p["w"] == "Second"][0]
         comprobar(abs(segunda["s"] - (0.05 * 16 + ele.PAUSA_ENTRE_SECCIONES_S)) < 0.01,
                   "las marcas de la segunda pieza se desplazan a su sitio en la pista")
@@ -145,7 +147,7 @@ def prueba_trozos():
                   "la duracion cuadra con el wav")
 
         usados[0] = 29990
-        falla(lambda: ele.sintetizar_trozos([{"texto": "x" * 100}], VOZ, "eleven_flash_v2_5"),
+        falla(lambda: ele.sintetizar_trozos([{"texto": "x" * 1000}], VOZ, "eleven_flash_v2_5"),
               "sin creditos para toda la toma, no se graba ni una pieza", ele.SinCreditos)
     finally:
         ele.sintetizar, ele.suscripcion = original_s, original_sus
