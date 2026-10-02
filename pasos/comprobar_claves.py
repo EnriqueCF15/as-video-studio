@@ -12,6 +12,7 @@ Aqui cada proveedor tiene su prueba, elegida para que NO cueste dinero:
     jamendo    GET /tracks/?limit=1        una busqueda; el plan es gratuito
     freesound  GET /search/text/?page_size=1   idem
     google     GET /v1/voices (Text-to-Speech) autentica gcloud; no sintetiza
+    elevenlabs GET /v1/user/subscription   autentica y dice los creditos que quedan
     claude     salud_cli.probar por cuenta  (haiku, una palabra: es lo minimo)
 
 LO QUE NO PUEDE DECIR, y se dice tal cual: que OpenAI tenga SALDO. La unica
@@ -215,6 +216,32 @@ def probar_google(ficha):
                                    f"{_texto_corto(respuesta)}")
 
 
+def probar_elevenlabs(clave):
+    """La clave de ElevenLabs, con GET /v1/user/subscription: no gasta creditos
+    y dice cuantos quedan (la clave del canal tiene el permiso «User» de lectura)."""
+    if not clave:
+        return _ficha("elevenlabs", "sin_clave", "no hay clave de ElevenLabs puesta "
+                                                 "(es la voz premium: opcional)")
+    respuesta, fallo = _pedir("GET", "https://api.elevenlabs.io/v1/user/subscription",
+                              headers={"xi-api-key": clave})
+    if respuesta is None:
+        return _ficha("elevenlabs", "sin_red", f"no se ha podido hablar con ElevenLabs: {fallo}")
+    if respuesta.status_code == 200:
+        datos = respuesta.json() or {}
+        quedan = max(0, int(datos.get("character_limit") or 0)
+                     - int(datos.get("character_count") or 0))
+        return _ficha("elevenlabs", "ok",
+                      f"la clave vale (plan {datos.get('tier') or '?'}): quedan "
+                      f"{quedan:,} créditos este mes".replace(",", "."),
+                      creditos_restantes=quedan)
+    if respuesta.status_code == 401:
+        return _ficha("elevenlabs", "mal", f"ElevenLabs no acepta la clave (401). Si está "
+                                           f"restringida, necesita el permiso «User» de "
+                                           f"lectura: {_texto_corto(respuesta)}")
+    return _ficha("elevenlabs", "mal", f"ElevenLabs contesta {respuesta.status_code}: "
+                                       f"{_texto_corto(respuesta)}")
+
+
 def probar_claude(cuentas):
     """Una ficha por cuenta del CLI con sesion, con lo que apunta salud_cli."""
     fichas = []
@@ -246,7 +273,8 @@ def probar_todas(cuentas_claude=(), con_claude=True):
                                   ("jamendo", bool(almacen["jamendo"]["clave"])),
                                   ("freesound", bool(almacen["freesound"]["clave"])),
                                   ("google", bool(almacen["google"]["proyecto"]
-                                                  or claves.adc_de_gcloud()))):
+                                                  or claves.adc_de_gcloud())),
+                                  ("elevenlabs", bool(almacen["elevenlabs"]["clave"]))):
             fichas.append(_ficha(proveedor, "ok" if puesta else "sin_clave",
                                  "simulado" if puesta else "sin poner"))
         if con_claude:
@@ -258,6 +286,7 @@ def probar_todas(cuentas_claude=(), con_claude=True):
         (probar_jamendo, almacen["jamendo"]["clave"]),
         (probar_freesound, almacen["freesound"]["clave"]),
         (probar_google, almacen["google"]),
+        (probar_elevenlabs, almacen["elevenlabs"]["clave"]),
     )
     for funcion, clave in pruebas:
         try:
@@ -277,7 +306,8 @@ def probar_todas(cuentas_claude=(), con_claude=True):
 
 NOMBRES = {"openai": "OpenAI (imágenes)", "cartesia": "Cartesia (voz)",
            "jamendo": "Jamendo (música)", "freesound": "FreeSound (efectos)",
-           "google": "Google Cloud (voz)", "claude": "Claude"}
+           "google": "Google Cloud (voz)", "elevenlabs": "ElevenLabs (voz premium)",
+           "claude": "Claude"}
 
 
 def resumen_texto(fichas):

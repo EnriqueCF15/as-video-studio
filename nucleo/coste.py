@@ -64,8 +64,11 @@ RUTA_GLOBAL = (os.environ.get("ESTUDIO_COSTE_GLOBAL")
 NOMBRE_COSTE = "coste.jsonl"
 
 PROVEEDORES = ("openai", "tts", "claude_cli")
-SIN_DOLARES = ("claude_cli",)            # se miden en tokens y no suman al total
-ETIQUETAS = {"openai": "OpenAI", "tts": "TTS", "claude_cli": "Claude"}
+# Claude se mide en tokens y ElevenLabs en creditos de su plan: ninguno de los
+# dos es un cargo por llamada, asi que no suman dolares al total.
+SIN_DOLARES = ("claude_cli", "elevenlabs")
+ETIQUETAS = {"openai": "OpenAI", "tts": "TTS", "claude_cli": "Claude",
+             "elevenlabs": "ElevenLabs"}
 
 AVISO_PRESUPUESTO = 0.8                  # fraccion a partir de la cual se avisa
 
@@ -219,7 +222,8 @@ def _tokens(datos):
 def _cantidad(datos):
     datos = datos if isinstance(datos, dict) else {}
     return {"imagenes": int(datos.get("imagenes") or 0),
-            "caracteres": int(datos.get("caracteres") or 0)}
+            "caracteres": int(datos.get("caracteres") or 0),
+            "creditos": int(datos.get("creditos") or 0)}
 
 
 def _linea(ruta, registro):
@@ -378,7 +382,7 @@ def _vacio(proveedor):
         "sin_tarifa": False,
         "suma_al_total": proveedor not in SIN_DOLARES,
         "tokens": {"entrada": 0, "salida": 0, "cache": 0, "total": 0},
-        "cantidad": {"imagenes": 0, "caracteres": 0},
+        "cantidad": {"imagenes": 0, "caracteres": 0, "creditos": 0},
     }
 
 
@@ -654,6 +658,22 @@ def reportar_tts_google(caracteres, segundos_audio, modelo, caracteres_estilo=0,
                    usd=usd, usd_estimado=True, detalle=ficha)
 
 
+def reportar_tts_elevenlabs(caracteres, creditos, modelo, operacion="toma",
+                            unidad=None, detalle=None):
+    """Anota una sintesis con ElevenLabs, en CREDITOS del plan y sin dolares.
+
+    `creditos` son los MEDIDOS (la suscripcion antes y despues); si la medicion
+    no estuvo, la estimacion por caracter y queda marcado como estimado.
+    """
+    ficha = {"proveedor_voz": "elevenlabs", "modelo": modelo}
+    ficha.update(detalle or {})
+    return _anotar("elevenlabs", operacion, unidad=unidad,
+                   cantidad={"caracteres": int(caracteres or 0),
+                             "creditos": int(creditos or 0)},
+                   usd=None, usd_estimado=bool(ficha.get("creditos_estimados_solo")),
+                   detalle=ficha)
+
+
 def reportar_claude(sobre, operacion="cli", unidad=None, detalle=None):
     """Anota una llamada al CLI de Claude leyendo su bloque 'usage'.
 
@@ -801,6 +821,26 @@ def _medir_sintesis_google(original):
     return medido
 
 
+def _medir_sintesis_elevenlabs(original):
+    """La voz con ElevenLabs: toma, regrabado y escucha pasan por aqui."""
+    def medido(trozos, cfg, *args, **kwargs):
+        resultado = original(trozos, cfg, *args, **kwargs)
+        cfg = cfg if isinstance(cfg, dict) else {}
+        info = resultado[3] if isinstance(resultado, tuple) and len(resultado) > 3 else {}
+        info = info if isinstance(info, dict) else {}
+        medidos = info.get("creditos")
+        reportar_tts_elevenlabs(
+            info.get("caracteres") or 0,
+            medidos if medidos is not None else info.get("creditos_estimados"),
+            cfg.get("modelo"),
+            detalle={"voz_id": cfg.get("voz_id"), "idioma": cfg.get("idioma"),
+                     "peticiones": info.get("peticiones"),
+                     "creditos_restantes": info.get("creditos_restantes"),
+                     "creditos_estimados_solo": medidos is None})
+        return resultado
+    return medido
+
+
 def _medir_claude(operacion):
     def fabrica(original):
         def medido(*args, **kwargs):
@@ -890,6 +930,8 @@ def instrumentar(pasos=None):
                   "voz.toma_por_contexto")
         _envolver(voz, "_sintesis_google", _medir_sintesis_google, informe,
                   "voz.sintesis_google")
+        _envolver(voz, "_sintesis_elevenlabs", _medir_sintesis_elevenlabs, informe,
+                  "voz.sintesis_elevenlabs")
         _envolver(voz, "previsualizar", _medir_previsualizacion, informe,
                   "voz.previsualizar")
     guion = getattr(pasos, "p3_guion", None)

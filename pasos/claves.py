@@ -108,6 +108,8 @@ def _vacio():
         # dice; no impide montar el video.
         "jamendo": {"clave": ""},
         "freesound": {"clave": ""},
+        # La voz premium (fork). La lee motores/voz_elevenlabs por contrato.
+        "elevenlabs": {"clave": ""},
         "claude_cli": {"cuentas": []},
         # Google Cloud (voz de Google y, en la fase 2, imagenes por Vertex). NO
         # es una clave: la autenticacion son las ADC de gcloud o el JSON de una
@@ -162,7 +164,7 @@ def _normalizar(datos):
     elif isinstance(cartesia, str):
         base["cartesia"]["clave"] = cartesia.strip()
 
-    for suelta in ("jamendo", "freesound"):
+    for suelta in ("jamendo", "freesound", "elevenlabs"):
         cruda = datos.get(suelta)
         if isinstance(cruda, dict):
             base[suelta]["clave"] = str(cruda.get("clave") or "").strip()
@@ -341,7 +343,7 @@ def _fusionar(actual, peticion):
     # es la que ya habia. Sin eso, editar la de Jamendo borraria la de Cartesia,
     # porque la clave de verdad no baja al navegador NUNCA y la pantalla manda
     # el centinela en su lugar.
-    for suelta in ("cartesia", "jamendo", "freesound"):
+    for suelta in ("cartesia", "jamendo", "freesound", "elevenlabs"):
         if suelta in peticion:
             ficha = peticion.get(suelta)
             clave = ficha.get("clave") if isinstance(ficha, dict) else ficha
@@ -613,6 +615,10 @@ def resumen(datos=None):
         "freesound": {
             "puesta": bool(datos["freesound"]["clave"]),
             "cola": tapar(datos["freesound"]["clave"]),
+        },
+        "elevenlabs": {
+            "puesta": bool(datos["elevenlabs"]["clave"]),
+            "cola": tapar(datos["elevenlabs"]["clave"]),
         },
         # Nada de esto es secreto: un id de proyecto, una region y la RUTA de un
         # JSON. Lo que si es secreto (el JSON, el token de gcloud) no baja nunca.
