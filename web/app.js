@@ -367,7 +367,8 @@ const API = {
   bitacora: (pid, paso) => `${BASE}/api/proyectos/${encodeURIComponent(pid)}/bitacora`
     + (paso ? `?paso=${paso}&limite=300` : '?limite=300'),
   previsualizar: pid => `${BASE}/api/proyectos/${encodeURIComponent(pid)}/voz/previsualizar`,
-  voces: (idioma, nativas) => `${BASE}/api/voces?idioma=${idioma || ''}&nativas=${nativas ? 1 : 0}`,
+  voces: (idioma, nativas, proveedor) => `${BASE}/api/voces?idioma=${idioma || ''}`
+    + `&nativas=${nativas ? 1 : 0}${proveedor ? `&proveedor=${proveedor}` : ''}`,
   presets: () => `${BASE}/api/presets`,
   trabajo: tid => `${BASE}/api/trabajos/${tid}`,
   eventos: tid => `${BASE}/api/trabajos/${tid}/eventos`,
@@ -2278,6 +2279,7 @@ function pintarConfig() {
   caja.appendChild(bloquePruebaClaves());
   caja.appendChild(seccionOpenAI(ficha));
   caja.appendChild(seccionCalidadImagen());
+  caja.appendChild(seccionGoogle(ficha));
   caja.appendChild(seccionCartesia(ficha));
   caja.appendChild(seccionCLI());
   caja.appendChild(seccionOtrasClaves(ficha));
@@ -2436,6 +2438,47 @@ function seccionOpenAI(ficha) {
       + (viva.medido ? ' (medido en tus tandas)' : ' (según el plan)')));
   }
   return caja;
+}
+
+/* GOOGLE CLOUD NO ES UNA CLAVE. La voz de Google (y en la fase 2 las imágenes
+   por Vertex) se autentica con la sesión de gcloud de este equipo o con el JSON
+   de una cuenta de servicio; aquí solo se dice QUÉ proyecto paga. Y nunca una
+   API key de AI Studio: el servidor la rechaza (claves._google_pedido) porque
+   la prueba gratuita no la cubre y se cobraría a la tarjeta. */
+function seccionGoogle(ficha) {
+  const g = ficha.google || {};
+  const conSesion = !!(g.adc || g.cuenta_servicio);
+  const proyecto = h('input', { type: 'text', value: g.proyecto || '',
+    placeholder: 'as-video-studio' });
+  const ubicacion = h('input', { type: 'text', value: g.ubicacion || 'global',
+    placeholder: 'global' });
+  const cuenta = h('input', { type: 'text', value: g.cuenta_servicio || '',
+    placeholder: 'opcional: E:\\ASVideoStudio\\datos\\secretos\\cuenta.json' });
+  return h('section', { clase: 'bloque-config' },
+    h('div', { clase: 'fila' },
+      h('h3', {}, 'Google Cloud — voz'),
+      h('span', { clase: 'crece' }),
+      pastillaEstado(conSesion ? 'ok' : 'vacio',
+        g.cuenta_servicio ? 'cuenta de servicio' : (g.adc ? 'sesión de gcloud' : 'sin credenciales'))),
+    h('div', { clase: 'pista' },
+      'No es una clave: usa la sesión de gcloud de este equipo '
+      + '(gcloud auth application-default login). NUNCA una API key de AI Studio: '
+      + 'la prueba gratuita de Google Cloud no la cubre y se cobraría a tu tarjeta. '
+      + 'Que el gasto salga del crédito se comprueba en Facturación → Informes.'),
+    campoConEntrada('Proyecto', proyecto),
+    campoConEntrada('Ubicación', ubicacion),
+    campoConEntrada('Cuenta de servicio (JSON, opcional)', cuenta),
+    h('div', { clase: 'fila' },
+      h('button', {
+        clase: 'mini',
+        onclick: () => guardarClaves({ google: {
+          proyecto: proyecto.value.trim(), ubicacion: ubicacion.value.trim(),
+          cuenta_servicio: cuenta.value.trim() } }),
+      }, 'Guardar')));
+}
+
+function campoConEntrada(etiqueta, entrada) {
+  return h('div', { clase: 'campo' }, h('label', {}, etiqueta), entrada);
 }
 
 function seccionCartesia(ficha) {
@@ -2652,7 +2695,7 @@ async function probarCuentaCLI(cid) {
    tarjeta de la guía. */
 const NOMBRES_PROVEEDOR = {
   openai: 'OpenAI — imágenes', cartesia: 'Cartesia — voz', jamendo: 'Jamendo — música',
-  freesound: 'FreeSound — efectos', claude: 'Claude',
+  freesound: 'FreeSound — efectos', google: 'Google Cloud — voz', claude: 'Claude',
 };
 
 function bloquePruebaClaves() {
@@ -6004,6 +6047,8 @@ async function refrescarEstimacionLight(e, nodo, estiloDado) {
       // la voz entra en la cuenta: la cadencia no es solo del idioma
       voz: voz.voz_id || '',
       hueco_minimo: voz.hueco_minimo,
+      proveedor_voz: voz.proveedor || 'cartesia',
+      modelo_voz: voz.modelo || '',
       min_s: (datos.estilo || {}).min_s,
       max_s: (datos.estilo || {}).max_s,
       calidad: (datos.estilo || {}).calidad,
@@ -6035,6 +6080,8 @@ async function pintarCosteDelEncargoLight(e, nodo) {
       velocidad: (datos.voz || {}).velocidad || 'normal',
       voz: (datos.voz || {}).voz_id || '',
       hueco_minimo: (datos.voz || {}).hueco_minimo,
+      proveedor_voz: (datos.voz || {}).proveedor || 'cartesia',
+      modelo_voz: (datos.voz || {}).modelo || '',
       min_s: (datos.estilo || {}).min_s,
       max_s: (datos.estilo || {}).max_s,
       calidad: (datos.estilo || {}).calidad,
@@ -6056,7 +6103,11 @@ function textoDeCoste(ficha) {
       + `(${c.imagenes_hechas} ya hechas) · ≈ ${Number(c.usd_por_generar || 0).toFixed(2)} $ `
       + `· hasta ${Number(c.usd_total || 0).toFixed(2)} $ si hay que rehacerlas`;
   }
-  return `${pl.total} planos · ${c.imagenes} imágenes · ≈ ${Number(c.usd_total || 0).toFixed(2)} $`;
+  // la voz aparte cuando es Google: va contra el crédito de prueba, como las
+  // imágenes de Vertex, y conviene ver cuánto de ese crédito se lleva
+  const voz = c.proveedor_voz === 'google' && c.usd_tts
+    ? ` (voz con Google ≈ ${Number(c.usd_tts).toFixed(2)} $)` : '';
+  return `${pl.total} planos · ${c.imagenes} imágenes · ≈ ${Number(c.usd_total || 0).toFixed(2)} $${voz}`;
 }
 
 /* EL MATERIAL. Una lista de cajas: cada una es un enlace o un texto, y el
@@ -9583,10 +9634,18 @@ function escuchaDeVoz(ficha) {
   const voz = (ficha.datos || {}).voz || {};
   const caja = h('div', { clase: 'bloque-voz' });
   const nombre = voz.voz_nombre || voz.voz_id || '';
+  const google = voz.proveedor === 'google';
+  const modelo = google
+    ? (MODELOS_GOOGLE.find(m => m.valor === voz.modelo) || MODELOS_GOOGLE[0]).nombre.split(' — ')[0]
+    : '';
+  const tramos = google ? TRAMOS_VOZ.filter(t => (voz.estilos || {})[t.id]).map(t => t.id) : [];
   caja.appendChild(h('div', { clase: 'resumen-voz' },
     h('b', {}, nombre || 'sin voz elegida'),
-    ...[voz.velocidad, (voz.emociones || []).join(', '),
-      voz.hueco_minimo ? `aire ${voz.hueco_minimo}s` : '']
+    ...(google
+      ? ['Google', modelo, tramos.length ? `estilos: ${tramos.join(', ')}` : 'sin estilos',
+        voz.hueco_minimo ? `aire ${voz.hueco_minimo}s` : '']
+      : [voz.velocidad, (voz.emociones || []).join(', '),
+        voz.hueco_minimo ? `aire ${voz.hueco_minimo}s` : ''])
       .filter(Boolean).map(x => h('span', { clase: 'meta' }, ` · ${x}`))));
   caja.appendChild(mandosDeVozLight(ficha, voz));
 
@@ -9596,8 +9655,10 @@ function escuchaDeVoz(ficha) {
   caja.appendChild(h('div', { clase: 'fila' },
     botonEscuchaVoz(ficha, { etiqueta: 'Escuchar', impedido: !voz.voz_id }),
     h('span', { clase: 'meta' }, voz.voz_id
-      ? 'doce segundos con esta voz y estos mandos'
+      ? (google ? 'doce segundos con esta voz y el estilo de la intro'
+        : 'doce segundos con esta voz y estos mandos')
       : 'este estilo todavía no tiene voz elegida')));
+  caja.appendChild(comparacionDeVoces(ficha));
   return caja;
 }
 
@@ -9614,16 +9675,40 @@ function escuchaDeVoz(ficha) {
 function mandosDeVozLight(ficha, voz) {
   const caja = h('div', {});
   const dentro = h('div', {});
+  const google = voz.proveedor === 'google';
   const avanzadas = opcionesAvanzadas({
     clave: `voz-light-${ficha.id}`,
-    resumen: 'la voz concreta, la velocidad, el color y el aire',
+    resumen: google ? 'el proveedor, el modelo, la voz, los estilos por tramo y el aire'
+      : 'la voz concreta, la velocidad, el color y el aire',
   }, dentro);
   caja.appendChild(avanzadas);
 
   const guardar = cambios => apuntarVozLight(ficha, cambios);
 
+  /* QUIÉN PONE LA VOZ. Al cambiar se manda un modelo y una voz VÁLIDOS para el
+     nuevo proveedor: el servidor no borra un campo que llega vacío, así que sin
+     esto se quedaría «Orus» puesto en Cartesia, o «sonic-3.5» en Google. */
+  dentro.appendChild(campoSelect('Proveedor', google ? 'google' : 'cartesia',
+    PROVEEDORES_VOZ, valor => {
+      guardar(valor === 'google'
+        ? { proveedor: 'google', modelo: MODELOS_GOOGLE[0].valor, voz_id: 'Orus',
+          voz_nombre: 'Orus' }
+        : { proveedor: 'cartesia', modelo: 'sonic-3.5' });
+      repintarBloqueVoz(ficha);
+    }, google ? 'Lo paga tu proyecto de Google Cloud (el crédito de prueba mientras '
+      + 'dure). Google no da el tiempo de cada palabra: lo pone el alineador de '
+      + 'este equipo, gratis.' : ''));
+  const modelo = voz.modelo && MODELOS_GOOGLE.some(m => m.valor === voz.modelo)
+    ? voz.modelo : MODELOS_GOOGLE[0].valor;
+  if (google) {
+    dentro.appendChild(campoSelect('Modelo', modelo, MODELOS_GOOGLE, valor => {
+      guardar({ modelo: valor });
+      repintarBloqueVoz(ficha);
+    }));
+  }
+
   const idioma = ficha.idioma || 'es';
-  const lista = vocesLight(idioma);
+  const lista = vocesLight(idioma, google ? 'google' : 'cartesia');
   if (!lista) {
     dentro.appendChild(h('div', { clase: 'pista' },
       `cargando las voces de ${nombreIdiomaLight(idioma)}…`));
@@ -9631,6 +9716,202 @@ function mandosDeVozLight(ficha, voz) {
     dentro.appendChild(selectorVozLight(ficha, voz, lista, guardar));
   }
 
+  if (google) {
+    dentro.appendChild(modelo === 'chirp3-hd'
+      ? h('div', { clase: 'pista' }, 'Chirp 3 HD no admite instrucciones de estilo: '
+        + 'lee igual todo el vídeo. Los estilos por tramo son de los modelos Gemini.')
+      : estilosPorTramo(ficha, voz, guardar));
+  } else {
+    dentro.appendChild(mandosCartesia(ficha, voz, guardar));
+  }
+
+  dentro.appendChild(campoTexto('Aire entre bloques (s)',
+    voz.hueco_minimo === undefined ? 1 : voz.hueco_minimo,
+    valor => guardar({ hueco_minimo: valor }),
+    { tipo: 'number', paso: 0.1, min: 0.3, max: 1.6, ancho: '110px',
+      ayuda: 'Lo pone el ritmo; aquí se afina.' }));
+  return caja;
+}
+
+/* ------------------------------------------------------- la prueba A/B
+ *
+ * EL MISMO PASAJE CON VARIAS VOCES, lado a lado. Doce segundos dicen si una
+ * voz gusta; para FIJARLA en el canal hace falta oírla un minuto, con los dos
+ * estilos (gancho y cuerpo) y la costura entre ellos. El pasaje lo pone el
+ * servidor (`p4_voz.TEXTOS_AB`) y se graba con el camino de verdad, así que los
+ * avisos de costura que salgan aquí son los que saldrían en un vídeo.
+ *
+ * Se paga, poco: cada voz son ~70 s de audio. Por eso se dice antes de pulsar,
+ * y cada toma se guarda por firma: repetir con la misma voz no vuelve a pagar.
+ */
+const CANDIDATOS_AB = [
+  { id: 'g-orus', etiqueta: 'Gemini 2.5 Flash · Orus', proveedor: 'google',
+    modelo: 'gemini-2.5-flash-tts', voz_id: 'Orus', usd: 0.02, porDefecto: true },
+  { id: 'g-charon', etiqueta: 'Gemini 2.5 Flash · Charon', proveedor: 'google',
+    modelo: 'gemini-2.5-flash-tts', voz_id: 'Charon', usd: 0.02, porDefecto: true },
+  { id: 'gp-orus', etiqueta: 'Gemini 2.5 Pro · Orus', proveedor: 'google',
+    modelo: 'gemini-2.5-pro-tts', voz_id: 'Orus', usd: 0.04 },
+  { id: 'c-orus', etiqueta: 'Chirp 3 HD · Orus (sin estilos)', proveedor: 'google',
+    modelo: 'chirp3-hd', voz_id: 'Orus', usd: 0.03, porDefecto: true },
+];
+const CLAVE_AB_VOZ = 'voz_ab';
+
+function comparacionDeVoces(ficha) {
+  const estado = (APP.light.ab && APP.light.ab.preset === ficha.id)
+    ? APP.light.ab
+    : (APP.light.ab = { preset: ficha.id, corriendo: false, resultado: null,
+      elegidos: CANDIDATOS_AB.filter(c => c.porDefecto).map(c => c.id) });
+  const dentro = h('div', { clase: 'comparar-voces' });
+  const caja = h('div', {}, opcionesAvanzadas({
+    clave: `ab-voz-${ficha.id}`,
+    resumen: 'comparar voces con el mismo texto (prueba A/B)',
+  }, dentro));
+
+  const pintar = () => {
+    vaciar(dentro);
+    dentro.appendChild(h('div', { clase: 'pista' },
+      'Un minuto de un guion de finanzas, con el estilo de la intro y el del cuerpo. '
+      + 'Escúchalas con cascos y elige con «Usar esta».'));
+    const lista = h('div', { clase: 'herramientas' });
+    CANDIDATOS_AB.forEach(c => {
+      const marcado = estado.elegidos.includes(c.id);
+      lista.appendChild(h('button', {
+        clase: 'mini' + (marcado ? ' activo' : ''),
+        onclick: () => {
+          estado.elegidos = marcado ? estado.elegidos.filter(x => x !== c.id)
+            : estado.elegidos.concat([c.id]);
+          pintar();
+        },
+      }, c.etiqueta));
+    });
+    dentro.appendChild(lista);
+    const elegidos = CANDIDATOS_AB.filter(c => estado.elegidos.includes(c.id));
+    const usd = elegidos.reduce((s, c) => s + c.usd, 0);
+    dentro.appendChild(h('div', { clase: 'fila' },
+      h('button', {
+        clase: 'mini', disabled: estado.corriendo || !elegidos.length,
+        onclick: () => lanzar(elegidos),
+      }, estado.corriendo ? 'grabando…' : 'Generar comparación'),
+      h('span', { clase: 'meta' }, elegidos.length
+        ? `${elegidos.length} voces · ≈ ${usd.toFixed(2)} $ del crédito de Google Cloud`
+        : 'elige al menos una voz')));
+    if (estado.mensaje) dentro.appendChild(h('div', { clase: 'pista' }, estado.mensaje));
+    ((estado.resultado || {}).candidatos || []).forEach(r => {
+      dentro.appendChild(filaComparacion(ficha, r));
+    });
+  };
+
+  const lanzar = async elegidos => {
+    estado.corriendo = true;
+    estado.mensaje = 'grabando las voces…';
+    pintar();
+    try {
+      await volcarPresetLight();
+      const datos = await pedir(`${API.presetLight(ficha.id)}/voz/comparar`, {
+        method: 'POST',
+        cuerpo: { candidatos: elegidos.map(c => ({ proveedor: c.proveedor,
+          modelo: c.modelo, voz_id: c.voz_id, etiqueta: c.etiqueta })) },
+      });
+      const tid = datos.trabajo_id || (datos.trabajo || {}).id;
+      seguirTrabajo(CLAVE_AB_VOZ, tid, fin => {
+        estado.corriendo = false;
+        estado.mensaje = fin.estado === 'listo' ? ''
+          : `no ha salido: ${fin.error || fin.mensaje || 'error'}`;
+        estado.resultado = fin.resultado || null;
+        pintar();
+      }, avance => {
+        estado.mensaje = (avance && avance.mensaje) || estado.mensaje;
+        pintar();
+      });
+    } catch (e) {
+      estado.corriendo = false;
+      estado.mensaje = `no se ha podido lanzar: ${e.message}`;
+      pintar();
+    }
+  };
+
+  pintar();
+  return caja;
+}
+
+/* Una voz de la comparación: su reproductor, cuánto se oyó del guion y los
+   avisos de costura, y el botón que la deja puesta en el estilo. */
+function filaComparacion(ficha, r) {
+  const c = r.candidato || {};
+  const nombre = c.etiqueta || c.voz_id || '';
+  if (r.error) {
+    return h('div', { clase: 'voz-ab' }, h('b', {}, nombre),
+      h('div', { clase: 'pista' }, `falló: ${r.error}`));
+  }
+  const audio = registrarReproductor(h('audio', { controls: true, preload: 'none',
+    src: urlDeResultado(r.url) }));
+  const datos = [r.duracion ? `${Number(r.duracion).toFixed(0)} s` : '',
+    r.cobertura != null ? `se oye el ${Math.round(r.cobertura * 100)} % del texto` : '']
+    .filter(Boolean).join(' · ');
+  return h('div', { clase: 'voz-ab' },
+    h('div', { clase: 'fila' }, h('b', {}, nombre), h('span', { clase: 'meta' }, datos),
+      h('span', { clase: 'crece' }),
+      h('button', {
+        clase: 'mini',
+        onclick: () => {
+          apuntarVozLight(ficha, { proveedor: c.proveedor, modelo: c.modelo,
+            voz_id: c.voz_id, voz_nombre: c.voz_id });
+          repintarBloqueVoz(ficha);
+          toast(`voz del estilo: ${nombre}`);
+        },
+      }, 'Usar esta')),
+    audio,
+    ...(r.avisos || []).map(a => h('div', { clase: 'pista' }, `⚠ ${a}`)));
+}
+
+/* Los proveedores de voz y los modelos de Google: los gemelos de
+   `p4_voz.PROVEEDORES` y `motores/voz_google.MODELOS`. */
+const PROVEEDORES_VOZ = [
+  { valor: 'google', nombre: 'Google (Gemini TTS / Chirp 3 HD)' },
+  { valor: 'cartesia', nombre: 'Cartesia' },
+];
+const MODELOS_GOOGLE = [
+  { valor: 'gemini-2.5-flash-tts', nombre: 'Gemini 2.5 Flash TTS — recomendado (~0,38 $ por 25 min)' },
+  { valor: 'gemini-2.5-pro-tts', nombre: 'Gemini 2.5 Pro TTS — el doble de caro' },
+  { valor: 'gemini-3.1-flash-tts-preview', nombre: 'Gemini 3.1 Flash TTS — preview' },
+  { valor: 'chirp3-hd', nombre: 'Chirp 3 HD — sin estilos, 1 M caracteres gratis al mes' },
+];
+
+/* LOS TRAMOS DEL VÍDEO, cada uno con su instrucción de estilo. La voz es la
+   misma; solo cambia cómo habla, y el cambio cae SIEMPRE entre secciones del
+   guion (p4_voz.asignar_tramos), nunca a mitad de frase. */
+const TRAMOS_VOZ = [
+  { id: 'intro', nombre: 'Estilo de la intro (el gancho)',
+    ayuda: 'La primera sección del guion; si pasa de un minuto se corta cerca de '
+      + 'los 35 s, al final de un bloque. Es también lo que suena al pulsar Escuchar.' },
+  { id: 'cuerpo', nombre: 'Estilo del cuerpo', ayuda: 'Todo lo demás.' },
+  { id: 'cierre', nombre: 'Estilo del cierre (opcional)',
+    ayuda: 'La última sección: la despedida y la llamada a la acción. Vacío = '
+      + 'el del cuerpo.' },
+];
+
+function estilosPorTramo(ficha, voz, guardar) {
+  const caja = h('div', {});
+  caja.appendChild(h('div', { clase: 'pista' },
+    'Cómo habla en cada parte del vídeo, en lenguaje natural y en inglés (es lo '
+    + 'que entiende mejor el modelo). Se guarda solo al dejar de escribir.'));
+  TRAMOS_VOZ.forEach(tramo => {
+    caja.appendChild(campoTexto(tramo.nombre, (voz.estilos || {})[tramo.id] || '',
+      valor => {
+        // los TRES se mandan juntos: el servidor guarda el bloque entero
+        const actuales = Object.assign({},
+          (((ficha.datos || {}).voz || {}).estilos) || {});
+        actuales[tramo.id] = valor;
+        guardar({ estilos: actuales });
+      }, { filas: 4, ayuda: tramo.ayuda }));
+  });
+  return caja;
+}
+
+/* La velocidad y el color: solo existen en Cartesia. Con Google eso lo dice la
+   instrucción de estilo de cada tramo. */
+function mandosCartesia(ficha, voz, guardar) {
+  const dentro = h('div', {});
   dentro.appendChild(campoSelect('Velocidad', voz.velocidad || 'normal',
     VELOCIDADES.map(v => ({ valor: v, nombre: v })),
     valor => guardar({ velocidad: valor })));
@@ -9657,13 +9938,7 @@ function mandosDeVozLight(ficha, voz) {
     h('div', { clase: 'pista' },
       'De cero a dos, y ninguna es una respuesta válida: el tono neutro deja '
       + 'que hablen los hechos. Manda la primera.')));
-
-  dentro.appendChild(campoTexto('Aire entre bloques (s)',
-    voz.hueco_minimo === undefined ? 1 : voz.hueco_minimo,
-    valor => guardar({ hueco_minimo: valor }),
-    { tipo: 'number', paso: 0.1, min: 0.3, max: 1.6, ancho: '110px',
-      ayuda: 'Lo pone el ritmo; aquí se afina.' }));
-  return caja;
+  return dentro;
 }
 
 function nombreIdiomaLight(codigo) {
@@ -9711,19 +9986,23 @@ function repintarBloqueVoz(ficha) {
    está, y si no la pide y devuelve null: quien pinta enseña «cargando» y se
    repinta solo cuando llega. Lo comparten la ficha del estilo y el formulario
    de crear, que es lo que hace que la voz clonada aparezca en los dos. */
-function vocesLight(idioma) {
+function vocesLight(idioma, proveedor) {
   idioma = idioma || 'es';
+  /* POR PROVEEDOR Y POR IDIOMA: las voces de Google (Orus, Kore...) no son las
+     de Cartesia, y una lista guardada de un proveedor enseñada con el otro
+     elegiría una voz que ese proveedor no tiene. */
+  const clave = `${proveedor || 'cartesia'}:${idioma}`;
   const catalogo = APP.light.voces || {};
-  if (catalogo.idioma === idioma) return catalogo.lista || [];
-  if (!catalogo.pidiendo || catalogo.pidiendo !== idioma) {
-    APP.light.voces = { idioma: catalogo.idioma, pidiendo: idioma,
+  if (catalogo.idioma === clave) return catalogo.lista || [];
+  if (!catalogo.pidiendo || catalogo.pidiendo !== clave) {
+    APP.light.voces = { idioma: catalogo.idioma, pidiendo: clave,
       lista: catalogo.lista || [] };
-    pedir(API.voces(idioma, true))
+    pedir(API.voces(idioma, true, proveedor === 'google' ? 'google' : ''))
       .then(datos => {
-        APP.light.voces = { idioma, lista: datos.voces || [], pidiendo: null };
+        APP.light.voces = { idioma: clave, lista: datos.voces || [], pidiendo: null };
         if (['preset', 'crear'].includes(APP.light.vista)) pintarLight();
       })
-      .catch(() => { APP.light.voces = { idioma, lista: [], pidiendo: null }; });
+      .catch(() => { APP.light.voces = { idioma: clave, lista: [], pidiendo: null }; });
   }
   return null;
 }
@@ -10000,7 +10279,9 @@ function claveEscucha(ficha, vozId) {
   const v = (ficha.datos || {}).voz || {};
   return JSON.stringify([ficha.id, vozId || v.voz_id || '', v.velocidad || '',
     (v.emociones || []).join(','), v.hueco_minimo,
-    v.idioma || ficha.idioma || '']);
+    v.idioma || ficha.idioma || '',
+    // con Google suena distinto según el modelo y la instrucción de la intro
+    v.proveedor || '', v.modelo || '', (v.estilos || {}).intro || '']);
 }
 
 /* Doce segundos, en el taller. Con `voz_id` se escucha una voz SIN elegirla, que
@@ -10411,7 +10692,7 @@ const TARJETAS_INICIO = [
   { id: 'bienvenida', titulo: 'Bienvenido a AS Video Studio', pinta: tarjetaBienvenidaInicio },
   { id: 'claude', titulo: '1 · Tu cuenta de Claude', pinta: tarjetaClaudeInicio },
   { id: 'openai', titulo: '2 · La clave de OpenAI (imágenes)', pinta: tarjetaOpenAIInicio },
-  { id: 'cartesia', titulo: '3 · La clave de Cartesia (voz)', pinta: tarjetaCartesiaInicio },
+  { id: 'cartesia', titulo: '3 · La voz: Google Cloud (o Cartesia)', pinta: tarjetaCartesiaInicio },
   { id: 'jamendo', titulo: '4 · La clave de Jamendo (música, opcional)', pinta: tarjetaJamendoInicio },
   { id: 'freesound', titulo: '5 · La clave de FreeSound (efectos, opcional)', pinta: tarjetaFreeSoundInicio },
   { id: 'listo', titulo: 'Todo listo', pinta: tarjetaFinalInicio },
@@ -10529,7 +10810,7 @@ function tarjetaBienvenidaInicio() {
       h('li', {}, h('b', {}, 'Claude'), ': tu cuenta, no una clave. Escribe el guion, el '
         + 'catálogo visual y los rótulos, y mueve al asistente de la burbuja.'),
       h('li', {}, h('b', {}, 'OpenAI'), ': con ella se dibujan los planos.'),
-      h('li', {}, h('b', {}, 'Cartesia'), ': la voz que narra.'),
+      h('li', {}, h('b', {}, 'Google Cloud o Cartesia'), ': la voz que narra.'),
       h('li', {}, h('b', {}, 'Jamendo y FreeSound'), ': música y efectos. Son las dos únicas que se '
         + 'pueden dejar para luego; las otras tres hacen falta.')),
     h('div', { clase: 'caja-info' },
@@ -10730,13 +11011,30 @@ function tarjetaOpenAIInicio() {
   ];
 }
 
+/* LA VOZ: GOOGLE CLOUD PRIMERO, CARTESIA COMO ALTERNATIVA. Con Google no hay nada
+   que pegar: usa la sesión de gcloud de este equipo, y la tarjeta solo dice si
+   está. Cartesia sigue debajo, igual que antes, para quien la quiera. */
 function tarjetaCartesiaInicio() {
   const ficha = estadoConfig().ficha;
   const puesta = !!(ficha && ficha.cartesia && ficha.cartesia.puesta);
+  const google = (ficha && ficha.google) || {};
+  const conGoogle = !!(google.adc || google.cuenta_servicio);
   return [
     h('div', { clase: 'pista' },
-      'Cartesia pone la voz que narra el vídeo: sin ella no hay locución. Una '
-      + 'sola clave, y la locución se sintetiza de una tirada.'),
+      'La voz que narra el vídeo. Con Google Cloud (Gemini TTS) no hay clave que '
+      + 'pegar: se usa la sesión de gcloud de este equipo y lo paga tu proyecto de '
+      + 'Google Cloud. NUNCA una API key de AI Studio: la prueba gratuita no la cubre.'),
+    h('ol', { clase: 'inicio-pasos' },
+      h('li', {}, 'Instala ', enlaceInicio('Google Cloud CLI', 'https://cloud.google.com/sdk/docs/install'),
+        ' y ejecuta en una consola: gcloud auth application-default login'),
+      h('li', {}, 'En tu proyecto, habilita ',
+        enlaceInicio('Cloud Text-to-Speech API', 'https://console.cloud.google.com/apis/library/texttospeech.googleapis.com'),
+        '. El proyecto se pone en Configuración.')),
+    ficha ? estadoClaveInicio(conGoogle, conGoogle
+      ? (google.proyecto ? `Google Cloud · ${google.proyecto}` : 'sesión de gcloud') : '')
+      : h('div', { clase: 'cargando' }, 'leyendo las claves…'),
+    h('div', { clase: 'pista' },
+      'O, en su lugar, Cartesia: una sola clave, y la locución se sintetiza de una tirada.'),
     h('ol', { clase: 'inicio-pasos' },
       h('li', {}, 'Crea una cuenta en ', enlaceInicio('play.cartesia.ai', 'https://play.cartesia.ai/'),
         '. El plan gratuito da para probar.'),
@@ -10801,18 +11099,21 @@ function tarjetaFinalInicio() {
     pastillaEstado(puesta ? 'ok' : (opcional ? 'parcial' : 'error'),
       puesta ? 'puesta' : (opcional ? 'para luego' : 'sin poner')),
     h('span', {}, nombre));
-  const faltan = [!claude, !(ficha.openai && ficha.openai.length), !(ficha.cartesia && ficha.cartesia.puesta)]
+  // la voz vale con CUALQUIERA de los dos: Google Cloud o Cartesia
+  const google = ficha.google || {};
+  const voz = !!(google.adc || google.cuenta_servicio) || !!(ficha.cartesia && ficha.cartesia.puesta);
+  const faltan = [!claude, !(ficha.openai && ficha.openai.length), !voz]
     .filter(Boolean).length;
   return [
     fila('Claude — guion, catálogo, rótulos y el asistente', claude),
     fila('OpenAI — imágenes', !!(ficha.openai && ficha.openai.length)),
-    fila('Cartesia — voz', !!(ficha.cartesia && ficha.cartesia.puesta)),
+    fila('Voz — Google Cloud o Cartesia', voz),
     fila('Jamendo — música', !!(ficha.jamendo && ficha.jamendo.puesta), true),
     fila('FreeSound — efectos', !!(ficha.freesound && ficha.freesound.puesta), true),
     faltan
       ? h('div', { clase: 'caja-aviso' },
         `Falta${faltan > 1 ? 'n' : ''} ${faltan} de las tres que hacen falta para un vídeo `
-        + '(Claude, OpenAI y Cartesia). Sin ellas no sale el vídeo entero: se '
+        + '(Claude, OpenAI y la voz). Sin ellas no sale el vídeo entero: se '
         + 'ponen desde Configuración, el engranaje de arriba a la derecha.')
       : h('div', { clase: 'caja-info' },
         'Está todo. Lo siguiente es crear un estilo (cómo se dibuja y cómo se '
