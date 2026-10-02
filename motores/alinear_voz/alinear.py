@@ -144,14 +144,18 @@ def emparejar(guion, oidas, duracion=None):
     oidas: [{"w","s","e"}] lo que oyo el reconocedor, en orden; "s"/"e" pueden
            faltar en alguna (wav2vec2 no alinea digitos ni simbolos).
     Devuelve {"palabras": [{"w","s","e"}], "cobertura": 0..1,
-              "faltan": [str], "sobran": int}.
+              "faltan": [str], "sobran": int, "insertos": [(j1, j2)]}.
+
+    `insertos` son los tramos de lo OIDO que no estan en el guion (indices en
+    `oidas`): lo que la voz dijo de mas. Es como se ve que un TTS dirigido por
+    instrucciones ha leido la instruccion en voz alta.
     """
     oidas = [dict(o) for o in oidas if normalizar(o.get("w"))]
     oidas = _rellenar_huecos(oidas, 0.0, duracion)
     a = [normalizar(t) for t in guion]
     b = [normalizar(o["w"]) for o in oidas]
     marcas = [{"w": t, "s": None, "e": None} for t in guion]
-    iguales, faltan, sobran = 0, [], 0
+    iguales, faltan, sobran, insertos = 0, [], 0, []
 
     comparador = difflib.SequenceMatcher(None, a, b, autojunk=False)
     for op, i1, i2, j1, j2 in comparador.get_opcodes():
@@ -184,6 +188,7 @@ def emparejar(guion, oidas, duracion=None):
             faltan.extend(guion[i1:i2])      # se quedan sin tiempo: se interpolan
         elif op == "insert":
             sobran += j2 - j1
+            insertos.append((j1, j2))
 
     _rellenar_huecos(marcas, 0.0, duracion)
     # Monotonas y sin solaparse: el montaje da por hecho que el tiempo avanza.
@@ -195,17 +200,20 @@ def emparejar(guion, oidas, duracion=None):
         reloj = e
     return {"palabras": marcas,
             "cobertura": round(iguales / len(guion), 4) if guion else 1.0,
-            "faltan": faltan, "sobran": sobran}
+            "faltan": faltan, "sobran": sobran, "insertos": insertos}
 
 
 def frases_del_guion(guion, frases):
     """Reparte las palabras del guion entre las frases que oyo Whisper.
 
     frases: [{"start","end","text"}]. Devuelve ([[tokens] por frase],
-    {"cobertura","faltan","sobran"}). Se reutiliza `emparejar` en el espacio
-    de los INDICES: cada palabra oida «dura» de j a j+1, asi que el instante
-    que le toca a una palabra del guion dice de que palabra oida -- y de que
-    frase -- sale.
+    {"cobertura","faltan","sobran","de_mas"}). Se reutiliza `emparejar` en el
+    espacio de los INDICES: cada palabra oida «dura» de j a j+1, asi que el
+    instante que le toca a una palabra del guion dice de que palabra oida -- y
+    de que frase -- sale.
+
+    `de_mas`: lo que se oyo y no esta en el guion, en tramos con su texto y
+    los tiempos de las frases donde sono ([{"texto","s","e","palabras"}]).
     """
     oidas, frase_de = [], []
     for indice, frase in enumerate(frases):
@@ -219,12 +227,19 @@ def frases_del_guion(guion, frases):
         if frases:
             reparto[0] = list(guion)
         return reparto, {"cobertura": 0.0 if guion else 1.0,
-                         "faltan": list(guion), "sobran": 0}
+                         "faltan": list(guion), "sobran": 0, "de_mas": []}
     casado = emparejar(guion, oidas, float(len(oidas)))
     for token, marca in zip(guion, casado["palabras"]):
         j = min(len(frase_de) - 1, int((marca["s"] + marca["e"]) / 2.0))
         reparto[frase_de[j]].append(token)
-    return reparto, {k: casado[k] for k in ("cobertura", "faltan", "sobran")}
+    de_mas = [{"texto": " ".join(o["w"] for o in oidas[j1:j2]),
+               "palabras": j2 - j1,
+               "s": round(float(frases[frase_de[j1]]["start"]), 3),
+               "e": round(float(frases[frase_de[j2 - 1]]["end"]), 3)}
+              for j1, j2 in casado["insertos"]]
+    resumen = {k: casado[k] for k in ("cobertura", "faltan", "sobran")}
+    resumen["de_mas"] = de_mas
+    return reparto, resumen
 
 
 # ---------------------------------------------------------------- proceso hijo
@@ -309,7 +324,8 @@ def trabajar(entrada):
 
     _avisar_hijo(0.92, "emparejando con el guion")
     salida = emparejar(guion, oidas, duracion)
-    salida.update(cobertura)
+    salida.pop("insertos", None)      # los del alineado forzado no dicen nada
+    salida.update(cobertura)          # cobertura, faltan, sobran y de_mas: de Whisper
     salida.update({"duracion": round(duracion, 3), "oidas": len(oidas),
                    "dispositivo": dispositivo, "compute_type": tipo,
                    "modelo": modelo, "segundos": round(time.time() - arranque, 1)})
@@ -345,8 +361,11 @@ def disponible():
 def alinear(wav, texto, idioma="en", modelo=None, dispositivo=None, avisar=None):
     """Marcas por palabra de `texto` dentro de `wav`. -> dict
 
-    {"palabras": [{"w","s","e"}], "cobertura", "faltan", "sobran", "duracion",
-     "oidas", "dispositivo", "compute_type", "modelo", "segundos"}
+    {"palabras": [{"w","s","e"}], "cobertura", "faltan", "sobran", "de_mas",
+     "duracion", "oidas", "dispositivo", "compute_type", "modelo", "segundos"}
+
+    `de_mas` es lo que la voz dijo y no esta en el guion, con su texto y donde
+    sono: ver `frases_del_guion`.
 
     `texto` es lo que se LOCUTA (sin anotaciones de voz). `avisar(fraccion,
     mensaje)` recibe el progreso del hijo, si se da.

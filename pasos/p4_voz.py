@@ -1009,9 +1009,114 @@ def _resumen_alineado(alineado):
     return {"cobertura": alineado.get("cobertura"),
             "faltan": list(alineado.get("faltan") or [])[:25],
             "sobran": alineado.get("sobran"),
+            "de_mas": list(alineado.get("de_mas") or [])[:10],
             "dispositivo": alineado.get("dispositivo"),
             "modelo": alineado.get("modelo"),
             "segundos": alineado.get("segundos")}
+
+
+# ------------------------------------------- la voz que lee su propia instruccion
+#
+# GEMINI A VECES LEE EN VOZ ALTA LA INSTRUCCION DE ESTILO. Medido el 02-10-2026
+# en la primera toma real: antes del guion dijo «Intrigued, slightly urgent,
+# quick but clear pace, energetic but credible, not salesy.» -- la mitad de la
+# instruccion de la intro--, y la misma instruccion no se habia colado en la
+# prueba A/B del dia anterior. Es aleatorio, asi que no se arregla escribiendo
+# de otra forma la instruccion (que ademas es la que sono bien): se MIRA.
+#
+# El alineador dice lo que se oyo y no esta en el guion (`de_mas`, con donde
+# sono). Si un tramo de eso se parece a la instruccion de la seccion en la que
+# cae, esa seccion se regraba sola y se cose en su sitio; despues se vuelve a
+# alinear. Unos centimos por regrabado, contra un video publicado que empieza
+# leyendo sus propias acotaciones.
+
+#: Cuantas veces se regraba una seccion que ha leido su instruccion.
+REINTENTOS_FUGA = 2
+#: Palabras de mas a partir de las cuales se mira si son la instruccion, y que
+#: parte de ellas tiene que estar en la instruccion para darlo por hecho.
+FUGA_MIN_PALABRAS = 3
+FUGA_PARECIDO = 0.5
+
+
+def _norm(palabra):
+    return re.sub(r"[^\w]", "", str(palabra).lower()).replace("_", "")
+
+
+def fugas_de_estilo(alineado, info, trozos):
+    """Secciones donde la voz leyo su instruccion de estilo. -> {indice: texto}"""
+    piezas = (info or {}).get("piezas") or []
+    fugas = {}
+    for tramo in (alineado or {}).get("de_mas") or []:
+        dichas = {_norm(w) for w in str(tramo.get("texto") or "").split()} - {""}
+        if len(dichas) < FUGA_MIN_PALABRAS:
+            continue
+        indice = next((p["trozo"] for p in piezas
+                       if p["t_in"] - 0.5 <= float(tramo.get("s") or 0) <= p["t_out"] + 0.5),
+                      None)
+        if indice is None or indice >= len(trozos):
+            continue
+        estilo = {_norm(w) for w in str(trozos[indice].get("estilo") or "").split()} - {""}
+        if estilo and len(dichas & estilo) / len(dichas) >= FUGA_PARECIDO:
+            fugas[indice] = str(tramo.get("texto") or "")
+    return fugas
+
+
+def _sustituir_trozo(wav, info, indice, wav_nuevo, info_nuevo):
+    """La pista con el trozo `indice` cambiado por otra grabacion. -> (wav, segundos)
+
+    Corta de donde empieza su primera pieza a donde acaba la ultima (con las
+    pausas internas) y pone la nueva en su sitio; las piezas de despues se
+    corren lo que cambie la duracion, para que el siguiente vistazo sepa donde
+    cae cada una.
+    """
+    sr = motor_google.SR
+    piezas = info["piezas"]
+    mias = [p for p in piezas if p["trozo"] == indice]
+    desde, hasta = mias[0]["t_in"], mias[-1]["t_out"]
+    pcm, nuevo = wav[44:], wav_nuevo[44:]
+    ini, fin = int(round(desde * sr)) * 2, int(round(hasta * sr)) * 2
+    pista = pcm[:ini] + nuevo + pcm[fin:]
+    delta = len(nuevo) / (sr * 2) - (hasta - desde)
+    otras = []
+    for pieza in piezas:
+        if pieza["trozo"] == indice:
+            continue
+        if pieza["t_in"] >= hasta - 1e-6:
+            pieza = dict(pieza, t_in=round(pieza["t_in"] + delta, 3),
+                         t_out=round(pieza["t_out"] + delta, 3))
+        otras.append(pieza)
+    for pieza in (info_nuevo or {}).get("piezas") or []:
+        otras.append(dict(pieza, trozo=indice, t_in=round(pieza["t_in"] + desde, 3),
+                          t_out=round(pieza["t_out"] + desde, 3)))
+    info["piezas"] = sorted(otras, key=lambda p: p["t_in"])
+    return motor_google.wav_desde_pcm(pista), len(pista) / (sr * 2)
+
+
+def _google_verificado(trozos, hablado, cfg, progreso):
+    """Graba con Google, alinea y regraba las secciones que leyeron su
+    instruccion. -> (wav, segundos, alineado, info)"""
+    wav, duracion, info = _sintesis_google(trozos, cfg, lambda f, m="": progreso(0.5 * f, m))
+    alineado = _alinear(wav, hablado, cfg, lambda f, m="": progreso(0.5 + 0.4 * f, m))
+    regrabados = []
+    for intento in range(REINTENTOS_FUGA):
+        fugas = fugas_de_estilo(alineado, info, trozos)
+        if not fugas:
+            break
+        for indice, texto in fugas.items():
+            seccion = trozos[indice].get("seccion", indice)
+            progreso(0.9, f"AVISO: la voz leyó en voz alta su instrucción de estilo en "
+                          f"{seccion} («{texto[:70]}»): se regraba esa sección")
+            wav_nuevo, _d, info_nuevo = _sintesis_google([trozos[indice]], cfg,
+                                                         lambda f, m="": None)
+            wav, duracion = _sustituir_trozo(wav, info, indice, wav_nuevo, info_nuevo)
+            regrabados.append({"seccion": seccion, "dijo": texto, "intento": intento + 1})
+        alineado = _alinear(wav, hablado, cfg, lambda f, m="": progreso(0.92, m))
+    if regrabados:
+        info["regrabados_por_fuga"] = regrabados
+    restantes = fugas_de_estilo(alineado, info, trozos)
+    if restantes:
+        info["fugas"] = {trozos[i].get("seccion", i): t for i, t in restantes.items()}
+    return wav, duracion, alineado, info
 
 
 def _toma_google(secciones, bloques, cfg, progreso):
@@ -1036,9 +1141,7 @@ def _toma_google(secciones, bloques, cfg, progreso):
         wav, duracion, palabras = _toma_simulada(hablado, cfg)
         return wav, duracion, palabras, {"simulado": True, "peticiones": len(trozos)}
 
-    wav, duracion, info = _sintesis_google(
-        trozos, cfg, lambda f, m="": progreso(0.55 * f, m))
-    alineado = _alinear(wav, hablado, cfg, lambda f, m="": progreso(0.55 + 0.45 * f, m))
+    wav, duracion, alineado, info = _google_verificado(trozos, hablado, cfg, progreso)
     info["alineado"] = _resumen_alineado(alineado)
     return wav, duracion, alineado["palabras"], info
 
@@ -1092,6 +1195,13 @@ def _avisos_google(info, secciones):
                           f"se ha igualado, pero escucha esa costura")
         else:
             avisos.append(f"cambio de ritmo del {aviso['cambio'] * 100:+.0f} % {donde}")
+    for regrabado in (info or {}).get("regrabados_por_fuga") or []:
+        avisos.append(f"{regrabado['seccion']} se regrabó sola: la voz había leído en voz "
+                      f"alta su instrucción de estilo («{regrabado['dijo'][:60]}»)")
+    for seccion, texto in ((info or {}).get("fugas") or {}).items():
+        avisos.append(f"¡OJO! en {seccion} la voz sigue leyendo su instrucción de estilo "
+                      f"(«{texto[:60]}») tras {REINTENTOS_FUGA} intentos: regrábala en "
+                      f"la revisión de audio")
     alineado = (info or {}).get("alineado") or {}
     if alineado.get("cobertura") is not None and alineado["cobertura"] < 0.9:
         avisos.append(f"solo el {alineado['cobertura'] * 100:.0f} % del guion se oye "
@@ -2144,10 +2254,12 @@ def regrabar_seccion(bloques, seccion_id, cfg, meta, destino, peticion="",
                        "estilo": estilo_de(tramo, cfg) if familia == "gemini" else None}]
         hablado = " ".join(marcas_tts.limpiar(b["texto"]) for b in nuevos
                            if b["id"] in dentro)
-        wav_nuevo, dur_nueva, _info = _sintesis_google(
-            con_estilo, cfg, lambda f, m="": progreso(0.5 * f, m))
-        marcas_nuevas = _alinear(wav_nuevo, hablado, cfg,
-                                 lambda f, m="": progreso(0.5 + 0.5 * f, m))["palabras"]
+        wav_nuevo, dur_nueva, alineado, info_regrabado = _google_verificado(
+            con_estilo, hablado, cfg, progreso)
+        marcas_nuevas = alineado["palabras"]
+        for seccion_fuga, texto in (info_regrabado.get("fugas") or {}).items():
+            avisa(0.78, f"AVISO: la voz sigue leyendo su instrucción de estilo en "
+                        f"{seccion_fuga} («{texto[:70]}»): vuelve a regrabarla")
     elif cfg.get("proveedor") == "elevenlabs":
         # sola, pero con el texto de alrededor como contexto: la entonacion
         # de la costura sabe que viene de algo y que sigue algo

@@ -457,6 +457,76 @@ def prueba_simulado(base):
               "y aun asi sale la toma con sus tramos")
 
 
+def prueba_fuga_de_estilo():
+    print("\n[9] la voz que lee en voz alta su instruccion de estilo")
+    frases = [{"start": 0.0, "end": 6.9, "text": "Intrigued, slightly urgent, quick but "
+                                                 "clear pace, not salesy."},
+              {"start": 6.9, "end": 10.0, "text": "Your grandparents never read a blog."}]
+    guion = alin.tokens_del_guion("Your grandparents never read a blog.")
+    reparto, cobertura = alin.frases_del_guion(guion, frases)
+    igual(reparto[0], [], "la frase colada no se queda ninguna palabra del guion")
+    de_mas = cobertura["de_mas"]
+    comprobar(len(de_mas) == 1 and de_mas[0]["s"] == 0.0 and de_mas[0]["e"] == 6.9
+              and "salesy" in de_mas[0]["texto"],
+              "y el alineador dice QUE se dijo de mas y DONDE")
+
+    trozos = [{"texto": "Your grandparents never read a blog.", "estilo": INTRO, "seccion": "SB001"},
+              {"texto": "Habit one.", "estilo": CUERPO, "seccion": "SB002"}]
+    info = {"piezas": [{"trozo": 0, "t_in": 0.0, "t_out": 10.0},
+                       {"trozo": 1, "t_in": 10.6, "t_out": 12.0}]}
+    igual(p4_voz.fugas_de_estilo({"de_mas": [{"texto": "Intrigued, slightly urgent tone, "
+                                                       "quick but clear pace", "s": 0.0}]},
+                                 info, trozos), {0: "Intrigued, slightly urgent tone, quick "
+                                                    "but clear pace"},
+          "unas palabras de mas que son la instruccion de la seccion: es una fuga")
+    igual(p4_voz.fugas_de_estilo({"de_mas": [{"texto": "um so you know what", "s": 0.0}]},
+                                 info, trozos), {},
+          "unas palabras de mas cualquiera no son una fuga")
+
+    # y se regraba sola esa seccion, una vez, y la segunda toma sale limpia
+    class Alineador:
+        def __init__(self):
+            self.vez = 0
+
+        def alinear(self, ruta, hablado, idioma="en", avisar=None, **_):
+            self.vez += 1
+            de_mas = ([{"texto": "Intrigued slightly urgent tone quick clear pace",
+                        "palabras": 7, "s": 0.1, "e": 3.0}] if self.vez == 1 else [])
+            return {"palabras": [{"w": w, "s": i * 0.3, "e": i * 0.3 + 0.2}
+                                 for i, w in enumerate(hablado.split())],
+                    "cobertura": 1.0, "faltan": [], "sobran": len(de_mas), "de_mas": de_mas}
+
+    doble_google, doble_alin = _GoogleDoble(goo), Alineador()
+    real_google, real_alin = p4_voz.motor_google, p4_voz.alineador
+    simular = os.environ.get("ESTUDIO_SIMULAR")
+    p4_voz.motor_google, p4_voz.alineador = doble_google, doble_alin
+    os.environ["ESTUDIO_SIMULAR"] = "0"
+    try:
+        cfg = p4_voz.resolver_params({"proveedor": "google", "idioma": "en",
+                                      "estilos": {"intro": INTRO, "cuerpo": CUERPO}})
+        wav, segundos, alineado, info = p4_voz._google_verificado(
+            trozos, "Your grandparents never read a blog. Habit one.", cfg, lambda f, m="": None)
+    finally:
+        p4_voz.motor_google, p4_voz.alineador = real_google, real_alin
+        if simular is None:
+            os.environ.pop("ESTUDIO_SIMULAR", None)
+        else:
+            os.environ["ESTUDIO_SIMULAR"] = simular
+    igual(len(doble_google.llamadas), 2, "una toma entera y un regrabado")
+    igual([t["seccion"] for t in doble_google.llamadas[1]], ["SB001"],
+          "el regrabado es SOLO la seccion que leyo su instruccion")
+    igual(doble_google.llamadas[1][0]["estilo"], INTRO, "y con su mismo estilo")
+    igual([r["seccion"] for r in info.get("regrabados_por_fuga") or []], ["SB001"],
+          "queda apuntado que se regrabo y por que")
+    comprobar("fugas" not in info, "y como la segunda salio limpia, no queda ninguna fuga")
+    igual(doble_alin.vez, 2, "se vuelve a alinear despues de regrabar")
+    comprobar(abs(segundos - (len(wav) - 44) / (goo.SR * 2)) < 0.01,
+              "la pista cosida cuadra con su duracion")
+    comprobar(any("se regrabó sola" in a for a in p4_voz._avisos_google(info, [
+        {"id": "SB001", "tramo": "intro"}, {"id": "SB002", "tramo": "cuerpo"}])),
+              "y se le dice a quien escucha")
+
+
 def prueba_coste():
     print("\n[8] coste: lo que se paga a Google sale en pantalla")
     from nucleo import coste
@@ -499,6 +569,7 @@ def main():
         prueba_tramos()
         prueba_toma_y_regrabado(base)
         prueba_simulado(base)
+        prueba_fuga_de_estilo()
         prueba_coste()
     finally:
         shutil.rmtree(base, ignore_errors=True)
