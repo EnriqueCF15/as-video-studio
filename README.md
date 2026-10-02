@@ -1,5 +1,12 @@
 # AS Video Studio
 
+> **Fork de uso personal.** El original es de **Adrián Sáenz**
+> ([NeverBlink/as-video-studio](https://github.com/NeverBlink/as-video-studio)),
+> que lo regaló en su canal para que cada uno lo adapte; todo el mérito del
+> diseño es suyo. Este fork lo adapta para correr en Windows (`arrancar.ps1`)
+> y cambiar los proveedores de voz, imagen y audio. El repo original no trae
+> licencia: esto no se revende.
+
 Convierte **lo que escribas** —unas notas, un artículo pegado, una cronología, o
 tu propio guion— en un vídeo de animación narrada, pasando por ocho fases con
 revisión humana entre ellas.
