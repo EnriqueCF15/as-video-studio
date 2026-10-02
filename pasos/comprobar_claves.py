@@ -11,6 +11,7 @@ Aqui cada proveedor tiene su prueba, elegida para que NO cueste dinero:
     cartesia   GET /voices                 lista voces; no sintetiza nada
     jamendo    GET /tracks/?limit=1        una busqueda; el plan es gratuito
     freesound  GET /search/text/?page_size=1   idem
+    google     GET /v1/voices (Text-to-Speech) autentica gcloud; no sintetiza
     claude     salud_cli.probar por cuenta  (haiku, una palabra: es lo minimo)
 
 LO QUE NO PUEDE DECIR, y se dice tal cual: que OpenAI tenga SALDO. La unica
@@ -174,6 +175,46 @@ def probar_freesound(clave):
                                       f"{_texto_corto(respuesta)}")
 
 
+def probar_google(ficha):
+    """Las credenciales de Google Cloud, con GET /v1/voices (no sintetiza nada).
+
+    Dice si gcloud autentica y si el proyecto tiene Text-to-Speech habilitado.
+    Lo que NO puede decir es si lo paga el credito de prueba: eso se ve en
+    Facturacion -> Informes, horas despues.
+    """
+    ficha = ficha if isinstance(ficha, dict) else {}
+    if not (ficha.get("proyecto") or ficha.get("cuenta_servicio") or claves.adc_de_gcloud()):
+        return _ficha("google", "sin_clave", "no hay credenciales de Google Cloud: "
+                                             "ejecuta `gcloud auth application-default login`")
+    try:
+        from . import comun                                       # noqa: PLC0415
+    except ImportError:
+        import comun                                              # noqa: PLC0415
+    try:
+        token, proyecto = comun.cargar_motor("voz_google", "voz.py").credenciales()
+    except Exception as fallo:                                    # noqa: BLE001
+        return _ficha("google", "mal", f"las credenciales de Google no valen: {fallo}")
+    respuesta, fallo = _pedir("GET", "https://texttospeech.googleapis.com/v1/voices",
+                              params={"languageCode": "en-US"},
+                              headers={"Authorization": f"Bearer {token}",
+                                       "x-goog-user-project": proyecto})
+    if respuesta is None:
+        return _ficha("google", "sin_red", f"no se ha podido hablar con Google: {fallo}")
+    if respuesta.status_code == 200:
+        voces = (respuesta.json() or {}).get("voices") or []
+        return _ficha("google", "ok",
+                      f"gcloud autentica y el proyecto «{proyecto}» tiene "
+                      f"Text-to-Speech ({len(voces)} voces en inglés). Que lo pague "
+                      f"el crédito de prueba se ve en Facturación → Informes",
+                      proyecto=proyecto)
+    if respuesta.status_code == 403:
+        return _ficha("google", "mal", f"el proyecto «{proyecto}» no deja usar "
+                                       f"Text-to-Speech (403): ¿está habilitada la API? "
+                                       f"{_texto_corto(respuesta)}")
+    return _ficha("google", "mal", f"Google contesta {respuesta.status_code}: "
+                                   f"{_texto_corto(respuesta)}")
+
+
 def probar_claude(cuentas):
     """Una ficha por cuenta del CLI con sesion, con lo que apunta salud_cli."""
     fichas = []
@@ -203,7 +244,9 @@ def probar_todas(cuentas_claude=(), con_claude=True):
         for proveedor, puesta in (("openai", bool(almacen["openai"])),
                                   ("cartesia", bool(almacen["cartesia"]["clave"])),
                                   ("jamendo", bool(almacen["jamendo"]["clave"])),
-                                  ("freesound", bool(almacen["freesound"]["clave"]))):
+                                  ("freesound", bool(almacen["freesound"]["clave"])),
+                                  ("google", bool(almacen["google"]["proyecto"]
+                                                  or claves.adc_de_gcloud()))):
             fichas.append(_ficha(proveedor, "ok" if puesta else "sin_clave",
                                  "simulado" if puesta else "sin poner"))
         if con_claude:
@@ -214,6 +257,7 @@ def probar_todas(cuentas_claude=(), con_claude=True):
         (probar_cartesia, almacen["cartesia"]["clave"]),
         (probar_jamendo, almacen["jamendo"]["clave"]),
         (probar_freesound, almacen["freesound"]["clave"]),
+        (probar_google, almacen["google"]),
     )
     for funcion, clave in pruebas:
         try:
@@ -233,7 +277,7 @@ def probar_todas(cuentas_claude=(), con_claude=True):
 
 NOMBRES = {"openai": "OpenAI (imágenes)", "cartesia": "Cartesia (voz)",
            "jamendo": "Jamendo (música)", "freesound": "FreeSound (efectos)",
-           "claude": "Claude"}
+           "google": "Google Cloud (voz)", "claude": "Claude"}
 
 
 def resumen_texto(fichas):

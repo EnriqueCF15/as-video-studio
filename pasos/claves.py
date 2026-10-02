@@ -109,6 +109,12 @@ def _vacio():
         "jamendo": {"clave": ""},
         "freesound": {"clave": ""},
         "claude_cli": {"cuentas": []},
+        # Google Cloud (voz de Google y, en la fase 2, imagenes por Vertex). NO
+        # es una clave: la autenticacion son las ADC de gcloud o el JSON de una
+        # cuenta de servicio (su RUTA, no su contenido). Lo leen los motores por
+        # contrato (motores/voz_google). Nunca una API key de AI Studio: la
+        # prueba gratuita no la cubre y se cobraria a la tarjeta.
+        "google": {"proyecto": "", "ubicacion": "global", "cuenta_servicio": ""},
     }
 
 
@@ -163,6 +169,12 @@ def _normalizar(datos):
         elif isinstance(cruda, str):
             base[suelta]["clave"] = cruda.strip()
     base["claude_cli"]["cuentas"] = _cuentas_cli_de(datos.get("claude_cli"))
+    google = datos.get("google")
+    if isinstance(google, dict):
+        for campo in ("proyecto", "ubicacion", "cuenta_servicio"):
+            valor = str(google.get(campo) or "").strip()
+            if valor:
+                base["google"][campo] = valor
     return base
 
 
@@ -345,7 +357,59 @@ def _fusionar(actual, peticion):
             peticion.get("claude_cli"), actual["claude_cli"]["cuentas"])
     else:
         salida["claude_cli"] = actual["claude_cli"]
+
+    salida["google"] = dict(actual["google"])
+    if "google" in peticion:
+        salida["google"].update(_google_pedido(peticion.get("google")))
     return salida
+
+
+#: Lo que admite Google como id de proyecto, y como region.
+_PROYECTO_GCP = re.compile(r"^[a-z][a-z0-9-]{4,28}[a-z0-9]$")
+_UBICACION_GCP = re.compile(r"^(global|[a-z]+-[a-z]+\d+)$")
+
+
+def _google_pedido(crudo):
+    """Valida el bloque de Google Cloud que manda la pantalla. -> dict"""
+    if not isinstance(crudo, dict):
+        raise ErrorClaves("'google' tiene que ser un objeto {proyecto, ubicacion, "
+                          "cuenta_servicio}")
+    for valor in crudo.values():
+        # Una API key de AI Studio empieza por «AIza». Se rechaza aunque venga
+        # en otro campo: la prueba gratuita de Google Cloud NO la cubre.
+        if str(valor or "").strip().startswith("AIza"):
+            raise ErrorClaves("eso es una API key de AI Studio y aqui no se usa: "
+                              "la prueba gratuita de Google Cloud no la cubre y se "
+                              "cobraria a tu tarjeta. La voz y las imagenes van "
+                              "con las credenciales de gcloud")
+    salida = {}
+    if "proyecto" in crudo:
+        proyecto = str(crudo.get("proyecto") or "").strip()
+        if proyecto and not _PROYECTO_GCP.match(proyecto):
+            raise ErrorClaves(f"«{proyecto}» no parece un id de proyecto de Google "
+                              f"Cloud (minusculas, numeros y guiones, 6 a 30)")
+        salida["proyecto"] = proyecto
+    if "ubicacion" in crudo:
+        ubicacion = str(crudo.get("ubicacion") or "").strip() or "global"
+        if not _UBICACION_GCP.match(ubicacion):
+            raise ErrorClaves(f"«{ubicacion}» no es una ubicacion de Google Cloud "
+                              f"(global, us-central1...)")
+        salida["ubicacion"] = ubicacion
+    if "cuenta_servicio" in crudo:
+        ruta = str(crudo.get("cuenta_servicio") or "").strip().strip('"')
+        if ruta and not (ruta.lower().endswith(".json") and os.path.isfile(ruta)):
+            raise ErrorClaves(f"no encuentro el JSON de la cuenta de servicio en "
+                              f"«{ruta}»")
+        salida["cuenta_servicio"] = ruta
+    return salida
+
+
+def adc_de_gcloud():
+    """Ruta de las Application Default Credentials de gcloud, si existen."""
+    base = os.environ.get("APPDATA") if os.name == "nt" else os.path.join(
+        os.path.expanduser("~"), ".config")
+    ruta = os.path.join(base or "", "gcloud", "application_default_credentials.json")
+    return ruta if os.path.isfile(ruta) else ""
 
 
 def _cuentas_cli_pedidas(crudo, actuales):
@@ -550,6 +614,9 @@ def resumen(datos=None):
             "puesta": bool(datos["freesound"]["clave"]),
             "cola": tapar(datos["freesound"]["clave"]),
         },
+        # Nada de esto es secreto: un id de proyecto, una region y la RUTA de un
+        # JSON. Lo que si es secreto (el JSON, el token de gcloud) no baja nunca.
+        "google": dict(datos["google"], adc=bool(adc_de_gcloud())),
         "fichero": FICHERO,
         "max_openai": MAX_OPENAI,
     }
