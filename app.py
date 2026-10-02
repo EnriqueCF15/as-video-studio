@@ -1765,6 +1765,13 @@ def catalogo_voces_global(idioma: str = Query(default=None),
         voces = PASOS_MODULOS.p4_voz.listar_voces_google(idioma)
         return {"voces": voces, "total": len(voces), "idioma": idioma,
                 "solo_nativas": False, "proveedor": "google"}
+    if str(proveedor or "").strip().lower() == "elevenlabs":
+        try:
+            voces = PASOS_MODULOS.p4_voz.listar_voces_elevenlabs(idioma, bool(refrescar))
+        except (Exception, SystemExit) as fallo:  # noqa: BLE001
+            raise ErrorApi(502, f"no se ha podido leer el catalogo de ElevenLabs: {fallo}")
+        return {"voces": voces, "total": len(voces), "idioma": idioma,
+                "solo_nativas": False, "proveedor": "elevenlabs"}
     try:
         voces = PASOS_MODULOS.p4_voz.listar_voces(
             idioma=idioma, refrescar=bool(refrescar),
@@ -1778,6 +1785,24 @@ def catalogo_voces_global(idioma: str = Query(default=None),
         raise ErrorApi(502, f"no se ha podido leer el catalogo de voces: {fallo}")
     return {"voces": voces, "total": len(voces), "idioma": idioma,
             "solo_nativas": bool(nativas or solo_nativas)}
+
+
+@app.get("/api/voces/elevenlabs/creditos")
+def creditos_elevenlabs():
+    """Los creditos de ElevenLabs del mes: usados, limite, restantes, renovacion.
+
+    No gasta nada (GET /v1/user/subscription). Sin clave, o en simulado, dice
+    que no se sabe en vez de fallar: la pantalla lo pinta igual.
+    """
+    if PASOS_MODULOS is None:
+        raise ErrorApi(503, f"los pasos no se han podido cargar: {ERROR_PASOS}")
+    p4 = PASOS_MODULOS.p4_voz
+    if p4.simulado() or not p4._huella_clave_eleven():
+        return {"disponible": False}
+    try:
+        return dict(p4.motor_eleven.suscripcion(), disponible=True)
+    except (Exception, SystemExit) as fallo:  # noqa: BLE001
+        raise ErrorApi(502, f"no se han podido leer los creditos de ElevenLabs: {fallo}")
 
 
 # ------------------------------------------------------------ voz descrita
@@ -2066,6 +2091,10 @@ def estimar_video(cuerpo: dict = Body(default=None)):
         usd_tts, _ = COSTE.coste_google_tts(modelo_voz, caracteres, segundos,
                                             caracteres_estilo=400 * peticiones)
         usd_tts = round(usd_tts or 0.0, 4)
+    elif proveedor_voz == "elevenlabs":
+        # ElevenLabs va contra los CREDITOS del plan, no contra dolares: se
+        # dicen aparte y no suman al total (como Claude)
+        usd_tts = 0.0
     else:
         usd_caracter = float(((tarifas.get("tts") or {}).get("usd_por_caracter")) or 0.0)
         usd_tts = round(caracteres * usd_caracter, 4)
@@ -2096,6 +2125,9 @@ def estimar_video(cuerpo: dict = Body(default=None)):
                   "usd_por_imagen": usd_imagen,
                   "usd_imagenes": usd_imagenes, "usd_tts": usd_tts,
                   "proveedor_voz": proveedor_voz,
+                  "creditos_voz": (PASOS_MODULOS.p4_voz.motor_eleven.creditos_estimados(
+                      caracteres, str(datos.get("modelo_voz") or "eleven_flash_v2_5"))
+                      if proveedor_voz == "elevenlabs" else None),
                   "usd_total": round(usd_imagenes + usd_tts, 3)},
     }
 

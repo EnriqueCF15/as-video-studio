@@ -2280,6 +2280,7 @@ function pintarConfig() {
   caja.appendChild(seccionOpenAI(ficha));
   caja.appendChild(seccionCalidadImagen());
   caja.appendChild(seccionGoogle(ficha));
+  caja.appendChild(seccionElevenLabs(ficha));
   caja.appendChild(seccionCartesia(ficha));
   caja.appendChild(seccionCLI());
   caja.appendChild(seccionOtrasClaves(ficha));
@@ -2475,6 +2476,33 @@ function seccionGoogle(ficha) {
           proyecto: proyecto.value.trim(), ubicacion: ubicacion.value.trim(),
           cuenta_servicio: cuenta.value.trim() } }),
       }, 'Guardar')));
+}
+
+/* ElevenLabs: la voz premium. Una clave, como Cartesia, y debajo los créditos
+   del mes, que es lo que de verdad se gasta (no dólares). */
+function seccionElevenLabs(ficha) {
+  const e = ficha.elevenlabs || {};
+  const campo = h('input', {
+    type: 'password', placeholder: e.puesta ? `puesta (${e.cola})` : 'sin poner',
+  });
+  return h('section', { clase: 'bloque-config' },
+    h('div', { clase: 'fila' },
+      h('h3', {}, 'ElevenLabs — voz premium'),
+      h('span', { clase: 'crece' }),
+      pastillaEstado(e.puesta ? 'ok' : 'vacio', e.puesta ? e.cola : 'sin poner')),
+    h('div', { clase: 'pista' },
+      'Opcional. Va contra los créditos de tu plan. Si la clave está restringida, '
+      + 'necesita: Text to Speech, Voices (lectura), Models y User (lectura).'),
+    h('div', { clase: 'fila-clave' }, campo,
+      h('button', {
+        clase: 'mini',
+        onclick: () => {
+          if (!campo.value.trim()) { toast('escribe la clave', true); return; }
+          guardarClaves({ elevenlabs: { clave: campo.value.trim() } });
+          campo.value = '';
+        },
+      }, 'Cambiar')),
+    e.puesta ? creditosElevenLabs() : null);
 }
 
 function campoConEntrada(etiqueta, entrada) {
@@ -2695,7 +2723,8 @@ async function probarCuentaCLI(cid) {
    tarjeta de la guía. */
 const NOMBRES_PROVEEDOR = {
   openai: 'OpenAI — imágenes', cartesia: 'Cartesia — voz', jamendo: 'Jamendo — música',
-  freesound: 'FreeSound — efectos', google: 'Google Cloud — voz', claude: 'Claude',
+  freesound: 'FreeSound — efectos', google: 'Google Cloud — voz',
+  elevenlabs: 'ElevenLabs — voz premium', claude: 'Claude',
 };
 
 function bloquePruebaClaves() {
@@ -6105,8 +6134,14 @@ function textoDeCoste(ficha) {
   }
   // la voz aparte cuando es Google: va contra el crédito de prueba, como las
   // imágenes de Vertex, y conviene ver cuánto de ese crédito se lleva
-  const voz = c.proveedor_voz === 'google' && c.usd_tts
+  let voz = c.proveedor_voz === 'google' && c.usd_tts
     ? ` (voz con Google ≈ ${Number(c.usd_tts).toFixed(2)} $)` : '';
+  // ElevenLabs no son dólares: son créditos del plan, y se dicen como tales
+  if (c.proveedor_voz === 'elevenlabs') {
+    voz = c.creditos_voz != null
+      ? ` + voz con ElevenLabs ≈ ${miles(c.creditos_voz)} créditos`
+      : ' + voz con ElevenLabs (créditos: se miden al grabar)';
+  }
   return `${pl.total} planos · ${c.imagenes} imágenes · ≈ ${Number(c.usd_total || 0).toFixed(2)} $${voz}`;
 }
 
@@ -9635,17 +9670,19 @@ function escuchaDeVoz(ficha) {
   const caja = h('div', { clase: 'bloque-voz' });
   const nombre = voz.voz_nombre || voz.voz_id || '';
   const google = voz.proveedor === 'google';
-  const modelo = google
-    ? (MODELOS_GOOGLE.find(m => m.valor === voz.modelo) || MODELOS_GOOGLE[0]).nombre.split(' — ')[0]
+  const eleven = voz.proveedor === 'elevenlabs';
+  const lista = google ? MODELOS_GOOGLE : MODELOS_ELEVEN;
+  const modelo = (google || eleven)
+    ? (lista.find(m => m.valor === voz.modelo) || lista[0]).nombre.split(' — ')[0]
     : '';
   const tramos = google ? TRAMOS_VOZ.filter(t => (voz.estilos || {})[t.id]).map(t => t.id) : [];
+  const aire = voz.hueco_minimo ? `aire ${voz.hueco_minimo}s` : '';
   caja.appendChild(h('div', { clase: 'resumen-voz' },
     h('b', {}, nombre || 'sin voz elegida'),
     ...(google
-      ? ['Google', modelo, tramos.length ? `estilos: ${tramos.join(', ')}` : 'sin estilos',
-        voz.hueco_minimo ? `aire ${voz.hueco_minimo}s` : '']
-      : [voz.velocidad, (voz.emociones || []).join(', '),
-        voz.hueco_minimo ? `aire ${voz.hueco_minimo}s` : ''])
+      ? ['Google', modelo, tramos.length ? `estilos: ${tramos.join(', ')}` : 'sin estilos', aire]
+      : (eleven ? ['ElevenLabs', modelo, voz.velocidad, aire]
+        : [voz.velocidad, (voz.emociones || []).join(', '), aire]))
       .filter(Boolean).map(x => h('span', { clase: 'meta' }, ` · ${x}`))));
   caja.appendChild(mandosDeVozLight(ficha, voz));
 
@@ -9675,11 +9712,14 @@ function escuchaDeVoz(ficha) {
 function mandosDeVozLight(ficha, voz) {
   const caja = h('div', {});
   const dentro = h('div', {});
-  const google = voz.proveedor === 'google';
+  const proveedor = ['google', 'elevenlabs'].includes(voz.proveedor) ? voz.proveedor : 'cartesia';
+  const google = proveedor === 'google';
+  const eleven = proveedor === 'elevenlabs';
   const avanzadas = opcionesAvanzadas({
     clave: `voz-light-${ficha.id}`,
     resumen: google ? 'el proveedor, el modelo, la voz, los estilos por tramo y el aire'
-      : 'la voz concreta, la velocidad, el color y el aire',
+      : (eleven ? 'el proveedor, el modelo, la voz, la velocidad y el aire'
+        : 'la voz concreta, la velocidad, el color y el aire'),
   }, dentro);
   caja.appendChild(avanzadas);
 
@@ -9688,27 +9728,37 @@ function mandosDeVozLight(ficha, voz) {
   /* QUIÉN PONE LA VOZ. Al cambiar se manda un modelo y una voz VÁLIDOS para el
      nuevo proveedor: el servidor no borra un campo que llega vacío, así que sin
      esto se quedaría «Orus» puesto en Cartesia, o «sonic-3.5» en Google. */
-  dentro.appendChild(campoSelect('Proveedor', google ? 'google' : 'cartesia',
-    PROVEEDORES_VOZ, valor => {
-      guardar(valor === 'google'
-        ? { proveedor: 'google', modelo: MODELOS_GOOGLE[0].valor, voz_id: 'Orus',
-          voz_nombre: 'Orus' }
-        : { proveedor: 'cartesia', modelo: 'sonic-3.5' });
-      repintarBloqueVoz(ficha);
-    }, google ? 'Lo paga tu proyecto de Google Cloud (el crédito de prueba mientras '
-      + 'dure). Google no da el tiempo de cada palabra: lo pone el alineador de '
-      + 'este equipo, gratis.' : ''));
-  const modelo = voz.modelo && MODELOS_GOOGLE.some(m => m.valor === voz.modelo)
-    ? voz.modelo : MODELOS_GOOGLE[0].valor;
-  if (google) {
-    dentro.appendChild(campoSelect('Modelo', modelo, MODELOS_GOOGLE, valor => {
+  const AL_CAMBIAR = {
+    google: { proveedor: 'google', modelo: MODELOS_GOOGLE[0].valor, voz_id: 'Orus',
+      voz_nombre: 'Orus' },
+    elevenlabs: Object.assign({ proveedor: 'elevenlabs', modelo: MODELOS_ELEVEN[0].valor },
+      VOZ_ELEVEN_POR_DEFECTO),
+    cartesia: { proveedor: 'cartesia', modelo: 'sonic-3.5' },
+  };
+  const AYUDA_PROVEEDOR = {
+    google: 'Lo paga tu proyecto de Google Cloud (el crédito de prueba mientras dure). '
+      + 'Google no da el tiempo de cada palabra: lo pone el alineador de este equipo, gratis.',
+    elevenlabs: 'Va contra los créditos de tu plan de ElevenLabs. Antes de grabar se '
+      + 'comprueba que alcancen para el vídeo entero.',
+    cartesia: '',
+  };
+  dentro.appendChild(campoSelect('Proveedor', proveedor, PROVEEDORES_VOZ, valor => {
+    guardar(AL_CAMBIAR[valor]);
+    repintarBloqueVoz(ficha);
+  }, AYUDA_PROVEEDOR[proveedor]));
+  const modelos = google ? MODELOS_GOOGLE : MODELOS_ELEVEN;
+  const modelo = voz.modelo && modelos.some(m => m.valor === voz.modelo)
+    ? voz.modelo : modelos[0].valor;
+  if (google || eleven) {
+    dentro.appendChild(campoSelect('Modelo', modelo, modelos, valor => {
       guardar({ modelo: valor });
       repintarBloqueVoz(ficha);
     }));
   }
+  if (eleven) dentro.appendChild(creditosElevenLabs());
 
   const idioma = ficha.idioma || 'es';
-  const lista = vocesLight(idioma, google ? 'google' : 'cartesia');
+  const lista = vocesLight(idioma, proveedor);
   if (!lista) {
     dentro.appendChild(h('div', { clase: 'pista' },
       `cargando las voces de ${nombreIdiomaLight(idioma)}…`));
@@ -9721,6 +9771,12 @@ function mandosDeVozLight(ficha, voz) {
       ? h('div', { clase: 'pista' }, 'Chirp 3 HD no admite instrucciones de estilo: '
         + 'lee igual todo el vídeo. Los estilos por tramo son de los modelos Gemini.')
       : estilosPorTramo(ficha, voz, guardar));
+  } else if (eleven) {
+    // ElevenLabs no lee instrucciones de estilo: solo la velocidad (0,7–1,2)
+    dentro.appendChild(campoSelect('Velocidad', voz.velocidad || 'normal',
+      VELOCIDADES.map(v => ({ valor: v, nombre: v })),
+      valor => guardar({ velocidad: valor }),
+      'ElevenLabs no lee instrucciones de estilo: el tono lo pone la voz elegida.'));
   } else {
     dentro.appendChild(mandosCartesia(ficha, voz, guardar));
   }
@@ -9754,6 +9810,9 @@ const CANDIDATOS_AB = [
   { id: 'c-orus', etiqueta: 'Chirp 3 HD · Orus (sin estilos)', proveedor: 'google',
     // fuera de las marcadas: en la primera escucha sonó monótona (01-10-2026)
     modelo: 'chirp3-hd', voz_id: 'Orus', usd: 0.03 },
+  // ElevenLabs no son dólares sino créditos del plan: ~800 caracteres a 0,5
+  { id: 'e-flash', etiqueta: 'ElevenLabs Flash v2.5 · Adam', proveedor: 'elevenlabs',
+    modelo: 'eleven_flash_v2_5', voz_id: 'pNInz6obpgDQGcFmaJgB', usd: 0, creditos: 400 },
 ];
 const CLAVE_AB_VOZ = 'voz_ab';
 
@@ -9788,6 +9847,7 @@ function comparacionDeVoces(ficha) {
     dentro.appendChild(lista);
     const elegidos = CANDIDATOS_AB.filter(c => estado.elegidos.includes(c.id));
     const usd = elegidos.reduce((s, c) => s + c.usd, 0);
+    const creditos = elegidos.reduce((s, c) => s + (c.creditos || 0), 0);
     dentro.appendChild(h('div', { clase: 'fila' },
       h('button', {
         clase: 'mini', disabled: estado.corriendo || !elegidos.length,
@@ -9795,6 +9855,7 @@ function comparacionDeVoces(ficha) {
       }, estado.corriendo ? 'grabando…' : 'Generar comparación'),
       h('span', { clase: 'meta' }, elegidos.length
         ? `${elegidos.length} voces · ≈ ${usd.toFixed(2)} $ del crédito de Google Cloud`
+          + (creditos ? ` + ≈ ${miles(creditos)} créditos de ElevenLabs` : '')
         : 'elige al menos una voz')));
     if (estado.mensaje) dentro.appendChild(h('div', { clase: 'pista' }, estado.mensaje));
     ((estado.resultado || {}).candidatos || []).forEach(r => {
@@ -9869,8 +9930,18 @@ function filaComparacion(ficha, r) {
    `p4_voz.PROVEEDORES` y `motores/voz_google.MODELOS`. */
 const PROVEEDORES_VOZ = [
   { valor: 'google', nombre: 'Google (Gemini TTS / Chirp 3 HD)' },
+  { valor: 'elevenlabs', nombre: 'ElevenLabs — voz premium, con los créditos de tu plan' },
   { valor: 'cartesia', nombre: 'Cartesia' },
 ];
+/* Los modelos de ElevenLabs: el gemelo de `motores/voz_elevenlabs.MODELOS`. */
+const MODELOS_ELEVEN = [
+  { valor: 'eleven_flash_v2_5', nombre: 'Flash v2.5 — recomendado (0,5 créditos por carácter)' },
+  { valor: 'eleven_turbo_v2_5', nombre: 'Turbo v2.5 — 0,5 créditos por carácter' },
+  { valor: 'eleven_multilingual_v2', nombre: 'Multilingual v2 — más expresivo, 1 crédito por carácter' },
+  { valor: 'eleven_v3', nombre: 'v3 — 1 crédito por carácter' },
+  { valor: 'eleven_v4', nombre: 'v4 — precio en créditos sin publicar: se mide al grabar' },
+];
+const VOZ_ELEVEN_POR_DEFECTO = { voz_id: 'pNInz6obpgDQGcFmaJgB', voz_nombre: 'Adam' };
 const MODELOS_GOOGLE = [
   { valor: 'gemini-2.5-flash-tts', nombre: 'Gemini 2.5 Flash TTS — recomendado (~0,38 $ por 25 min)' },
   { valor: 'gemini-2.5-pro-tts', nombre: 'Gemini 2.5 Pro TTS — el doble de caro' },
@@ -9890,6 +9961,23 @@ const TRAMOS_VOZ = [
     ayuda: 'La última sección: la despedida y la llamada a la acción. Vacío = '
       + 'el del cuerpo.' },
 ];
+
+/* LOS CRÉDITOS DE ELEVENLABS QUE QUEDAN ESTE MES. Se piden al servidor una vez
+   por pantalla (no gasta nada: es la suscripción) y se pinta lo que llegue. Sin
+   clave, se dice dónde se pone. */
+function creditosElevenLabs() {
+  const linea = h('div', { clase: 'pista' }, 'mirando tus créditos de ElevenLabs…');
+  pedir(`${BASE}/api/voces/elevenlabs/creditos`)
+    .then(c => {
+      vaciar(linea).append(!c.disponible
+        ? 'Sin clave de ElevenLabs: se pone en Configuración (el engranaje).'
+        : `Te quedan ${miles(c.restantes)} de ${miles(c.limite)} créditos este mes`
+          + (c.renovacion_unix ? ` · se renuevan el ${new Date(c.renovacion_unix * 1000)
+            .toLocaleDateString('es')}` : ''));
+    })
+    .catch(e => { vaciar(linea).append(`no se han podido leer los créditos: ${e.message}`); });
+  return linea;
+}
 
 function estilosPorTramo(ficha, voz, guardar) {
   const caja = h('div', {});
@@ -9998,7 +10086,7 @@ function vocesLight(idioma, proveedor) {
   if (!catalogo.pidiendo || catalogo.pidiendo !== clave) {
     APP.light.voces = { idioma: catalogo.idioma, pidiendo: clave,
       lista: catalogo.lista || [] };
-    pedir(API.voces(idioma, true, proveedor === 'google' ? 'google' : ''))
+    pedir(API.voces(idioma, true, proveedor && proveedor !== 'cartesia' ? proveedor : ''))
       .then(datos => {
         APP.light.voces = { idioma: clave, lista: datos.voces || [], pidiendo: null };
         if (['preset', 'crear'].includes(APP.light.vista)) pintarLight();

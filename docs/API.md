@@ -107,6 +107,7 @@ Reglas que valen para toda la API y no se repiten en cada fila:
 | `POST` | `/api/proyectos/{pid}/voz/previsualizar` | Sintetiza unos segundos con estos mandos de voz para escucharlos. |
 | `POST` | `/api/proyectos/{pid}/voz/secciones/{seccion_id}/regrabar` | Regraba una seccion de la toma, con microcambio si se pide. |
 | `GET` | `/api/voces` | Catalogo de voces (Cartesia, o Google con ?proveedor=google). |
+| `GET` | `/api/voces/elevenlabs/creditos` | Los creditos de ElevenLabs del mes: usados, limite, restantes, renovacion. |
 
 ## Catálogo, escenarios y piezas
 
@@ -262,4 +263,4 @@ Reglas que valen para toda la API y no se repiten en cada fila:
 
 ---
 
-**148 endpoints.** Escrito por `generar_api.py` desde `app.py`.
+**149 endpoints.** Escrito por `generar_api.py` desde `app.py`.
