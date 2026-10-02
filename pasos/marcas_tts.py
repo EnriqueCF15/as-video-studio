@@ -278,12 +278,20 @@ PAUSAS_GOOGLE = {"gemini": ("[short pause]", "[medium pause]", "[long pause]"),
 def para_google(texto, familia="gemini"):
     """El texto anotado, traducido a lo que entiende Google. -> str
 
-    Solo viajan las PAUSAS (<break>), convertidas a la etiqueta de la familia:
-    corta hasta 400 ms, media hasta 1 s, larga por encima. La velocidad, el
-    volumen y la emocion de Cartesia no tienen equivalente por palabra en
-    Google -- el tono lo lleva la instruccion de estilo del tramo -- y se
-    quitan; una etiqueta que se quedara la locutaria en voz alta.
+    CON GEMINI NO VIAJA NINGUNA ETIQUETA, tampoco las pausas. Medido en la
+    primera escucha (01-10-2026): la toma con un `[short pause]` en el texto
+    sono sobreactuada --alargaba palabras, entonacion rara--, y la que iba sin
+    etiquetas, perfecta. Las pausas entre bloques ya las pone el Estudio
+    (`motor.espaciar`, el aire entre bloques) y las de suspense las decide la
+    instruccion de estilo; una etiqueta encima es pedirle dos veces lo mismo.
+
+    Con Chirp 3 HD, que no tiene instruccion de estilo, las pausas (<break>) si
+    viajan: corta hasta 400 ms, media hasta 1 s, larga por encima. La velocidad,
+    el volumen y la emocion de Cartesia no tienen equivalente en Google y se
+    quitan siempre: una etiqueta que se quedara la locutaria en voz alta.
     """
+    if familia == "gemini":
+        return limpiar(texto)
     corta, media, larga = PAUSAS_GOOGLE.get(familia, PAUSAS_GOOGLE["gemini"])
 
     def pausa(encaje):

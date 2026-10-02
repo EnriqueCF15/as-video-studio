@@ -188,10 +188,12 @@ def prueba_motor_google():
 
     igual(marcas_tts.para_google('Wait.<break time="300ms"/>Now.<break time="900ms"/>'
                                  'Then.<break time="2s"/>End.'),
-          "Wait. [short pause] Now. [medium pause] Then. [long pause] End.",
-          "las pausas pasan a las etiquetas de Gemini por su duracion")
-    igual(marcas_tts.para_google('Go.<break time="900ms"/>Ok.', "chirp"),
-          "Go. [pause] Ok.", "y a las de Chirp 3 HD")
+          "Wait. Now. Then. End.",
+          "con Gemini no viaja ninguna etiqueta: con ellas sonaba sobreactuado")
+    igual(marcas_tts.para_google('Wait.<break time="300ms"/>Now.<break time="900ms"/>'
+                                 'Then.<break time="2s"/>End.', "chirp"),
+          "Wait. [pause short] Now. [pause] Then. [pause long] End.",
+          "con Chirp 3 HD las pausas pasan a sus etiquetas por su duracion")
     igual(marcas_tts.para_google('<speed ratio="0.9"/>Slow <spell>IRA</spell> now.'
                                  '<emotion value="calm"/>'),
           "Slow IRA now.", "lo que Google no entiende se quita, el texto se queda")
