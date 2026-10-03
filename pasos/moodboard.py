@@ -432,7 +432,10 @@ def generar(referencias, estilo, ejes=None, peticiones=None, calidad="medium",
     cualquier video que lo use, asi que ahorrar aqui es ahorrar en el sitio
     equivocado.
     """
-    imagen = medios.motor("imagen_openai/imagen.py")
+    # el proveedor de Configuracion, igual que `dibujar_desde_guia`: con el de
+    # OpenAI fijo, un estilo sacado de un video se dibujaba con OpenAI aunque
+    # Configuracion dijera Gemini
+    imagen = medios.motor_imagen()
     reglas = medios.motor("reglas/reglas.py")
     avisar = avisar or (lambda *a, **k: None)
     rutas = [r for r in (referencias or []) if os.path.exists(r)]
@@ -716,7 +719,10 @@ def dibujar_desde_guia(estilo, destino, ejes=None, calidad="medium",
             peticiones.get(eje), guia, bloque,
             con_lamina=False,
             encabezado="Produce one single full-frame image for a style "
-                       "reference sheet.")
+                       "reference sheet.",
+            # sin el idioma, la regla de rotulos dice «el ingles NO es el idioma»
+            # y no dice cual es: un canal en ingles saco el diagrama en espanol
+            idioma=idioma)
         # SIN referencias: no hay ninguna que mandar, y mandar una lamina vacia
         # es lo que provoca el "Unsupported content type" que no dice nada.
         png, meta = imagen.generar(prompt, [], quality=calidad,
