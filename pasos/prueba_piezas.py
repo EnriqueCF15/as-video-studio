@@ -4228,8 +4228,6 @@ def _prohibir_pagar():
     que envuelve a esta y la marca igual: `prueba_recarga_de_motores`, que
     comprueba la marca, sigue viendo lo que tiene que ver.
     """
-    motor = medios.motor("imagen_openai/imagen.py")
-
     def no_se_paga(*_args, **_kwargs):
         raise AssertionError(
             "una prueba ha llamado al motor de imagen DE VERDAD. Esta suite no "
@@ -4237,7 +4235,10 @@ def _prohibir_pagar():
             "`prueba_rehacer_de_verdad`) o arregla la firma de cache que ha "
             "dejado de acertar")
 
-    motor.generar = no_se_paga
+    # los DOS proveedores (fork): con Gemini en Vertex y las credenciales de
+    # gcloud puestas en la maquina, una prueba que se colara pagaria de verdad
+    for ruta in ("imagen_openai/imagen.py", "imagen_gemini/imagen.py"):
+        medios.motor(ruta).generar = no_se_paga
 
 
 def main():

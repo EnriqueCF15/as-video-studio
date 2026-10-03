@@ -682,7 +682,8 @@ def dibujar_desde_guia(estilo, destino, ejes=None, calidad="medium",
     lamina con su descripcion generica de siempre, pagaba la imagen y devolvia
     otra vez lo mismo, con la correccion dada por aplicada.
     """
-    imagen = medios.motor("imagen_openai/imagen.py")
+    # el proveedor de Configuracion: un taller no es un video y no tiene el suyo
+    imagen = medios.motor_imagen()
     reglas = medios.motor("reglas/reglas.py")
     avisar = avisar or (lambda *a, **k: None)
     pedidos = [e for e in (ejes or EJES) if e in EJES]

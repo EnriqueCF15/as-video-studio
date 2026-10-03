@@ -875,9 +875,12 @@ def crear_proyecto(cuerpo: dict = Body(default=None)):
     # que nunca la fijaron en cuanto alguien tocara el ajuste -- `calidad` entra
     # en la firma de cada imagen --, y eso es dinero. Escrita aqui, lo viejo se
     # queda como estaba y esto es solo el punto de partida del proyecto nuevo.
+    # Y EL PROVEEDOR DE IMAGEN (fork), por lo mismo: es el punto de partida del
+    # proyecto nuevo, no algo que se relee al generar.
     try:
         ctx.estado.actualizar_params("assets",
-                                     {"calidad": AJUSTES.calidad_imagen()})
+                                     {"calidad": AJUSTES.calidad_imagen(),
+                                      "motor_imagen": AJUSTES.proveedor_imagen()})
     except Exception:  # noqa: BLE001
         # un ajuste ilegible no puede impedir crear un proyecto: se queda con
         # el valor por defecto del paso, que es el que habia antes de todo esto
@@ -9124,6 +9127,12 @@ def crear_video_light(preset_id: str, cuerpo: dict = Body(default=None)):
     # camino que copiara las claves a mano se quedaria viejo el dia que un
     # preset guarde una mas.
     aplicado = aplicar_preset_canal(proyecto.id, preset_id)
+    # el proveedor de imagen de Configuracion, como en crear_proyecto
+    try:
+        ctx.estado.actualizar_params("assets",
+                                     {"motor_imagen": AJUSTES.proveedor_imagen()})
+    except Exception:  # noqa: BLE001
+        pass
     avisos = _sembrar_video_light(ctx, datos)
     ctx.bitacora.anotar("video_light_creado", None, {
         "preset": preset_id, "estilo": ficha_preset.get("nombre"),

@@ -60,8 +60,14 @@ TAMANO = "1536x1024"
 #: 'imagen'.
 TOKENS_ENTRADA_POR_IMAGEN = 5114
 
+#: Quien dibuja las imagenes (fork). Gemini en Vertex lo paga el credito de
+#: Google Cloud; OpenAI queda como opcion. Como la calidad, se escribe en el
+#: vídeo al CREARLO (param `motor_imagen` de assets) y no se lee al generar.
+PROVEEDORES_IMAGEN = ("vertex_gemini", "openai")
+
 POR_DEFECTO = {
     "calidad_imagen": "low",
+    "proveedor_imagen": "vertex_gemini",
     # Si ya se ha pasado por la guia de inicio (las tarjetas que piden las
     # claves al entrar por primera vez). Vive aqui y no en el navegador
     # porque es de la instalacion, no de la pantalla: desde el movil no hay
@@ -79,6 +85,8 @@ def leer():
             salida[clave] = valor
     if salida.get("calidad_imagen") not in CALIDADES:
         salida["calidad_imagen"] = POR_DEFECTO["calidad_imagen"]
+    if salida.get("proveedor_imagen") not in PROVEEDORES_IMAGEN:
+        salida["proveedor_imagen"] = POR_DEFECTO["proveedor_imagen"]
     salida["onboarding_visto"] = bool(salida.get("onboarding_visto"))
     return salida
 
@@ -100,6 +108,9 @@ def guardar(cambios):
                 f"calidad {valor!r}: solo {', '.join(CALIDADES)}")
         if clave == "onboarding_visto" and not isinstance(valor, bool):
             raise ValueError("onboarding_visto es verdadero o falso")
+        if clave == "proveedor_imagen" and valor not in PROVEEDORES_IMAGEN:
+            raise ValueError(f"proveedor de imagen {valor!r}: solo "
+                             f"{', '.join(PROVEEDORES_IMAGEN)}")
         actual[clave] = valor
     escribir_json(RUTA, actual)
     return actual
@@ -108,6 +119,11 @@ def guardar(cambios):
 def calidad_imagen():
     """La calidad con la que arranca un proyecto nuevo."""
     return leer()["calidad_imagen"]
+
+
+def proveedor_imagen():
+    """Quien dibuja las imagenes de un proyecto nuevo (y el moodboard)."""
+    return leer()["proveedor_imagen"]
 
 
 def coste_por_imagen(calidad, tamano=TAMANO):

@@ -3763,6 +3763,25 @@ function proveedorDe(agregado, nombre) {
   });
 }
 
+/* LAS IMÁGENES, sean de quien sean: OpenAI y Gemini en Vertex (fork) suman en la
+   misma casilla. Con uno solo, es ese tal cual. */
+function imagenesDe(agregado) {
+  const a = proveedorDe(agregado, 'openai');
+  const g = proveedorDe(agregado, 'gemini_imagen');
+  if (!g.eventos) return a;
+  if (!a.eventos) return g;
+  const sumar = (x, y) => (x == null && y == null) ? null : Number(x || 0) + Number(y || 0);
+  const tokens = {};
+  ['entrada', 'salida', 'cache', 'total'].forEach(k => { tokens[k] = a.tokens[k] + g.tokens[k]; });
+  return Object.assign({}, a, {
+    eventos: a.eventos + g.eventos, usd: sumar(a.usd, g.usd),
+    usd_estimado: !!(a.usd_estimado || g.usd_estimado),
+    sin_tarifa: !!(a.sin_tarifa || g.sin_tarifa), tokens,
+    cantidad: { imagenes: a.cantidad.imagenes + g.cantidad.imagenes,
+      caracteres: a.cantidad.caracteres + g.cantidad.caracteres },
+  });
+}
+
 function importeCoste(ficha, hueco) {
   if (!ficha) return h('span', { clase: 'meta' }, '—');
   // sin un solo evento no hay importe que ensenar: un '$0.00' ahi se lee como
@@ -3788,11 +3807,11 @@ function pintarCoste() {
   vaciar(nodo);
   const datos = COSTE.datos;
   if (!datos) { nodo.textContent = 'coste: —'; return; }
-  const abierto = proveedorDe(datos, 'openai');
+  const abierto = imagenesDe(datos);
   const voz = proveedorDe(datos, 'tts');
   const cli = proveedorDe(datos, 'claude_cli');
 
-  nodo.appendChild(h('span', { clase: 'prov' }, h('b', {}, 'OpenAI'), importeCoste(abierto),
+  nodo.appendChild(h('span', { clase: 'prov' }, h('b', {}, 'Imágenes'), importeCoste(abierto),
     h('span', { clase: 'meta' }, `${corto(abierto.tokens.total)} tok`)));
   nodo.appendChild(h('span', { clase: 'prov' }, h('b', {}, 'TTS'), importeCoste(voz),
     h('span', { clase: 'meta' }, `${corto(voz.cantidad.caracteres)} car`)));
@@ -3892,7 +3911,7 @@ async function pintarDesgloseCoste() {
   vaciar(caja);
 
   const fila = ficha => {
-    const abierto = proveedorDe(ficha, 'openai');
+    const abierto = imagenesDe(ficha);
     const voz = proveedorDe(ficha, 'tts');
     const cli = proveedorDe(ficha, 'claude_cli');
     return [
@@ -6798,7 +6817,7 @@ function costeLightAhora() {
       + 'el modo editor.',
   });
   if (!datos) { caja.appendChild(h('span', { clase: 'meta' }, 'coste: —')); return caja; }
-  const abierto = proveedorDe(datos, 'openai');
+  const abierto = imagenesDe(datos);
   const voz = proveedorDe(datos, 'tts');
   const cli = proveedorDe(datos, 'claude_cli');
   caja.appendChild(h('span', { clase: 'prov' }, h('b', {}, 'Imágenes'),
