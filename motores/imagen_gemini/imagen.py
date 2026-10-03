@@ -131,6 +131,9 @@ def modelo_para(quality="low", uso="plano"):
     modelo, resolucion = CALIDADES.get(str(quality or "low"), CALIDADES["low"])
     if uso == "reparto":
         modelo = str(ficha.get("modelo_reparto") or MODELO_REPARTO)
+        # Pro cobra lo mismo a 1K que a 2K (1.120 tokens de salida, medido el
+        # 02-10-2026): la hoja de la que depende todo el video, a 2K
+        resolucion = "2K"
     elif ficha.get("modelo_planos") and quality != "high":
         modelo = str(ficha["modelo_planos"])
     if modelo not in MODELOS:
@@ -327,7 +330,10 @@ def generar(prompt, referencias, *, quality="low", tamano="apaisado", api_key=No
         configuracion_imagen["image_size"] = resolucion
     configuracion = types.GenerateContentConfig(
         response_modalities=["IMAGE"],
-        image_config=types.ImageConfig(**configuracion_imagen))
+        image_config=types.ImageConfig(**configuracion_imagen),
+        # sin herramientas: es una imagen, no una conversacion (y el SDK avisa
+        # en cada llamada si esto se queda puesto)
+        automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True))
 
     ultimo = None
     for intento in range(reintentos + 1):

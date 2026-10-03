@@ -139,8 +139,9 @@ def prueba_modelos():
     igual(gem.modelo_para("low"), ("gemini-3.1-flash-image", "1K"), "low: Nano Banana 2 a 1K")
     igual(gem.modelo_para("medium"), ("gemini-3.1-flash-image", "2K"), "medium: Nano Banana 2 a 2K")
     igual(gem.modelo_para("high"), ("gemini-3-pro-image", "2K"), "high: Nano Banana Pro a 2K")
-    igual(gem.modelo_para("low", "reparto")[0], "gemini-3-pro-image",
-          "las hojas de reparto, con Pro sea cual sea la calidad")
+    igual(gem.modelo_para("low", "reparto"), ("gemini-3-pro-image", "2K"),
+          "las hojas de reparto, con Pro a 2K sea cual sea la calidad (cuesta lo "
+          "mismo que a 1K)")
     igual(gem.ASPECTOS, {"apaisado": "3:2", "cuadrado": "1:1", "vertical": "2:3"},
           "la MISMA proporcion que daba OpenAI (1536x1024)")
     usd = gem.coste_de("gemini-3.1-flash-image", "1K", 15680, 1120)
