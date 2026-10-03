@@ -2338,9 +2338,9 @@ def eventos_coste(pid: str, proveedor: str = Query(default=None),
                   limite: int = Query(default=200)):
     """Detalle de cada consumo, filtrable por proveedor, paso y unidad."""
     ctx = contexto(pid)
-    if proveedor and proveedor not in COSTE.PROVEEDORES:
+    if proveedor and proveedor not in COSTE.ANOTABLES:
         raise ErrorApi(400, f"proveedor desconocido: {proveedor}. Los proveedores "
-                            f"son: {', '.join(COSTE.PROVEEDORES)}")
+                            f"son: {', '.join(COSTE.ANOTABLES)}")
     if paso:
         _validar_paso(paso)
     eventos = medidor(ctx).eventos(proveedor=proveedor, paso=paso, unidad=unidad,

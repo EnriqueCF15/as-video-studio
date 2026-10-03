@@ -64,6 +64,10 @@ RUTA_GLOBAL = (os.environ.get("ESTUDIO_COSTE_GLOBAL")
 NOMBRE_COSTE = "coste.jsonl"
 
 PROVEEDORES = ("openai", "tts", "claude_cli")
+# Los que se pueden ANOTAR. Los de PROVEEDORES salen siempre en el resumen,
+# aunque esten a cero; estos dos solo cuando han gastado algo. Sin ellos aqui,
+# `anotar` los rechazaba y la primera imagen de Gemini tumbaba la tanda entera.
+ANOTABLES = PROVEEDORES + ("elevenlabs", "gemini_imagen")
 # Claude se mide en tokens y ElevenLabs en creditos de su plan: ninguno de los
 # dos es un cargo por llamada, asi que no suman dolares al total.
 SIN_DOLARES = ("claude_cli", "elevenlabs")
@@ -256,9 +260,9 @@ class Medidor:
         casos se distinguen con 'sin_tarifa', y ninguno inventa un numero.
         """
         proveedor = str(proveedor)
-        if proveedor not in PROVEEDORES:
+        if proveedor not in ANOTABLES:
             raise ValueError(f"proveedor desconocido: {proveedor}. "
-                             f"Los proveedores son: {', '.join(PROVEEDORES)}")
+                             f"Los proveedores son: {', '.join(ANOTABLES)}")
         importe = None if proveedor in SIN_DOLARES else _numero(usd)
         registro = {
             "id": None,
@@ -429,12 +433,21 @@ def cabecera(proveedores, total_usd):
     abierto = proveedores.get("openai") or _vacio("openai")
     voz = proveedores.get("tts") or _vacio("tts")
     cli = proveedores.get("claude_cli") or _vacio("claude_cli")
-    return "     ".join([
+    trozos = [
         f"OpenAI  {importe(abierto)} · {corto(abierto['tokens']['total'])} tok",
         f"TTS  {importe(voz)} · {corto(voz['cantidad']['caracteres'])} car",
         f"Claude  {corto(cli['tokens']['total'])} tok",
-        f"TOTAL  ${total_usd:.2f}",
-    ])
+    ]
+    # los proveedores nuevos, solo si han gastado: sin ellos el TOTAL sumaba unas
+    # imagenes de Gemini que la linea no decia de donde salian
+    gemini = proveedores.get("gemini_imagen")
+    if gemini and gemini.get("eventos"):
+        trozos.append(f"Gemini  {importe(gemini)} · "
+                      f"{corto(gemini['cantidad']['imagenes'])} img")
+    once = proveedores.get("elevenlabs")
+    if once and once.get("eventos"):
+        trozos.append(f"ElevenLabs  {corto(once['cantidad']['creditos'])} cred")
+    return "     ".join(trozos + [f"TOTAL  ${total_usd:.2f}"])
 
 
 def agregar(registros):

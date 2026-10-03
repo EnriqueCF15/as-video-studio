@@ -260,7 +260,29 @@ def prueba_estudio():
     comprobar(abs(total["total_usd"] - 0.125) < 1e-9,
               "las imagenes de Gemini SI suman al total (se pagan en dolares)")
     igual(total["proveedores"]["gemini_imagen"]["etiqueta"], "Gemini (Vertex)", "con su nombre")
+    comprobar("Gemini  $0.07" in total["cabecera"], "y la linea de cabecera lo dice")
     comprobar(gem in coste.modulos_de_imagen(), "el medidor encuentra el motor de Gemini")
+
+    # APUNTAR DE VERDAD, no solo sumar: `Medidor.anotar` rechazaba los
+    # proveedores nuevos y la primera imagen de Gemini tumbaba la tanda entera
+    from nucleo.proyecto import Proyecto
+    proyecto = Proyecto.crear(os.path.join(BASE, "proyectos"), "medidor gemini")
+    global_previo = coste.RUTA_GLOBAL
+    coste.RUTA_GLOBAL = os.path.join(BASE, "coste_global.jsonl")
+    try:
+        medidor = coste.Medidor(proyecto)
+        medidor.ruta_global = coste.RUTA_GLOBAL
+        with coste.contexto(medidor, "assets", "escena:S001"):
+            coste.reportar_imagen_gemini(
+                {"modelo": "gemini-3.1-flash-image", "coste": 0.0672,
+                 "usage": {"input_tokens": 120, "output_tokens": 1120}})
+            coste.reportar_tts_elevenlabs(100, 20, "eleven_flash_v2_5")
+        hechos = medidor.total()
+        igual(hechos["eventos"], 2, "el medidor apunta la imagen de Gemini y ElevenLabs")
+        comprobar(abs(hechos["total_usd"] - 0.0672) < 1e-6,
+                  "y la imagen suma sus dolares (ElevenLabs va en creditos)")
+    finally:
+        coste.RUTA_GLOBAL = global_previo
 
 
 def main():
