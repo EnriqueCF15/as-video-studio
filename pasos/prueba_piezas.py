@@ -311,6 +311,18 @@ def prueba_planos_por_sitio():
     ok("24 sitios COMO MINIMO" in entero,
        "y todo eso entra en el criterio que lee el agente")
 
+    # LOS HUECOS DE LA PLANTILLA SON LOS QUE SE RELLENAN. Quedo un `{fijos}` de
+    # cuando habia personajes fijos del canal, `proponer` ya no lo pasaba, y el
+    # catalogo reventaba con KeyError: 'fijos' en cuanto se pedia de verdad.
+    import inspect                                            # noqa: PLC0415
+    import string                                             # noqa: PLC0415
+    huecos = {campo for _t, campo, _f, _c in
+              string.Formatter().parse(catalogo_visual.INSTRUCCION) if campo}
+    llamada = inspect.getsource(catalogo_visual.proponer)
+    sin_rellenar = sorted(h for h in huecos if f"{h}=" not in llamada)
+    igual(sin_rellenar, [],
+          "cada hueco de la instrucción del catálogo se rellena en `proponer`")
+
 
 def _fundir_ct(escenas, puestas, p=None, idioma=None):
     """`_fundir_cartelas` con el andamiaje que la prueba no necesita ver.
