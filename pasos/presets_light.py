@@ -577,9 +577,13 @@ def validar_encargo(crudo):
     # LA VOZ ELEGIDA A MANO, opcional: el id de una voz del catalogo (lo
     # normal, la clonada del canal). Con ella la descripcion sigue valiendo
     # --pone la velocidad y el color-- pero la voz no se elige: es esa.
+    #
+    # No solo de Cartesia: las de Google se llaman por su nombre («Orus»,
+    # «Kore») y las de ElevenLabs por un id de 20. Con el minimo de 8 de antes,
+    # un estilo con voz de Google no se podia volver a generar.
     voz_id = " ".join(str(datos.get("voz_id") or "").split())
-    if voz_id and not re.match(r"^[A-Za-z0-9_-]{8,64}$", voz_id):
-        raise ErrorEncargo("«voz_id» no parece un id de voz de Cartesia")
+    if voz_id and not re.match(r"^[A-Za-z0-9_.-]{2,64}$", voz_id):
+        raise ErrorEncargo("«voz_id» no parece un id de voz")
     limpio["voz_id"] = voz_id
 
     # AQUI NO HAY PERSONAJES DEL CANAL NI LLAMADAS A LA ACCION, y las dos
