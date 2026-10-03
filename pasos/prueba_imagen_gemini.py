@@ -138,10 +138,10 @@ def prueba_modelos():
     print("\n[1] que modelo y que resolucion para cada calidad y uso")
     igual(gem.modelo_para("low"), ("gemini-3.1-flash-image", "1K"), "low: Nano Banana 2 a 1K")
     igual(gem.modelo_para("medium"), ("gemini-3.1-flash-image", "2K"), "medium: Nano Banana 2 a 2K")
-    igual(gem.modelo_para("high"), ("gemini-3-pro-image", "2K"), "high: Nano Banana Pro a 2K")
-    igual(gem.modelo_para("low", "reparto"), ("gemini-3-pro-image", "2K"),
-          "las hojas de reparto, con Pro a 2K sea cual sea la calidad (cuesta lo "
-          "mismo que a 1K)")
+    igual(gem.modelo_para("high"), ("gemini-3.1-flash-image", "4K"), "high: Nano Banana 2 a 4K")
+    igual(gem.modelo_para("low", "reparto"), ("gemini-3.1-flash-image", "2K"),
+          "las hojas de reparto, con Nano Banana 2 a 2K sea cual sea la calidad "
+          "(eleccion de Enrique tras la prueba real)")
     igual(gem.ASPECTOS, {"apaisado": "3:2", "cuadrado": "1:1", "vertical": "2:3"},
           "la MISMA proporcion que daba OpenAI (1536x1024)")
     usd = gem.coste_de("gemini-3.1-flash-image", "1K", 15680, 1120)
@@ -222,7 +222,7 @@ def prueba_simulado():
         gem._cliente = real
     igual(Image.open(io.BytesIO(imagen)).size, (1024, 1536), "imagen del tamano exacto")
     igual((meta["coste"], meta["simulado"], meta["modelo"]),
-          (0.0, True, "gemini-3-pro-image"), "sin coste, marcada y con el modelo que tocaria")
+          (0.0, True, "gemini-3.1-flash-image"), "sin coste, marcada y con el modelo que tocaria")
 
 
 # ---------------------------------------------------------------- estudio

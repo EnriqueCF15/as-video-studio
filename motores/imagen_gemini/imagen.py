@@ -12,19 +12,18 @@ cliente es `genai.Client(vertexai=True, ...)` con las credenciales de gcloud
 Modelos (comprobados contra Vertex el 02-10-2026 con models.get, ubicacion
 `global`)
 ------------------------------------------------------------------------------
-    gemini-3.1-flash-image   «Nano Banana 2»   planos, por defecto
-    gemini-3-pro-image       «Nano Banana Pro» hojas de reparto (fijan la
-                                               consistencia de todo el video)
+    gemini-3.1-flash-image   «Nano Banana 2»   TODO, por defecto (ver CALIDADES)
+    gemini-3-pro-image       «Nano Banana Pro» opcional (en la prueba real, menos
+                                               consistente que NB2 y el doble)
     gemini-2.5-flash-image   «Nano Banana»     el mas barato; admite pocas
                                                referencias, no sirve para planos
 
 La calidad del Estudio (low | medium | high) se traduce asi (CALIDADES):
     low     Nano Banana 2 a 1K   ~0,07 $ + referencias
     medium  Nano Banana 2 a 2K   ~0,10 $ + referencias
-    high    Nano Banana Pro a 2K ~0,13 $ + referencias
-y las hojas de reparto van SIEMPRE con el modelo de reparto (Pro), sea cual
-sea la calidad: son pocas y de ellas depende que el personaje sea el mismo en
-todo el video.
+    high    Nano Banana 2 a 4K   ~0,15 $ + referencias
+y las hojas de reparto van SIEMPRE a 2K, sea cual sea la calidad: son pocas y
+de ellas depende que el personaje sea el mismo en todo el video.
 
 Tamano: el resto del Estudio espera exactamente lo que daba OpenAI (1536x1024
 apaisado, 1024x1536 vertical, 1024x1024 cuadrado; ver p6_assets.TAMANO). Se
@@ -71,10 +70,15 @@ TOKENS_SALIDA = {"1K": 1120, "2K": 1680, "4K": 2520}
 TOKENS_SALIDA_PRO = {"1K": 1120, "2K": 1120, "4K": 2000}
 TOKENS_SALIDA_25 = 1290
 
+#: TODO CON NANO BANANA 2, tambien las hojas de reparto. Decidido mirando la
+#: primera prueba real (02-10-2026): las tres de NB2 mantuvieron el mismo
+#: personaje y el mismo escenario usando la primera de referencia; Pro y NB 2.5
+#: salieron con varias inconsistencias. Pro y NB 2.5 siguen disponibles por
+#: Configuracion (modelo_planos / modelo_reparto en el bloque "google").
 MODELO_PLANOS = "gemini-3.1-flash-image"
-MODELO_REPARTO = "gemini-3-pro-image"
+MODELO_REPARTO = "gemini-3.1-flash-image"
 CALIDADES = {"low": (MODELO_PLANOS, "1K"), "medium": (MODELO_PLANOS, "2K"),
-             "high": (MODELO_REPARTO, "2K")}
+             "high": (MODELO_PLANOS, "4K")}
 
 TAMANOS = {"apaisado": "1536x1024", "cuadrado": "1024x1024", "vertical": "1024x1536"}
 ASPECTOS = {"apaisado": "3:2", "cuadrado": "1:1", "vertical": "2:3"}
@@ -82,7 +86,7 @@ ASPECTOS = {"apaisado": "3:2", "cuadrado": "1:1", "vertical": "2:3"}
 #: Precio de referencia por imagen (solo la salida, a 1K), como el PRECIO de
 #: imagen_openai: es lo que se ensena antes de generar. Lo que se anota sale de
 #: los tokens que devuelve la API.
-PRECIO = {"low": 0.067, "medium": 0.101, "high": 0.134}
+PRECIO = {"low": 0.067, "medium": 0.101, "high": 0.151}
 
 #: Llamadas a la vez. Vertex reparte una cuota dinamica compartida; la prueba
 #: gratuita no deja pedir mas, asi que se va despacio y se espera ante un 429.
@@ -131,10 +135,10 @@ def modelo_para(quality="low", uso="plano"):
     modelo, resolucion = CALIDADES.get(str(quality or "low"), CALIDADES["low"])
     if uso == "reparto":
         modelo = str(ficha.get("modelo_reparto") or MODELO_REPARTO)
-        # Pro cobra lo mismo a 1K que a 2K (1.120 tokens de salida, medido el
-        # 02-10-2026): la hoja de la que depende todo el video, a 2K
+        # la hoja de la que depende que el personaje sea el mismo en todo el
+        # video, a 2K (con Pro, 2K cuesta lo mismo que 1K: medido el 02-10-2026)
         resolucion = "2K"
-    elif ficha.get("modelo_planos") and quality != "high":
+    elif ficha.get("modelo_planos"):
         modelo = str(ficha["modelo_planos"])
     if modelo not in MODELOS:
         raise ValueError(f"modelo de imagen de Vertex desconocido: {modelo!r}. "
