@@ -435,6 +435,34 @@ def probar_ejecucion(cliente, base, pid):
     return tid, salidas
 
 
+def probar_regrabar_seccion(cliente, pid):
+    """Regrabar una seccion deja la toma cosida como VERSION NUEVA de la voz.
+
+    Hasta el 02-10-2026 la seccion se grababa, se cosia en voz/trabajo/ y ahi
+    se quedaba: nadie llamaba a completar y el regrabado no llegaba a nada.
+    """
+    seccion("REGRABAR UNA SECCION")
+    respuesta, antes = cliente.get(f"/api/proyectos/{pid}/pasos/voz/versiones")
+    igual(respuesta.status_code, 200, "GET versiones responde 200")
+    respuesta, datos = cliente.get(f"/api/proyectos/{pid}/pasos/voz")
+    secciones = ((datos or {}).get("salidas") or {}).get("secciones") or []
+    ok(secciones, "la toma tiene secciones que regrabar")
+    if not secciones:
+        return
+    sid = secciones[0]["id"]
+    respuesta, lanzado = cliente.post(f"/api/proyectos/{pid}/voz/secciones/{sid}/regrabar", {})
+    igual(respuesta.status_code, 202, "regrabar una seccion responde 202")
+    ficha = esperar_trabajo(cliente, lanzado["trabajo_id"])
+    igual(ficha["estado"], "listo", f"el regrabado sale bien ({ficha.get('error')})")
+    respuesta, despues = cliente.get(f"/api/proyectos/{pid}/pasos/voz/versiones")
+    igual(len(despues["versiones"]), len(antes["versiones"]) + 1,
+          "regrabar deja una version nueva de la voz")
+    ok(despues["activa"] > antes["activa"], "y la deja activa")
+    respuesta, datos = cliente.get(f"/api/proyectos/{pid}/pasos/voz")
+    ok("regrabada" in str(((datos or {}).get("salidas") or {}).get("resumen") or ""),
+       "la voz activa es la toma regrabada")
+
+
 def probar_versiones(cliente, pid):
     seccion("VERSIONES Y REVERTIR")
     cliente.put(f"/api/proyectos/{pid}/pasos/voz/params",
@@ -3437,6 +3465,7 @@ def main():
         probar_onboarding(cliente)
         probar_salud_de_las_cuentas(cliente)
         probar_recetas(cliente, pid)
+        probar_regrabar_seccion(cliente, pid)
         probar_lo_que_se_cuenta_en_publico()
         probar_el_avisador_y_los_tramos()
         probar_el_mensaje_publico_de_una_tanda()

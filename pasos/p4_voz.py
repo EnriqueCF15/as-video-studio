@@ -99,6 +99,21 @@ MODELOS = ("sonic-3.5", "sonic-3", "sonic-turbo", "sonic-2")
 
 MODELO_POR_DEFECTO = "sonic-3.5"
 IDIOMA_POR_DEFECTO = "es"
+
+#: Quien pone la voz. SIN el param, Cartesia: es lo que tenian todos los
+#: proyectos de antes y su firma no puede moverse por esto. Los videos nuevos lo
+#: reciben escrito desde el Estilo del canal (o Configuracion) al crearse.
+PROVEEDORES = ("cartesia", "google", "elevenlabs")
+PROVEEDOR_POR_DEFECTO = "cartesia"
+
+#: Los tramos del video, cada uno con su instruccion de estilo (solo Gemini).
+#: La voz es la MISMA en todos: lo unico que cambia es como habla.
+TRAMOS = ("intro", "cuerpo", "cierre")
+#: El gancho: la primera seccion del guion. Si sale mas larga que INTRO_MAXIMO_S
+#: se parte en la frontera de bloque mas cercana a INTRO_OBJETIVO_S, para que el
+#: estilo de intro no se coma un minuto de video.
+INTRO_OBJETIVO_S = 35.0
+INTRO_MAXIMO_S = 60.0
 HUECO_POR_DEFECTO = 1.0
 NOMBRE_PISTA = "narracion.wav"
 NOMBRE_META = "audio_meta.json"
@@ -132,13 +147,29 @@ class _MotorVoz:
     esto el atributo se resuelve contra el modulo que este cargado AHORA, y las
     llamadas de mas abajo (motor.espaciar, motor.VOCES, motor.wav_desde_pcm) se
     quedan escritas igual que estaban.
+
+    Sirve igual para los otros motores de la voz (Google, el alineador): cada
+    uno es un `_MotorVoz` con su carpeta.
     """
 
+    def __init__(self, carpeta="voz_cartesia", fichero="voz.py"):
+        self._carpeta, self._fichero = carpeta, fichero
+
     def __getattr__(self, nombre):
-        return getattr(comun.cargar_motor("voz_cartesia", "voz.py"), nombre)
+        return getattr(comun.cargar_motor(self._carpeta, self._fichero), nombre)
 
 
 motor = _MotorVoz()
+#: Google Cloud TTS (Gemini TTS / Chirp 3 HD) y el alineador local que le pone
+#: las marcas de palabra que Google no da.
+motor_google = _MotorVoz("voz_google", "voz.py")
+alineador = _MotorVoz("alinear_voz", "alinear.py")
+#: ElevenLabs: la voz premium. Trae sus propias marcas (por caracter).
+motor_eleven = _MotorVoz("voz_elevenlabs", "voz.py")
+
+#: Un id de voz de ElevenLabs: 20 letras y numeros, sin guiones (los de
+#: Cartesia son UUID, con guiones).
+_ID_ELEVENLABS = re.compile(r"^[A-Za-z0-9]{20}$")
 #: La frecuencia de muestreo de la API. Se resuelve UNA vez a proposito: no
 #: cambia entre versiones del motor y se usa en aritmetica en todo el fichero.
 SR = motor.SR
@@ -329,11 +360,20 @@ def resolver_params(params):
             return por_defecto
         return valor
 
+    proveedor = str(crudos.get("proveedor") or PROVEEDOR_POR_DEFECTO).strip().lower()
+    if proveedor not in PROVEEDORES:
+        raise ValueError(f"proveedor de voz desconocido: {proveedor!r}. "
+                         f"Validos: {', '.join(PROVEEDORES)}")
+    idioma = str(elegir("idioma", IDIOMA_POR_DEFECTO)).strip().lower()
+    if proveedor == "google":
+        return _resolver_google(crudos, base, idioma, nombre_preset)
+    if proveedor == "elevenlabs":
+        return _resolver_elevenlabs(crudos, base, idioma, nombre_preset)
+
     modelo = str(elegir("modelo", MODELO_POR_DEFECTO)).strip()
     if modelo not in MODELOS:
         raise ValueError(f"modelo de voz desconocido: {modelo!r}. "
                          f"Validos: {', '.join(MODELOS)}")
-    idioma = str(elegir("idioma", IDIOMA_POR_DEFECTO)).strip().lower()
 
     emociones_crudas = crudos.get("emociones")
     if emociones_crudas is None:
@@ -342,6 +382,11 @@ def resolver_params(params):
     velocidad = normalizar_velocidad(elegir("velocidad", None))
 
     voz_id = str(elegir("voz_id", "")).strip()
+    if (voz_id in motor_google.VOCES_MASCULINAS + motor_google.VOCES_FEMENINAS
+            or _ID_ELEVENLABS.match(voz_id)):
+        # una voz de Google o de ElevenLabs que se quedo puesta al volver el
+        # estilo a Cartesia: mandarsela seria un 400, asi que va la de defecto
+        voz_id = ""
     if not voz_id:
         sugeridas = base.get("voces_sugeridas") or []
         if sugeridas:
@@ -370,6 +415,119 @@ def resolver_params(params):
         "controles_por": ("generation_config" if usa_generation_config(modelo)
                           else "experimental_controls"),
     }
+
+
+def normalizar_estilos(estilos):
+    """{tramo: instruccion} con solo los tramos conocidos y con texto. -> dict"""
+    if not isinstance(estilos, dict):
+        return {}
+    limpios = {}
+    for tramo in TRAMOS:
+        texto = " ".join(str(estilos.get(tramo) or "").split())
+        if texto:
+            if len(texto.encode("utf-8")) > 3000:
+                raise ValueError(f"la instruccion de estilo «{tramo}» es demasiado "
+                                 f"larga (maximo ~3.000 caracteres)")
+            limpios[tramo] = texto
+    return limpios
+
+
+def _resolver_google(crudos, base, idioma, nombre_preset):
+    """La configuracion de una toma con Google. Ver `resolver_params`.
+
+    Del preset de voz (los de Cartesia) solo se hereda el aire entre bloques: su
+    modelo y sus voces son de Cartesia, y mandarlos a Google seria un 400.
+    """
+    modelo = str(crudos.get("modelo") or motor_google.MODELO_POR_DEFECTO).strip()
+    if modelo not in motor_google.MODELOS:
+        raise ValueError(f"modelo de Google desconocido: {modelo!r}. "
+                         f"Validos: {', '.join(motor_google.MODELOS)}")
+    voz_id = str(crudos.get("voz_id") or "").strip()
+    if not voz_id or re.fullmatch(r"[0-9a-f-]{36}", voz_id):
+        # vacio, o un id de Cartesia que llego de un preset viejo
+        voz_id = motor_google.VOCES.get(idioma, motor_google.VOCES["en"])["id"]
+    conocidas = motor_google.VOCES_MASCULINAS + motor_google.VOCES_FEMENINAS
+    if voz_id not in conocidas:
+        raise ValueError(f"voz de Google desconocida: {voz_id!r}")
+    hueco_crudo = crudos.get("hueco_minimo")
+    if hueco_crudo in (None, ""):
+        hueco_crudo = base.get("hueco_minimo", HUECO_POR_DEFECTO)
+    try:
+        hueco = float(hueco_crudo)
+    except (TypeError, ValueError):
+        raise ValueError(f"hueco_minimo debe ser un numero de segundos, "
+                         f"llego {hueco_crudo!r}")
+    if hueco < 0:
+        raise ValueError("hueco_minimo no puede ser negativo")
+    tramos = crudos.get("tramos") if isinstance(crudos.get("tramos"), dict) else {}
+    tramos = {str(s): str(t) for s, t in tramos.items() if t in TRAMOS}
+    return {
+        "proveedor": "google",
+        "preset": nombre_preset or None,
+        "modelo": modelo,
+        "familia": motor_google.MODELOS[modelo],
+        "voz_id": voz_id,
+        "idioma": idioma,
+        "velocidad": None,
+        "emociones": [],
+        "hueco_minimo": round(hueco, 3),
+        "estilos": normalizar_estilos(crudos.get("estilos")),
+        "tramos": tramos,
+        "experimental_controls": {},
+        "generation_config": {},
+        "controles_por": "estilo" if motor_google.MODELOS[modelo] == "gemini" else "ninguno",
+    }
+
+
+def _resolver_elevenlabs(crudos, base, idioma, nombre_preset):
+    """La configuracion de una toma con ElevenLabs. Ver `resolver_params`.
+
+    Del preset de voz (los de Cartesia) se heredan el aire y la velocidad, que
+    ElevenLabs entiende como `speed` (0,7 a 1,2). Sus emociones y su modelo son
+    de Cartesia y no viajan. Sin estilos por tramo: ElevenLabs no lee
+    instrucciones en lenguaje natural.
+    """
+    modelo = str(crudos.get("modelo") or motor_eleven.MODELO_POR_DEFECTO).strip()
+    if modelo not in motor_eleven.MODELOS:
+        raise ValueError(f"modelo de ElevenLabs desconocido: {modelo!r}. "
+                         f"Validos: {', '.join(motor_eleven.MODELOS)}")
+    voz_id = str(crudos.get("voz_id") or "").strip()
+    if not _ID_ELEVENLABS.match(voz_id):
+        # vacio, o la voz de otro proveedor que llego de un preset
+        voz_id = motor_eleven.VOCES.get(idioma, motor_eleven.VOCES["en"])["id"]
+    velocidad = normalizar_velocidad(crudos.get("velocidad") or base.get("velocidad"))
+    hueco_crudo = crudos.get("hueco_minimo")
+    if hueco_crudo in (None, ""):
+        hueco_crudo = base.get("hueco_minimo", HUECO_POR_DEFECTO)
+    try:
+        hueco = float(hueco_crudo)
+    except (TypeError, ValueError):
+        raise ValueError(f"hueco_minimo debe ser un numero de segundos, "
+                         f"llego {hueco_crudo!r}")
+    if hueco < 0:
+        raise ValueError("hueco_minimo no puede ser negativo")
+    return {
+        "proveedor": "elevenlabs",
+        "preset": nombre_preset or None,
+        "modelo": modelo,
+        "voz_id": voz_id,
+        "idioma": idioma,
+        "velocidad": velocidad,
+        "speed": _speed_sonic3(velocidad),
+        "emociones": [],
+        "hueco_minimo": round(hueco, 3),
+        "estilos": {},
+        "tramos": {},
+        "experimental_controls": {},
+        "generation_config": {},
+        "controles_por": "speed",
+    }
+
+
+def estilo_de(tramo, cfg):
+    """La instruccion de estilo de un tramo, o None. Sin la suya, la del cuerpo."""
+    estilos = (cfg or {}).get("estilos") or {}
+    return estilos.get(tramo) or estilos.get("cuerpo") or None
 
 
 def _factor_velocidad(velocidad):
@@ -434,7 +592,15 @@ def normalizar_bloques(crudo):
             continue
         if not texto:
             continue
-        bloques.append({"id": identificador, "texto": texto})
+        ficha = {"id": identificador, "texto": texto}
+        # La marca de seccion que pone el redactor (regla 11 de p3_guion) tiene
+        # que llegar a `agrupar_secciones`, que corta por ella. Se perdia aqui,
+        # y las secciones salian de las pausas o cada seis bloques en vez de en
+        # los cambios de tema -- y con Google, el cambio de estilo de la intro al
+        # cuerpo caia donde no acababa el gancho.
+        if isinstance(elemento, dict) and elemento.get("abre_seccion"):
+            ficha["abre_seccion"] = True
+        bloques.append(ficha)
     return bloques
 
 
@@ -750,6 +916,350 @@ def agrupar_secciones(bloques, umbral_ms=UMBRAL_SECCION_MS, maximo=MAX_SECCIONES
     return secciones
 
 
+# ------------------------------------------------- tramos y toma con Google
+#
+# Google graba cada seccion en una peticion aparte (ver motores/voz_google), y
+# eso da justo lo que hace falta para los ESTILOS POR TRAMO: cada seccion lleva
+# la instruccion de su tramo, y como las secciones se cortan donde el relato
+# cambia de asunto, el cambio de estilo cae en un limite natural y nunca a mitad
+# de frase. La voz es la misma en todas.
+
+def _segundos_estimados(texto, cfg):
+    _, duracion = _estimar_marcas(marcas_tts.limpiar(texto),
+                                  _factor_velocidad((cfg or {}).get("velocidad")))
+    return duracion
+
+
+def separar_intro(secciones, bloques, cfg):
+    """Si la primera seccion es larga, el gancho se queda en su propia seccion.
+
+    Se corta en la frontera de BLOQUE cuya duracion estimada acumulada quede mas
+    cerca de INTRO_OBJETIVO_S (los bloques acaban en final de frase). Solo hace
+    falta si la intro tiene un estilo distinto del cuerpo: si no, cortar es
+    poner una costura de mas sin ganar nada.
+    """
+    estilos = (cfg or {}).get("estilos") or {}
+    if not secciones or not estilos.get("intro") or estilos.get("intro") == estilos.get("cuerpo"):
+        return secciones
+    por_id = {b["id"]: b for b in bloques}
+    primera = secciones[0]
+    duraciones = [_segundos_estimados(por_id[b]["texto"], cfg) for b in primera["bloques"]]
+    if sum(duraciones) <= INTRO_MAXIMO_S or len(duraciones) < 2:
+        return secciones
+    acumulado, mejor, distancia = 0.0, 1, None
+    for corte in range(1, len(duraciones)):
+        acumulado += duraciones[corte - 1]
+        if distancia is None or abs(acumulado - INTRO_OBJETIVO_S) < distancia:
+            mejor, distancia = corte, abs(acumulado - INTRO_OBJETIVO_S)
+    nuevas = [{"bloques": primera["bloques"][:mejor]},
+              {"bloques": primera["bloques"][mejor:]}] + [
+        {"bloques": s["bloques"]} for s in secciones[1:]]
+    for indice, seccion in enumerate(nuevas, 1):
+        seccion["id"] = f"SB{indice:03d}"
+    return nuevas
+
+
+def asignar_tramos(secciones, cfg):
+    """Pone a cada seccion su tramo: intro la primera, cierre la ultima (solo si
+    hay estilo de cierre), cuerpo el resto. Lo fijado a mano (`tramos`, por id
+    de seccion) manda."""
+    estilos = (cfg or {}).get("estilos") or {}
+    manual = (cfg or {}).get("tramos") or {}
+    total = len(secciones)
+    for indice, seccion in enumerate(secciones):
+        tramo = "cuerpo"
+        if indice == 0 and total > 1:
+            tramo = "intro"
+        elif indice == total - 1 and total > 2 and estilos.get("cierre"):
+            tramo = "cierre"
+        seccion["tramo"] = manual.get(seccion["id"], tramo)
+    return secciones
+
+
+def _sintesis_google(trozos, cfg, progreso):
+    """La llamada que se PAGA: los trozos a Google, en una pista igualada.
+
+    -> (wav, segundos, info). Esta aparte para que el medidor de coste la
+    envuelva a ella sola (nucleo/coste.py), se pida desde donde se pida.
+    """
+    return comun.llamar_motor(
+        motor_google.sintetizar_trozos, trozos, voz=cfg["voz_id"],
+        modelo=cfg["modelo"], idioma=cfg["idioma"], avisar=progreso)
+
+
+def _alinear(wav, hablado, cfg, progreso):
+    """Marcas de palabra de una pista ya grabada, con el alineador local."""
+    import tempfile
+    carpeta = tempfile.mkdtemp(prefix="voz_alinear_")
+    ruta = os.path.join(carpeta, "toma.wav")
+    try:
+        with open(ruta, "wb") as fh:
+            fh.write(wav)
+        return alineador.alinear(ruta, hablado, cfg.get("idioma") or "en",
+                                 avisar=progreso)
+    finally:
+        try:
+            os.remove(ruta)
+            os.rmdir(carpeta)
+        except OSError:
+            pass
+
+
+def _resumen_alineado(alineado):
+    return {"cobertura": alineado.get("cobertura"),
+            "faltan": list(alineado.get("faltan") or [])[:25],
+            "sobran": alineado.get("sobran"),
+            "de_mas": list(alineado.get("de_mas") or [])[:10],
+            "dispositivo": alineado.get("dispositivo"),
+            "modelo": alineado.get("modelo"),
+            "segundos": alineado.get("segundos")}
+
+
+# ------------------------------------------- la voz que lee su propia instruccion
+#
+# GEMINI A VECES LEE EN VOZ ALTA LA INSTRUCCION DE ESTILO. Medido el 02-10-2026
+# en la primera toma real: antes del guion dijo «Intrigued, slightly urgent,
+# quick but clear pace, energetic but credible, not salesy.» -- la mitad de la
+# instruccion de la intro--, y la misma instruccion no se habia colado en la
+# prueba A/B del dia anterior. Es aleatorio, asi que no se arregla escribiendo
+# de otra forma la instruccion (que ademas es la que sono bien): se MIRA.
+#
+# El alineador dice lo que se oyo y no esta en el guion (`de_mas`, con donde
+# sono). Si un tramo de eso se parece a la instruccion de la seccion en la que
+# cae, esa seccion se regraba sola y se cose en su sitio; despues se vuelve a
+# alinear. Unos centimos por regrabado, contra un video publicado que empieza
+# leyendo sus propias acotaciones.
+
+#: Cuantas veces se regraba una seccion que ha leido su instruccion.
+REINTENTOS_FUGA = 2
+#: Palabras de mas a partir de las cuales se mira si son la instruccion, y que
+#: parte de ellas tiene que estar en la instruccion para darlo por hecho.
+FUGA_MIN_PALABRAS = 3
+FUGA_PARECIDO = 0.5
+
+
+def _norm(palabra):
+    return re.sub(r"[^\w]", "", str(palabra).lower()).replace("_", "")
+
+
+def fugas_de_estilo(alineado, info, trozos):
+    """Secciones donde la voz leyo su instruccion de estilo. -> {indice: texto}"""
+    piezas = (info or {}).get("piezas") or []
+    fugas = {}
+    for tramo in (alineado or {}).get("de_mas") or []:
+        dichas = {_norm(w) for w in str(tramo.get("texto") or "").split()} - {""}
+        if len(dichas) < FUGA_MIN_PALABRAS:
+            continue
+        indice = next((p["trozo"] for p in piezas
+                       if p["t_in"] - 0.5 <= float(tramo.get("s") or 0) <= p["t_out"] + 0.5),
+                      None)
+        if indice is None or indice >= len(trozos):
+            continue
+        estilo = {_norm(w) for w in str(trozos[indice].get("estilo") or "").split()} - {""}
+        if estilo and len(dichas & estilo) / len(dichas) >= FUGA_PARECIDO:
+            fugas[indice] = str(tramo.get("texto") or "")
+    return fugas
+
+
+#: Y LA OTRA CARA: LA VOZ QUE SE SALTA TEXTO. Medido el 02-10-2026: en una de
+#: tres tomas de la misma intro, Gemini se salto el gancho entero («Your
+#: grandparents never read a finance blog. No apps, no spreadsheets, no
+#: charts.») y siguio como si nada. En un video de 25 min eso son unas palabras
+#: entre miles: la cobertura GLOBAL ni se mueve. Por eso se mira por seccion: a
+#: partir de cuantas palabras que faltan, y de que parte de la seccion, se
+#: regraba. Por debajo es ruido normal (una contraccion, «do not» oido como
+#: «don't»).
+OMISION_MIN_PALABRAS = 4
+OMISION_PARTE = 0.12
+
+
+def omisiones_por_seccion(alineado, hablados):
+    """Secciones a las que les falta texto de verdad. -> {indice: palabras que faltan}
+
+    `hablados` es lo que se locuta de cada seccion, en orden: con eso se sabe a
+    que seccion pertenece cada palabra del guion que el alineador no oyo
+    (`faltan_idx`, indices sobre las palabras con letras de todo el texto).
+    """
+    faltan = set((alineado or {}).get("faltan_idx") or [])
+    salida, inicio = {}, 0
+    for indice, texto in enumerate(hablados):
+        cuantas = sum(1 for palabra in str(texto or "").split() if _norm(palabra))
+        dentro = sum(1 for k in range(inicio, inicio + cuantas) if k in faltan)
+        if cuantas and dentro >= OMISION_MIN_PALABRAS and dentro / cuantas >= OMISION_PARTE:
+            salida[indice] = dentro
+        inicio += cuantas
+    return salida
+
+
+def _sustituir_trozo(wav, info, indice, wav_nuevo, info_nuevo):
+    """La pista con el trozo `indice` cambiado por otra grabacion. -> (wav, segundos)
+
+    Corta de donde empieza su primera pieza a donde acaba la ultima (con las
+    pausas internas) y pone la nueva en su sitio; las piezas de despues se
+    corren lo que cambie la duracion, para que el siguiente vistazo sepa donde
+    cae cada una.
+    """
+    sr = motor_google.SR
+    piezas = info["piezas"]
+    mias = [p for p in piezas if p["trozo"] == indice]
+    desde, hasta = mias[0]["t_in"], mias[-1]["t_out"]
+    pcm, nuevo = wav[44:], wav_nuevo[44:]
+    ini, fin = int(round(desde * sr)) * 2, int(round(hasta * sr)) * 2
+    pista = pcm[:ini] + nuevo + pcm[fin:]
+    delta = len(nuevo) / (sr * 2) - (hasta - desde)
+    otras = []
+    for pieza in piezas:
+        if pieza["trozo"] == indice:
+            continue
+        if pieza["t_in"] >= hasta - 1e-6:
+            pieza = dict(pieza, t_in=round(pieza["t_in"] + delta, 3),
+                         t_out=round(pieza["t_out"] + delta, 3))
+        otras.append(pieza)
+    for pieza in (info_nuevo or {}).get("piezas") or []:
+        otras.append(dict(pieza, trozo=indice, t_in=round(pieza["t_in"] + desde, 3),
+                          t_out=round(pieza["t_out"] + desde, 3)))
+    info["piezas"] = sorted(otras, key=lambda p: p["t_in"])
+    return motor_google.wav_desde_pcm(pista), len(pista) / (sr * 2)
+
+
+def _secciones_mal(alineado, info, trozos, hablados):
+    """Lo que hay que regrabar: {indice: (motivo, dato)} -- la fuga manda."""
+    malas = {i: ("omision", n) for i, n in omisiones_por_seccion(alineado, hablados).items()}
+    malas.update({i: ("fuga", t) for i, t in fugas_de_estilo(alineado, info, trozos).items()})
+    return malas
+
+
+def _google_verificado(trozos, hablados, cfg, progreso):
+    """Graba con Google, alinea y regraba las secciones que leyeron su
+    instruccion o se saltaron texto. -> (wav, segundos, alineado, info)
+
+    `hablados`: lo que se locuta de cada trozo, en el mismo orden.
+    """
+    hablado = " ".join(hablados)
+    wav, duracion, info = _sintesis_google(trozos, cfg, lambda f, m="": progreso(0.5 * f, m))
+    alineado = _alinear(wav, hablado, cfg, lambda f, m="": progreso(0.5 + 0.4 * f, m))
+    regrabados = []
+    for intento in range(REINTENTOS_FUGA):
+        malas = _secciones_mal(alineado, info, trozos, hablados)
+        if not malas:
+            break
+        for indice, (motivo, dato) in malas.items():
+            seccion = trozos[indice].get("seccion", indice)
+            progreso(0.9, f"AVISO: la voz leyó en voz alta su instrucción de estilo en "
+                          f"{seccion} («{str(dato)[:70]}»): se regraba esa sección"
+                     if motivo == "fuga" else
+                     f"AVISO: la voz se saltó {dato} palabras en {seccion}: se regraba "
+                     f"esa sección")
+            wav_nuevo, _d, info_nuevo = _sintesis_google([trozos[indice]], cfg,
+                                                         lambda f, m="": None)
+            wav, duracion = _sustituir_trozo(wav, info, indice, wav_nuevo, info_nuevo)
+            regrabados.append({"seccion": seccion, "motivo": motivo,
+                               "detalle": dato, "intento": intento + 1})
+        alineado = _alinear(wav, hablado, cfg, lambda f, m="": progreso(0.92, m))
+    if regrabados:
+        info["regrabados"] = regrabados
+    restantes = _secciones_mal(alineado, info, trozos, hablados)
+    if restantes:
+        info["sin_arreglar"] = [{"seccion": trozos[i].get("seccion", i), "motivo": m,
+                                 "detalle": d} for i, (m, d) in restantes.items()]
+    return wav, duracion, alineado, info
+
+
+def _toma_google(secciones, bloques, cfg, progreso):
+    """Toda la toma con Google. -> (wav, segundos, palabras, info)
+
+    Una peticion por seccion (o varias si no cabe), cada una con el estilo de
+    su tramo; despues el alineador pone las marcas sobre la pista entera, asi
+    que los tiempos salen ABSOLUTOS y continuos como los de Cartesia.
+    """
+    familia = motor_google.familia_de(cfg["modelo"])
+    por_id = {b["id"]: b for b in bloques}
+    trozos = []
+    for seccion in secciones:
+        texto = " ".join(marcas_tts.para_google(por_id[b]["texto"], familia)
+                         for b in seccion["bloques"])
+        trozos.append({"texto": texto, "seccion": seccion["id"],
+                       "estilo": estilo_de(seccion.get("tramo"), cfg)
+                       if familia == "gemini" else None})
+    hablados = [" ".join(marcas_tts.limpiar(por_id[b]["texto"]) for b in s["bloques"])
+                for s in secciones]
+    hablado = " ".join(hablados)
+    if simulado():
+        wav, duracion, palabras = _toma_simulada(hablado, cfg)
+        return wav, duracion, palabras, {"simulado": True, "peticiones": len(trozos)}
+
+    wav, duracion, alineado, info = _google_verificado(trozos, hablados, cfg, progreso)
+    info["alineado"] = _resumen_alineado(alineado)
+    return wav, duracion, alineado["palabras"], info
+
+
+def _sintesis_elevenlabs(trozos, cfg, progreso, antes="", despues=""):
+    """La llamada que se PAGA a ElevenLabs (en creditos del plan).
+
+    -> (wav, segundos, palabras o None, info). Aparte, como la de Google, para
+    que el medidor la envuelva a ella sola (nucleo/coste.py).
+    """
+    return comun.llamar_motor(
+        motor_eleven.sintetizar_trozos, trozos, voz=cfg["voz_id"], modelo=cfg["modelo"],
+        idioma=cfg.get("idioma"), velocidad=cfg.get("speed"), avisar=progreso,
+        antes=antes, despues=despues)
+
+
+def _toma_elevenlabs(secciones, bloques, cfg, progreso, antes="", despues=""):
+    """Toda la toma (o una seccion) con ElevenLabs. -> (wav, segundos, palabras, info)
+
+    Las marcas vienen de la propia API, por caracter. Si alguna pieza vuelve
+    sin ellas, el alineador local las pone sobre la pista entera: es el
+    respaldo, no el camino normal.
+    """
+    por_id = {b["id"]: b for b in bloques}
+    trozos = [{"texto": " ".join(marcas_tts.limpiar(por_id[b]["texto"])
+                                 for b in seccion["bloques"]),
+               "seccion": seccion["id"]} for seccion in secciones]
+    hablado = " ".join(t["texto"] for t in trozos)
+    if simulado():
+        wav, duracion, palabras = _toma_simulada(hablado, cfg)
+        return wav, duracion, palabras, {"simulado": True, "peticiones": len(trozos)}
+    wav, duracion, palabras, info = _sintesis_elevenlabs(
+        trozos, cfg, lambda f, m="": progreso(0.85 * f, m), antes, despues)
+    if palabras is None:
+        alineado = _alinear(wav, hablado, cfg, lambda f, m="": progreso(0.85 + 0.15 * f, m))
+        palabras = alineado["palabras"]
+        info["alineado"] = _resumen_alineado(alineado)
+    return wav, duracion, palabras, info
+
+
+def _avisos_google(info, secciones):
+    """Lo que hay que decirle a quien escucha, en sus palabras. -> [str]"""
+    nombres = {i: s for i, s in enumerate(secciones)}
+    avisos = []
+    for aviso in (info or {}).get("avisos") or []:
+        a, b = (nombres.get(i, {}) for i in aviso["entre"])
+        donde = (f"entre {a.get('id')} ({a.get('tramo')}) y {b.get('id')} "
+                 f"({b.get('tramo')})")
+        if aviso["tipo"] == "volumen":
+            avisos.append(f"salto de volumen de {aviso['db']:+.1f} dB {donde}: ya "
+                          f"se ha igualado, pero escucha esa costura")
+        else:
+            avisos.append(f"cambio de ritmo del {aviso['cambio'] * 100:+.0f} % {donde}")
+    for regrabado in (info or {}).get("regrabados") or []:
+        avisos.append(f"{regrabado['seccion']} se regrabó sola: la voz había leído en voz "
+                      f"alta su instrucción de estilo («{str(regrabado['detalle'])[:60]}»)"
+                      if regrabado["motivo"] == "fuga" else
+                      f"{regrabado['seccion']} se regrabó sola: la voz se había saltado "
+                      f"{regrabado['detalle']} palabras")
+    for mala in (info or {}).get("sin_arreglar") or []:
+        avisos.append(f"¡OJO! {mala['seccion']} sigue saliendo mal tras {REINTENTOS_FUGA} "
+                      f"intentos ({'lee su instrucción de estilo' if mala['motivo'] == 'fuga' else 'se salta texto'}): "
+                      f"regrábala en la revisión de audio")
+    alineado = (info or {}).get("alineado") or {}
+    if alineado.get("cobertura") is not None and alineado["cobertura"] < 0.9:
+        avisos.append(f"solo el {alineado['cobertura'] * 100:.0f} % del guion se oye "
+                      f"tal cual: la voz puede haberse saltado o cambiado algo "
+                      f"({' '.join(alineado.get('faltan') or [])[:120]})")
+    return avisos
+
+
 def _toma_por_contexto(trozos, cfg, progreso):
     """Una toma en varias entradas del MISMO contexto. (wav, dur, palabras).
 
@@ -908,7 +1418,34 @@ def sintetizar_toma(texto, cfg, progreso=None):
     if simulado():
         avisa(0.5, "simulando toma")
         return _toma_simulada(texto, cfg)
+    if cfg.get("proveedor") == "google":
+        return _toma_google_suelta(texto, cfg, avisa)
+    if cfg.get("proveedor") == "elevenlabs":
+        bloque = [{"id": "PREV", "texto": texto}]
+        wav, duracion, palabras, _info = _toma_elevenlabs(
+            [{"id": "SB001", "bloques": ["PREV"]}], bloque, cfg, avisa)
+        return wav, duracion, palabras
     return _toma_real(texto, cfg, avisa)
+
+
+def _toma_google_suelta(texto, cfg, avisa):
+    """Un texto corto con Google, para ESCUCHAR la voz (previsualizar).
+
+    Va con el estilo de la intro, que es lo primero que suena del video. Las
+    marcas son estimadas y estiradas a la duracion real: para escuchar no hace
+    falta arrancar el alineador.
+    """
+    familia = motor_google.familia_de(cfg["modelo"])
+    wav, duracion, _info = _sintesis_google(
+        [{"texto": marcas_tts.para_google(texto, familia),
+          "estilo": estilo_de("intro", cfg) if familia == "gemini" else None}],
+        cfg, avisa)
+    palabras, estimada = _estimar_marcas(marcas_tts.limpiar(texto))
+    escala = duracion / estimada if estimada else 1.0
+    for palabra in palabras:
+        palabra["s"] = round(palabra["s"] * escala, 3)
+        palabra["e"] = round(palabra["e"] * escala, 3)
+    return wav, duracion, palabras
 
 
 def _reparto(bloques, palabras):
@@ -996,7 +1533,25 @@ def sintetizar_bloques(bloques, destino, cfg, avisar=None,
     trozos = [" ".join(por_bloque[bid] for bid in sec["bloques"])
               for sec in secciones]
     wav = duracion = palabras = None
-    if len(trozos) > 1 and not simulado():
+    info_google = info_eleven = None
+    if cfg.get("proveedor") == "google":
+        # Una peticion por seccion con el estilo de su tramo, y el alineador
+        # local para las marcas. Sin caida a otro camino: si Google falla, el
+        # fallo se dice; grabar con otra voz a escondidas seria peor.
+        secciones = asignar_tramos(separar_intro(secciones, anotados, cfg), cfg)
+        avisa(0.05, f"{len(secciones)} secciones con Google "
+                    f"({cfg['modelo']}, voz {cfg['voz_id']})")
+        wav, duracion, palabras, info_google = _toma_google(
+            secciones, anotados, cfg, progreso)
+        for aviso in _avisos_google(info_google, secciones):
+            avisa(0.86, f"AVISO: {aviso}")
+    elif cfg.get("proveedor") == "elevenlabs":
+        # una peticion por seccion, cada una con el texto vecino como contexto;
+        # las marcas vienen de la API. Sin caida a otro proveedor, como Google.
+        avisa(0.05, f"{len(secciones)} secciones con ElevenLabs ({cfg['modelo']})")
+        wav, duracion, palabras, info_eleven = _toma_elevenlabs(
+            secciones, anotados, cfg, progreso)
+    elif len(trozos) > 1 and not simulado():
         avisa(0.05, f"{len(trozos)} secciones en un solo contexto")
         try:
             wav, duracion, palabras = _toma_por_contexto(trozos, cfg, progreso)
@@ -1060,6 +1615,11 @@ def sintetizar_bloques(bloques, destino, cfg, avisar=None,
         "resumen": (f"{len(anotados)} bloques, {round(duracion, 1)}s, "
                     f"{cfg['modelo']} {cfg.get('preset') or 'sin preset'}"),
     }
+    if info_google is not None:
+        salidas["google"] = dict(info_google, avisos_texto=_avisos_google(
+            info_google, secciones))
+    if info_eleven is not None:
+        salidas["elevenlabs"] = info_eleven
     if extra_meta:
         salidas.update(extra_meta)
 
@@ -1123,12 +1683,17 @@ def _fichas_de_seccion(secciones, fichas):
     for seccion in secciones or []:
         dentro = [por_id[b] for b in seccion["bloques"] if b in por_id]
         tiempos = [f for f in dentro if f.get("t_in") is not None]
-        salida.append({
+        ficha = {
             "id": seccion["id"],
             "bloques": list(seccion["bloques"]),
             "t_in": tiempos[0]["t_in"] if tiempos else None,
             "t_out": tiempos[-1]["t_out"] if tiempos else None,
-        })
+        }
+        # el tramo (intro/cuerpo/cierre) solo existe con Google: es lo que hace
+        # que regrabar la seccion use el estilo que le toca
+        if seccion.get("tramo"):
+            ficha["tramo"] = seccion["tramo"]
+        salida.append(ficha)
     return salida
 
 
@@ -1192,7 +1757,14 @@ def previsualizar(proyecto, params, segundos=20):
 
     firma = hashlib.sha256(json.dumps(
         [texto, cfg["modelo"], cfg["voz_id"], cfg["idioma"],
-         cfg["experimental_controls"], simulado()],
+         cfg["experimental_controls"], simulado()]
+        # con Google, el estilo de la intro cambia lo que suena; sin Google la
+        # lista se queda como era y los wav ya cacheados siguen valiendo
+        + ([cfg.get("proveedor"), estilo_de("intro", cfg)]
+           if cfg.get("proveedor") == "google" else [])
+        # con ElevenLabs suena distinto segun la velocidad (speed)
+        + ([cfg.get("proveedor"), cfg.get("speed")]
+           if cfg.get("proveedor") == "elevenlabs" else []),
         sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()[:12]
     carpeta = proyecto.ruta("previsualizaciones")
     os.makedirs(carpeta, exist_ok=True)
@@ -1347,6 +1919,139 @@ def _hay_clave():
         return bool(comun.cargar_motor("voz_cartesia", "voz.py").cargar_api_key())
     except BaseException:                                     # noqa: BLE001
         return False
+
+
+# --------------------------------------------------------------- prueba A/B
+#
+# EL MISMO TEXTO PARA TODAS LAS VOCES, y con dos secciones: un gancho y el
+# arranque del cuerpo. Asi se oye cada voz con los dos estilos y, sobre todo, la
+# COSTURA entre ellos, que es lo que no se puede juzgar con doce segundos.
+# ~140 palabras, unos 70 s: lo bastante para cansarse de una voz, lo bastante
+# poco para que comparar cuatro cueste centimos.
+
+TEXTOS_AB = {
+    "en": [
+        {"id": "AB01", "abre_seccion": True, "texto":
+            "Most people have never been told this, but the families who quietly "
+            "built real wealth during the Great Depression followed a handful of "
+            "simple rules. Not secret investments. Not lucky breaks. Just small "
+            "habits, repeated every single week."},
+        {"id": "AB02", "texto": "And almost nobody talks about them today. So let's fix that."},
+        {"id": "AB03", "abre_seccion": True, "texto":
+            "Habit number one: they paid themselves first. Before rent, before "
+            "groceries, before anything else, a small part of every paycheck went "
+            "straight into a jar, a tin, or a savings account."},
+        {"id": "AB04", "texto":
+            "It didn't matter if it was ten percent or just a few dollars. What "
+            "mattered was that it happened automatically, every time, without a "
+            "second thought."},
+        {"id": "AB05", "texto":
+            "Today you can do the same thing in about five minutes. Set up an "
+            "automatic transfer for the day after payday, and you'll never even "
+            "miss the money."},
+    ],
+    "es": [
+        {"id": "AB01", "abre_seccion": True, "texto":
+            "Casi nadie te lo ha contado, pero las familias que construyeron un "
+            "patrimonio de verdad durante la Gran Depresión seguían unas pocas "
+            "reglas muy sencillas. Ni inversiones secretas ni golpes de suerte. "
+            "Solo pequeños hábitos, repetidos cada semana."},
+        {"id": "AB02", "texto": "Y hoy casi nadie habla de ellos. Vamos a arreglarlo."},
+        {"id": "AB03", "abre_seccion": True, "texto":
+            "Hábito número uno: se pagaban primero a sí mismos. Antes del alquiler, "
+            "antes de la compra, antes de cualquier otra cosa, una parte de cada "
+            "sueldo iba directa a un frasco, a una lata o a una cuenta de ahorro."},
+        {"id": "AB04", "texto":
+            "Daba igual que fuera el diez por ciento o unas pocas monedas. Lo que "
+            "importaba es que pasara solo, cada vez, sin pensarlo."},
+        {"id": "AB05", "texto":
+            "Hoy puedes hacer lo mismo en cinco minutos. Programa una transferencia "
+            "automática para el día después de cobrar y ni siquiera echarás de "
+            "menos ese dinero."},
+    ],
+}
+
+
+def bloques_ab(idioma):
+    """El pasaje de la prueba A/B en ese idioma (ingles si no lo hay). -> [bloques]"""
+    return copy.deepcopy(TEXTOS_AB.get(str(idioma or "en").lower(), TEXTOS_AB["en"]))
+
+
+def listar_voces_google(idioma=None):
+    """Las voces de Google (Gemini TTS / Chirp 3 HD), con la misma forma de
+    ficha que las de Cartesia para que la pantalla las pinte igual.
+
+    Es una lista fija: son las que publica Google para estas dos familias, y
+    hablan todos los idiomas del modelo (el acento lo pone el idioma, no la voz).
+    """
+    codigo = str(idioma or "en").strip().lower() or "en"
+    fichas = []
+    for genero, nombres in (("masculina", motor_google.VOCES_MASCULINAS),
+                            ("femenina", motor_google.VOCES_FEMENINAS)):
+        for nombre in nombres:
+            fichas.append({"id": nombre, "nombre": nombre, "descripcion": f"voz {genero}",
+                           "idioma": codigo, "genero": genero, "pais": "",
+                           "locales": [], "locales_nativos": [], "pro": False,
+                           "publica": True, "nativa": True, "proveedor": "google"})
+    # Orus la primera (la del canal), despues las masculinas y luego las femeninas
+    fichas.sort(key=lambda f: (f["nombre"] != "Orus", f["genero"] != "masculina",
+                               f["nombre"]))
+    return fichas
+
+
+RUTA_CACHE_VOCES_ELEVEN = os.path.join(RUTA_CACHE, "voces_elevenlabs.json")
+
+
+def _huella_clave_eleven():
+    """Huella (nunca la clave) de la clave de ElevenLabs en uso, o ""."""
+    try:
+        clave = motor_eleven.cargar_api_key()
+    except BaseException:                                       # noqa: BLE001
+        return ""
+    return hashlib.sha256(str(clave).encode("utf-8")).hexdigest()[:12]
+
+
+def listar_voces_elevenlabs(idioma=None, refrescar=False):
+    """Las voces de la cuenta de ElevenLabs (las propias primero), cacheadas.
+
+    Con la misma regla que el catalogo de Cartesia: el cache sabe con que clave
+    se bajo, y sin clave (o en simulado) no se pide nada y se devuelve lo que
+    haya, o la voz por defecto. Las voces de ElevenLabs hablan todos los idiomas
+    del modelo, asi que no se filtran por idioma.
+    """
+    cache = None
+    if os.path.exists(RUTA_CACHE_VOCES_ELEVEN):
+        try:
+            with open(RUTA_CACHE_VOCES_ELEVEN, "r", encoding="utf-8") as fh:
+                cache = json.load(fh)
+        except ValueError:
+            cache = None
+    huella = _huella_clave_eleven()
+    lista = cache.get("voces") if isinstance(cache, dict) else None
+    fresca = bool(lista) and (time.time() - float(cache.get("epoch", 0))
+                              < DIAS_CACHE_VOCES * 86400) and cache.get("clave") == huella
+    if not refrescar and fresca:
+        return copy.deepcopy(lista)
+    if simulado() or not huella:
+        if lista:
+            return copy.deepcopy(lista)
+        defecto = motor_eleven.VOCES.get(str(idioma or "en"), motor_eleven.VOCES["en"])
+        return [{"id": defecto["id"], "nombre": defecto["nombre"], "descripcion": "voz de la libreria",
+                 "idioma": "", "genero": "", "pais": "", "publica": True, "nativa": True,
+                 "proveedor": "elevenlabs"}]
+    try:
+        fichas = comun.llamar_motor(motor_eleven.listar_voces)
+    except Exception:                                           # noqa: BLE001
+        if lista:
+            return copy.deepcopy(lista)
+        raise
+    for ficha in fichas:
+        ficha["nativa"] = True
+    os.makedirs(RUTA_CACHE, exist_ok=True)
+    comun.escribir_json(RUTA_CACHE_VOCES_ELEVEN, {
+        "epoch": time.time(), "fecha": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "clave": huella, "voces": fichas})
+    return copy.deepcopy(fichas)
 
 
 def listar_voces(idioma=None, refrescar=False, solo_nativas=False):
@@ -1587,6 +2292,35 @@ def regrabar_seccion(bloques, seccion_id, cfg, meta, destino, peticion="",
 
     if simulado():
         wav_nuevo, dur_nueva, marcas_nuevas = _toma_simulada(trozo, cfg)
+    elif cfg.get("proveedor") == "google":
+        # con el estilo de SU tramo: una intro regrabada sigue sonando a intro.
+        # El motor la deja al mismo nivel que el resto de la toma (todas las
+        # piezas se igualan al mismo objetivo), asi que la costura no salta.
+        tramo = seccion.get("tramo") or "cuerpo"
+        familia = motor_google.familia_de(cfg["modelo"])
+        con_estilo = [{"texto": " ".join(marcas_tts.para_google(b["texto"], familia)
+                                         for b in nuevos if b["id"] in dentro),
+                       "seccion": seccion_id,
+                       "estilo": estilo_de(tramo, cfg) if familia == "gemini" else None}]
+        hablado = " ".join(marcas_tts.limpiar(b["texto"]) for b in nuevos
+                           if b["id"] in dentro)
+        wav_nuevo, dur_nueva, alineado, info_regrabado = _google_verificado(
+            con_estilo, [hablado], cfg, progreso)
+        marcas_nuevas = alineado["palabras"]
+        for mala in info_regrabado.get("sin_arreglar") or []:
+            avisa(0.78, f"AVISO: {mala['seccion']} sigue saliendo mal "
+                        f"({'lee su instrucción de estilo' if mala['motivo'] == 'fuga' else 'se salta texto'}): "
+                        f"vuelve a regrabarla")
+    elif cfg.get("proveedor") == "elevenlabs":
+        # sola, pero con el texto de alrededor como contexto: la entonacion
+        # de la costura sabe que viene de algo y que sigue algo
+        orden = [b["id"] for b in nuevos]
+        primero, ultimo = orden.index(seccion["bloques"][0]), orden.index(seccion["bloques"][-1])
+        antes = " ".join(marcas_tts.limpiar(b["texto"]) for b in nuevos[:primero])
+        despues = " ".join(marcas_tts.limpiar(b["texto"]) for b in nuevos[ultimo + 1:])
+        wav_nuevo, dur_nueva, marcas_nuevas, _info = _toma_elevenlabs(
+            [{"id": seccion_id, "bloques": [b["id"] for b in nuevos if b["id"] in dentro]}],
+            nuevos, cfg, progreso, antes=antes, despues=despues)
     else:
         wav_nuevo, dur_nueva, marcas_nuevas = _toma_por_contexto(
             [trozo], cfg, progreso)
@@ -1638,7 +2372,7 @@ def regrabar_seccion(bloques, seccion_id, cfg, meta, destino, peticion="",
         "duracion": round(len(_pcm_de(wav)) / bytes_seg, 3),
         "palabras": ordenadas, "bloques": fichas,
         "secciones": _fichas_de_seccion(
-            [{"id": s["id"], "bloques": s["bloques"]}
+            [{"id": s["id"], "bloques": s["bloques"], "tramo": s.get("tramo")}
              for s in (meta.get("secciones") or [])], fichas),
         "resumen": f"{seccion_id} regrabada ({len(trozo.split())} palabras)",
     })

@@ -1,0 +1,15 @@
+# El alineador local de palabras (motores/alinear_voz): torch con CUDA + WhisperX.
+#
+# Va aparte de requirements.txt porque pesa ~5 GB y porque torch con GPU sale
+# de su propio indice. Se instala en DOS pasos, en este orden:
+#
+#   python -m pip install --no-cache-dir torch==2.8.0 torchaudio==2.8.0 torchvision==0.23.0 --index-url https://download.pytorch.org/whl/cu126
+#   python -m pip install --no-cache-dir -r requirements-alineador.txt
+#
+# cu126 y no cu128: los wheels de CUDA 12.8 piden un driver NVIDIA >= 570, y el
+# de la RTX 3050 de esta maquina (566.07) da hasta CUDA 12.7. Sin GPU NVIDIA,
+# el primer paso con --index-url https://download.pytorch.org/whl/cpu: el
+# alineador cae solo a CPU (mas lento, mismo resultado).
+#
+# whisperx 3.8.6 pide exactamente torch 2.8.0; si se sube uno, el otro.
+whisperx==3.8.6

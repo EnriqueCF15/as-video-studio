@@ -1693,6 +1693,13 @@ input[type=range].ritmo {
 .voz-ficha .elegir-voz .nombre { font-size: 13px; }
 .voz-ficha .elegir-voz .meta { font-size: 11px; }
 
+/* La prueba A/B de voces: una fila por voz, con su reproductor a lo ancho. */
+.comparar-voces .voz-ab {
+  margin-top: 10px; padding: 8px 10px;
+  border: 1px solid var(--linea); border-radius: 8px;
+}
+.comparar-voces .voz-ab audio { width: 100%; margin-top: 6px; }
+
 /* De dónde sale el estilo, en la ficha: separado de las muestras por una línea,
    igual que la caja de «qué le cambiarías». Son dos gestos distintos sobre lo
    mismo —cambiar la fuente y corregir lo que hay— y se ven como dos. */

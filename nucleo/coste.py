@@ -64,8 +64,11 @@ RUTA_GLOBAL = (os.environ.get("ESTUDIO_COSTE_GLOBAL")
 NOMBRE_COSTE = "coste.jsonl"
 
 PROVEEDORES = ("openai", "tts", "claude_cli")
-SIN_DOLARES = ("claude_cli",)            # se miden en tokens y no suman al total
-ETIQUETAS = {"openai": "OpenAI", "tts": "TTS", "claude_cli": "Claude"}
+# Claude se mide en tokens y ElevenLabs en creditos de su plan: ninguno de los
+# dos es un cargo por llamada, asi que no suman dolares al total.
+SIN_DOLARES = ("claude_cli", "elevenlabs")
+ETIQUETAS = {"openai": "OpenAI", "tts": "TTS", "claude_cli": "Claude",
+             "elevenlabs": "ElevenLabs"}
 
 AVISO_PRESUPUESTO = 0.8                  # fraccion a partir de la cual se avisa
 
@@ -219,7 +222,8 @@ def _tokens(datos):
 def _cantidad(datos):
     datos = datos if isinstance(datos, dict) else {}
     return {"imagenes": int(datos.get("imagenes") or 0),
-            "caracteres": int(datos.get("caracteres") or 0)}
+            "caracteres": int(datos.get("caracteres") or 0),
+            "creditos": int(datos.get("creditos") or 0)}
 
 
 def _linea(ruta, registro):
@@ -378,7 +382,7 @@ def _vacio(proveedor):
         "sin_tarifa": False,
         "suma_al_total": proveedor not in SIN_DOLARES,
         "tokens": {"entrada": 0, "salida": 0, "cache": 0, "total": 0},
-        "cantidad": {"imagenes": 0, "caracteres": 0},
+        "cantidad": {"imagenes": 0, "caracteres": 0, "creditos": 0},
     }
 
 
@@ -617,6 +621,59 @@ def reportar_tts(caracteres, operacion="sintesis", unidad=None, tokens=None,
                    usd_estimado=True, detalle=detalle)
 
 
+def coste_google_tts(modelo, caracteres, segundos_audio, caracteres_estilo=0):
+    """Importe de una sintesis con Google TTS. -> (usd o None, tokens)
+
+    Gemini cobra el texto de entrada (guion + instruccion de estilo, que viaja
+    en CADA peticion) y el audio de salida por tokens; Chirp 3 HD, por
+    caracter. Un modelo sin tarifa devuelve None: hueco antes que inventar.
+    """
+    tabla = (tarifas().get("tts_google") or {}).get("modelos") or {}
+    ficha = tabla.get(str(modelo or "")) or {}
+    precio_audio = _numero(ficha.get("usd_por_token_audio"))
+    if precio_audio is not None:
+        tokens_audio = float(segundos_audio or 0) * (_numero(
+            ficha.get("tokens_audio_por_segundo")) or 25)
+        tokens_texto = (int(caracteres or 0) + int(caracteres_estilo or 0)) / (
+            _numero(ficha.get("caracteres_por_token")) or 4)
+        usd = (tokens_audio * precio_audio
+               + tokens_texto * (_numero(ficha.get("usd_por_token_texto")) or 0.0))
+        return usd, {"entrada": int(round(tokens_texto)), "salida": int(round(tokens_audio))}
+    precio_caracter = _numero(ficha.get("usd_por_caracter"))
+    if precio_caracter is not None:
+        return int(caracteres or 0) * precio_caracter, None
+    return None, None
+
+
+def reportar_tts_google(caracteres, segundos_audio, modelo, caracteres_estilo=0,
+                        operacion="toma", unidad=None, detalle=None):
+    """Anota una sintesis con Google TTS. Va bajo 'tts', como Cartesia."""
+    usd, tokens = coste_google_tts(modelo, caracteres, segundos_audio,
+                                   caracteres_estilo)
+    ficha = {"proveedor_voz": "google", "modelo": modelo}
+    ficha.update(detalle or {})
+    return _anotar("tts", operacion, unidad=unidad, tokens=tokens,
+                   cantidad={"caracteres": int(caracteres or 0),
+                             "segundos_audio": round(float(segundos_audio or 0), 2)},
+                   usd=usd, usd_estimado=True, detalle=ficha)
+
+
+def reportar_tts_elevenlabs(caracteres, creditos, modelo, operacion="toma",
+                            unidad=None, detalle=None):
+    """Anota una sintesis con ElevenLabs, en CREDITOS del plan y sin dolares.
+
+    `creditos` son los MEDIDOS (la suscripcion antes y despues); si la medicion
+    no estuvo, la estimacion por caracter y queda marcado como estimado.
+    """
+    ficha = {"proveedor_voz": "elevenlabs", "modelo": modelo}
+    ficha.update(detalle or {})
+    return _anotar("elevenlabs", operacion, unidad=unidad,
+                   cantidad={"caracteres": int(caracteres or 0),
+                             "creditos": int(creditos or 0)},
+                   usd=None, usd_estimado=bool(ficha.get("creditos_estimados_solo")),
+                   detalle=ficha)
+
+
 def reportar_claude(sobre, operacion="cli", unidad=None, detalle=None):
     """Anota una llamada al CLI de Claude leyendo su bloque 'usage'.
 
@@ -734,6 +791,56 @@ def _medir_toma_por_contexto(original):
     return medido
 
 
+def _medir_sintesis_google(original):
+    """La voz con Google: el UNICO sitio por el que pasa todo lo que se le paga.
+
+    Toma, regrabado y previsualizacion llaman a `p4_voz._sintesis_google`, asi
+    que envolver esta y no las de arriba es lo que evita que una de las tres se
+    quede sin contar (lo que paso con `_toma_por_contexto`). Se anota DESPUES,
+    con lo que el motor dice que mando y lo que devolvio.
+    """
+    def medido(trozos, cfg, *args, **kwargs):
+        resultado = original(trozos, cfg, *args, **kwargs)
+        cfg = cfg if isinstance(cfg, dict) else {}
+        _wav, segundos, info = resultado
+        info = info if isinstance(info, dict) else {}
+        # la instruccion de estilo viaja en cada peticion de su trozo
+        por_trozo = {}
+        for pieza in info.get("piezas") or []:
+            por_trozo[pieza.get("trozo")] = por_trozo.get(pieza.get("trozo"), 0) + 1
+        estilo = sum(len(str((t or {}).get("estilo") or "")) * por_trozo.get(i, 1)
+                     for i, t in enumerate(trozos or []) if isinstance(t, dict))
+        reportar_tts_google(info.get("caracteres") or sum(
+            len(str((t or {}).get("texto") or "")) for t in trozos or []
+            if isinstance(t, dict)),
+            info.get("segundos_audio") or segundos, cfg.get("modelo"),
+            caracteres_estilo=estilo,
+            detalle={"voz_id": cfg.get("voz_id"), "idioma": cfg.get("idioma"),
+                     "peticiones": info.get("peticiones")})
+        return resultado
+    return medido
+
+
+def _medir_sintesis_elevenlabs(original):
+    """La voz con ElevenLabs: toma, regrabado y escucha pasan por aqui."""
+    def medido(trozos, cfg, *args, **kwargs):
+        resultado = original(trozos, cfg, *args, **kwargs)
+        cfg = cfg if isinstance(cfg, dict) else {}
+        info = resultado[3] if isinstance(resultado, tuple) and len(resultado) > 3 else {}
+        info = info if isinstance(info, dict) else {}
+        medidos = info.get("creditos")
+        reportar_tts_elevenlabs(
+            info.get("caracteres") or 0,
+            medidos if medidos is not None else info.get("creditos_estimados"),
+            cfg.get("modelo"),
+            detalle={"voz_id": cfg.get("voz_id"), "idioma": cfg.get("idioma"),
+                     "peticiones": info.get("peticiones"),
+                     "creditos_restantes": info.get("creditos_restantes"),
+                     "creditos_estimados_solo": medidos is None})
+        return resultado
+    return medido
+
+
 def _medir_claude(operacion):
     def fabrica(original):
         def medido(*args, **kwargs):
@@ -821,6 +928,10 @@ def instrumentar(pasos=None):
         _envolver(voz, "_toma_real", _medir_toma_real, informe, "voz.toma_real")
         _envolver(voz, "_toma_por_contexto", _medir_toma_por_contexto, informe,
                   "voz.toma_por_contexto")
+        _envolver(voz, "_sintesis_google", _medir_sintesis_google, informe,
+                  "voz.sintesis_google")
+        _envolver(voz, "_sintesis_elevenlabs", _medir_sintesis_elevenlabs, informe,
+                  "voz.sintesis_elevenlabs")
         _envolver(voz, "previsualizar", _medir_previsualizacion, informe,
                   "voz.previsualizar")
     guion = getattr(pasos, "p3_guion", None)

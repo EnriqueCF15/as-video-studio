@@ -19,3 +19,11 @@ requests==2.34.2
 # Solo por el camino de la voz por websocket (pasos/p4_voz), pero sin el ese
 # camino falla en el momento de usarlo, no al arrancar: va aqui a proposito.
 websocket-client==1.9.0
+
+# Las credenciales de Google Cloud (ADC de gcloud o cuenta de servicio) para la
+# voz de Google (motores/voz_google) y, en la fase 2, las imagenes por Vertex.
+google-auth==2.59.1
+
+# El alineador de palabras (torch + WhisperX, ~5 GB) NO va aqui: va aparte en
+# requirements-alineador.txt, porque necesita el indice de PyTorch con CUDA y
+# sin el el estudio arranca igual (Cartesia trae sus propias marcas).

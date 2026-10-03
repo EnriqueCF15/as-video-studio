@@ -106,7 +106,8 @@ Reglas que valen para toda la API y no se repiten en cada fila:
 | `POST` | `/api/proyectos/{pid}/voz/describir` | Describe como quieres que suene y devuelve voz y mandos propuestos. |
 | `POST` | `/api/proyectos/{pid}/voz/previsualizar` | Sintetiza unos segundos con estos mandos de voz para escucharlos. |
 | `POST` | `/api/proyectos/{pid}/voz/secciones/{seccion_id}/regrabar` | Regraba una seccion de la toma, con microcambio si se pide. |
-| `GET` | `/api/voces` | Catalogo de voces de Cartesia, sin atarlo a ningun proyecto. |
+| `GET` | `/api/voces` | Catalogo de voces (Cartesia, o Google con ?proveedor=google). |
+| `GET` | `/api/voces/elevenlabs/creditos` | Los creditos de ElevenLabs del mes: usados, limite, restantes, renovacion. |
 
 ## Catálogo, escenarios y piezas
 
@@ -206,6 +207,7 @@ Reglas que valen para toda la API y no se repiten en cada fila:
 | `POST` | `/api/presets-light/{preset_id}/duplicar` | Una copia del estilo, con su taller. |
 | `POST` | `/api/presets-light/{preset_id}/regenerar` | Rehace UNA de las tres partes con una frase de feedback. |
 | `POST` | `/api/presets-light/{preset_id}/video` | Un proyecto de video nuevo con ese estilo ya aplicado. -> la ficha. |
+| `POST` | `/api/presets-light/{preset_id}/voz/comparar` | El pasaje de prueba con varias voces, para la comparacion A/B. |
 | `POST` | `/api/presets-light/{preset_id}/voz/previsualizar` | Unos segundos con la voz de este estilo, para escucharla. |
 
 ## Ajustes del CLI y estadísticas
@@ -261,4 +263,4 @@ Reglas que valen para toda la API y no se repiten en cada fila:
 
 ---
 
-**147 endpoints.** Escrito por `generar_api.py` desde `app.py`.
+**149 endpoints.** Escrito por `generar_api.py` desde `app.py`.

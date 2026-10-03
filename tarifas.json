@@ -31,6 +31,34 @@
     "plan": "Pro con overages",
     "nota": "Plan Pro (5 $/mes, 100.000 creditos incluidos) con overages a 65 $ por millon de creditos. En Sonic, 1 credito = 1 caracter, asi que el caracter de mas cuesta 0,000065 $. Se anota el coste MARGINAL a proposito: los 100.000 creditos incluidos ya estan pagados cada mes, y prorratear los 5 $ haria que el mismo video costara distinto segun cuanto se hubiera usado antes. Los eventos anotados antes de fijar esta tarifa no se reescriben: el historico anterior sigue sin importe."
   },
+  "tts_google": {
+    "actualizado": "2026-10-01",
+    "modelos": {
+      "gemini-2.5-flash-tts": {
+        "usd_por_token_texto": 5e-07,
+        "usd_por_token_audio": 1e-05,
+        "tokens_audio_por_segundo": 25,
+        "caracteres_por_token": 4
+      },
+      "gemini-2.5-pro-tts": {
+        "usd_por_token_texto": 1e-06,
+        "usd_por_token_audio": 2e-05,
+        "tokens_audio_por_segundo": 25,
+        "caracteres_por_token": 4
+      },
+      "gemini-3.1-flash-tts-preview": {
+        "usd_por_token_texto": 1e-06,
+        "usd_por_token_audio": 2e-05,
+        "tokens_audio_por_segundo": 25,
+        "caracteres_por_token": 4
+      },
+      "chirp3-hd": {
+        "usd_por_caracter": 3e-05,
+        "caracteres_gratis_mes": 1000000
+      }
+    },
+    "nota": "Google Cloud Text-to-Speech. Gemini TTS se cobra por tokens: el texto de entrada (guion + instruccion de estilo, ~4 caracteres por token) y, sobre todo, el AUDIO de salida a 25 tokens por segundo -- un video de 25 min son ~37.500 tokens de audio, ~0,38 $ con 2.5 Flash. Chirp 3 HD va por caracter con 1M gratis al mes (aqui se anota el precio de lista: lo gratuito lo descuenta la factura). Mientras dure la prueba gratuita de Google Cloud lo paga el credito, pero se anota igual: el credito tambien se gasta. Precios de cloud.google.com/text-to-speech/pricing; flash-lite no tiene tarifa aqui y sale sin importe."
+  },
   "claude_cli": {
     "suma_al_total": false,
     "nota": "Va contra la suscripcion, no contra un contador con precio por llamada: se miden tokens y nunca dolares."
