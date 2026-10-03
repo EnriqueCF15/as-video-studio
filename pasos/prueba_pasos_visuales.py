@@ -1105,10 +1105,46 @@ def probar_render(proyecto, estado, params):
     probar_banda_sonora(proyecto, estado, params, plan)
     probar_transicion_no_coge_la_vieja(proyecto)
     probar_imagen_sigue_a_su_frase()
+    probar_previa_clara_no_es_error()
     probar_el_corte_no_se_mueve_solo()
     probar_planificar_no_encoge(proyecto, params)
     probar_rehacer_uno_rehace_uno(proyecto, estado, params)
     return resultado
+
+
+def probar_previa_clara_no_es_error():
+    """Un plano de papel crema no es la pagina de error de Edge.
+
+    La previa se daba por mala si su esquina salia clara, y un estilo de papel
+    crema la tiene clara de verdad: tumbaba las muestras del estilo. Ahora se
+    mira tambien el plano debajo; la pagina blanca de Edge sigue cazandose.
+    """
+    from PIL import Image                                     # noqa: PLC0415
+    carpeta = os.path.join(CARPETA, "_previa_clara")
+    os.makedirs(carpeta, exist_ok=True)
+    crema, blanco = (251, 241, 228), (255, 255, 255)
+    plano = os.path.join(carpeta, "plano.png")
+    previa = os.path.join(carpeta, "previa.png")
+    error = os.path.join(carpeta, "error.png")
+    Image.new("RGB", (1536, 1024), crema).save(plano)
+    Image.new("RGB", (1920, 1080), (249, 240, 227)).save(previa)
+    Image.new("RGB", (1920, 1080), blanco).save(error)
+    caja = (0.001, 0.002, 0.005, 0.008)
+
+    def levanta(destino, con_plano):
+        try:
+            p7_callouts._comprobar_previa(
+                destino, plano=(plano, caja) if con_plano else None)
+            return False
+        except RuntimeError:
+            return True
+
+    ok(not levanta(previa, True),
+       "una previa crema sobre un plano crema no es una pagina de error")
+    ok(levanta(previa, False),
+       "sin el plano para comparar, una esquina clara sigue levantando")
+    ok(levanta(error, True),
+       "la pagina blanca de Edge se caza aunque el plano sea crema")
 
 
 def probar_rehacer_uno_rehace_uno(proyecto, estado, params):
