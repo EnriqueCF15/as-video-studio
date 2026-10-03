@@ -2087,7 +2087,7 @@ def estimar_video(cuerpo: dict = Body(default=None)):
     planos = max(1, int(round(segundos / media)))
 
     calidad = str(datos.get("calidad") or "low").lower()
-    usd_imagen = light.USD_POR_IMAGEN.get(calidad, light.USD_POR_IMAGEN["low"])
+    usd_imagen = light.usd_por_imagen(calidad)
 
     imagenes = max(1, planos)
 
@@ -5426,6 +5426,7 @@ def leer_ajustes():
     """
     return {"ajustes": AJUSTES.leer(),
             "calidades": list(AJUSTES.CALIDADES),
+            "proveedores_imagen": list(AJUSTES.PROVEEDORES_IMAGEN),
             "costes": AJUSTES.tabla_de_costes(),
             "tamano": AJUSTES.TAMANO}
 
@@ -8637,7 +8638,7 @@ def _coste_previsto(ctx, pestanas):
     planos = _planos_previstos(ctx)
     assets = ctx.estado.params("assets") or {}
     calidad = str(assets.get("calidad") or "low").lower()
-    usd_imagen = light.USD_POR_IMAGEN.get(calidad, light.USD_POR_IMAGEN["low"])
+    usd_imagen = light.usd_por_imagen(calidad)
     tarifas = COSTE.tarifas()
     usd_caracter = float(((tarifas.get("tts") or {}).get("usd_por_caracter")) or 0.0)
 

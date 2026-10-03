@@ -126,12 +126,29 @@ def proveedor_imagen():
     return leer()["proveedor_imagen"]
 
 
-def coste_por_imagen(calidad, tamano=TAMANO):
+#: Gemini en Vertex (fork): la imagen devuelta segun calidad (Nano Banana 2 a
+#: 1K / 2K / 4K, 1.120 / 1.680 / 2.520 tokens a 60 $ el millon) y lo adjuntado.
+#: Las referencias son ESTIMADAS hasta medir una tanda real: ~10 imagenes de
+#: 1.120 tokens mas el prompt, a 0,50 $ el millon de tokens de entrada.
+USD_IMAGEN_GEMINI = {"low": 0.0672, "medium": 0.1008, "high": 0.1512}
+TOKENS_ENTRADA_GEMINI = 12000
+USD_TOKEN_ENTRADA_GEMINI = 0.50 / 1e6
+
+
+def coste_por_imagen(calidad, tamano=TAMANO, proveedor=None):
     """Lo que cuesta UNA imagen a esa calidad: la devuelta MAS lo adjuntado.
 
     Devuelve las dos mitades por separado porque el reparto es justo lo que hay
     que ensenar: sin el, la comparacion entre calidades es de la parte pequena.
+    Con el proveedor de Configuracion si no se dice otro.
     """
+    if (proveedor or proveedor_imagen()) == "vertex_gemini":
+        devuelta = USD_IMAGEN_GEMINI.get(calidad, USD_IMAGEN_GEMINI["low"])
+        entrada = TOKENS_ENTRADA_GEMINI * USD_TOKEN_ENTRADA_GEMINI
+        return {"calidad": calidad, "usd_imagen": round(devuelta, 4),
+                "usd_referencias": round(entrada, 4),
+                "usd_total": round(devuelta + entrada, 4),
+                "tokens_entrada": TOKENS_ENTRADA_GEMINI, "proveedor": "vertex_gemini"}
     tokens = COSTE.tarifa_tokens() or {}
     por_token_entrada = float(tokens.get("entrada_imagen") or 0.0)
     entrada = TOKENS_ENTRADA_POR_IMAGEN * por_token_entrada
@@ -145,14 +162,14 @@ def coste_por_imagen(calidad, tamano=TAMANO):
     }
 
 
-def tabla_de_costes(tamano=TAMANO):
+def tabla_de_costes(tamano=TAMANO, proveedor=None):
     """Las tres calidades con su coste real y su multiplicador contra la base.
 
     `veces_total` es lo que de verdad se multiplica la factura y `veces_imagen`
     lo que parece si solo se mira la tabla de OpenAI. Se sirven LOS DOS: la
     diferencia entre 1,7 y 6,8 es la razon de ser de esta pantalla.
     """
-    filas = [coste_por_imagen(c, tamano) for c in CALIDADES]
+    filas = [coste_por_imagen(c, tamano, proveedor) for c in CALIDADES]
     base = filas[0]
     for fila in filas:
         fila["veces_total"] = (round(fila["usd_total"] / base["usd_total"], 1)

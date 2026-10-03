@@ -2308,15 +2308,53 @@ async function cargarAjustes() {
 
 
 async function guardarCalidadImagen(calidad) {
+  await guardarAjusteImagen({ calidad_imagen: calidad });
+}
+
+/* El ajuste se guarda y la tabla de costes vuelve recalculada: con otro
+   proveedor, otros precios. */
+async function guardarAjusteImagen(cambios) {
   const vista = estadoConfig();
   try {
-    const r = await pedir(API.ajustes(),
-                          { method: 'PUT', cuerpo: { calidad_imagen: calidad } });
+    const r = await pedir(API.ajustes(), { method: 'PUT', cuerpo: cambios });
     vista.ajustes = { ...(vista.ajustes || {}), ajustes: r.ajustes, costes: r.costes };
   } catch (e) {
     vista.error = e.message;
   }
   repintarClaves();
+}
+
+/* QUIÉN DIBUJA LAS IMÁGENES (fork). Gemini en Vertex lo paga el crédito de
+   Google Cloud; OpenAI queda como opción. AI Studio NO se ofrece: su API no la
+   cubre la prueba gratuita y se cobraría a la tarjeta. Los modelos se guardan
+   en el bloque «google» del almacén, que es lo que lee el motor. */
+const MODELOS_IMAGEN_GOOGLE = [
+  { valor: '', nombre: 'Nano Banana 2 — por defecto (el más consistente en tu prueba)' },
+  { valor: 'gemini-3.1-flash-image', nombre: 'Nano Banana 2 (gemini-3.1-flash-image)' },
+  { valor: 'gemini-3-pro-image', nombre: 'Nano Banana Pro (gemini-3-pro-image), el doble de caro' },
+  { valor: 'gemini-2.5-flash-image', nombre: 'Nano Banana (gemini-2.5-flash-image), pocas referencias' },
+];
+
+function proveedorDeImagen(datos) {
+  const ficha = estadoConfig().ficha || {};
+  const g = ficha.google || {};
+  const proveedor = datos.ajustes.proveedor_imagen || 'vertex_gemini';
+  const caja = h('div', {});
+  caja.appendChild(campoSelect('Quién dibuja las imágenes de los vídeos nuevos', proveedor, [
+    { valor: 'vertex_gemini', nombre: 'Gemini (Nano Banana) en Vertex AI — lo paga el crédito de Google Cloud' },
+    { valor: 'openai', nombre: 'OpenAI (gpt-image-2) — necesita su clave y saldo' },
+  ], valor => guardarAjusteImagen({ proveedor_imagen: valor })));
+  if (proveedor === 'vertex_gemini') {
+    const guardarModelo = (campo, valor) => guardarClaves({ google: { [campo]: valor } });
+    caja.appendChild(campoSelect('Modelo de los planos', g.modelo_planos || '',
+      MODELOS_IMAGEN_GOOGLE, valor => guardarModelo('modelo_planos', valor)));
+    caja.appendChild(campoSelect('Modelo de las hojas de personaje', g.modelo_reparto || '',
+      MODELOS_IMAGEN_GOOGLE, valor => guardarModelo('modelo_reparto', valor)));
+    caja.appendChild(h('div', { clase: 'caja-aviso' },
+      'Gemini va siempre por Vertex AI con la sesión de gcloud. NO uses una API key de '
+      + 'AI Studio: la prueba gratuita de Google Cloud no la cubre y se cobraría a tu tarjeta.'));
+  }
+  return caja;
 }
 
 
@@ -2339,7 +2377,7 @@ function seccionCalidadImagen() {
   const datos = vista.ajustes;
   const caja = h('section', { clase: 'bloque-config' },
     h('div', { clase: 'fila' },
-      h('h3', {}, 'Calidad de las imagenes'),
+      h('h3', {}, 'Imágenes: proveedor y calidad'),
       h('span', { clase: 'crece' }),
       datos ? pastillaEstado('ok', datos.ajustes.calidad_imagen) : null));
   if (!datos) {
@@ -2347,11 +2385,12 @@ function seccionCalidadImagen() {
     return caja;
   }
 
+  caja.appendChild(proveedorDeImagen(datos));
   const base = datos.costes[0] || {};
   const porcentaje = base.usd_total
     ? Math.round(100 * base.usd_referencias / base.usd_total) : 0;
   caja.appendChild(h('div', { clase: 'pista' },
-    'Lo que se ve aqui NO es el precio de OpenAI: es lo que cuesta el plano '
+    'Lo que se ve aqui NO es el precio de la tabla del proveedor: es lo que cuesta el plano '
     + 'entero. A cada imagen se le adjuntan sus referencias de estilo, reparto y '
     + `continuidad, y esas se pagan aparte — en la calidad baja son el ${porcentaje} % `
     + 'del gasto. Por eso subir de calidad cuesta bastante menos de lo que '

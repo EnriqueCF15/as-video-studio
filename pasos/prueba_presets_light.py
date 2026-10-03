@@ -607,7 +607,10 @@ def probar_el_aviso_de_cambiar_de_idioma():
        f"que nombra los DOS idiomas, en cristiano: {aviso[:80]}…")
     ok("6 imágenes" in aviso,
        "y dice cuantas imagenes cuesta arreglarlo")
-    ok("0,44 $" in aviso, f"y cuanto: {aviso[-40:]}")
+    # la cifra sale del proveedor de imagen de Configuracion (fork): 0,44 $ con
+    # OpenAI, otra con Gemini. Se calcula igual que el aviso, no se escribe.
+    esperado = f"{6 * light.usd_por_imagen('medium'):.2f}".replace(".", ",") + " $"
+    ok(esperado in aviso, f"y cuanto ({esperado}): {aviso[-40:]}")
     igual(aviso.count("$"), 1, "una cifra, no dos")
 
     igual(light.aviso_de_idioma("es", "es"), "",
