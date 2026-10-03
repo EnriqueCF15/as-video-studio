@@ -91,8 +91,14 @@ PRECIO = {"low": 0.067, "medium": 0.101, "high": 0.151}
 #: Llamadas a la vez. Vertex reparte una cuota dinamica compartida; la prueba
 #: gratuita no deja pedir mas, asi que se va despacio y se espera ante un 429.
 CONCURRENCIA = 4
-REINTENTOS = 6
+#: Diez y no seis: el 03-10 un plano agoto los seis (~4 min de espera) con la
+#: cuota compartida saturada y tumbo la tanda en el 10 de 12. Con diez aguanta
+#: ~12 min antes de rendirse, y en una tanda desatendida esperar es mejor que
+#: pararse.
+REINTENTOS = 10
 ESPERA_MAXIMA_S = 120.0
+#: Hasta cuantos segundos se reparte la salida de las llamadas tras una pausa.
+ESCALON_S = 6.0
 
 CARPETA_SECRETOS = os.environ.get("ESTUDIO_SECRETOS") or os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
@@ -253,12 +259,18 @@ def coste_de(modelo, resolucion, tokens_entrada, tokens_salida=None):
 
 
 def _esperar_pausa():
+    espero = False
     while True:
         with _PAUSA_LOCK:
             falta = _PAUSA_HASTA[0] - time.monotonic()
         if falta <= 0:
-            return
+            break
+        espero = True
         time.sleep(min(falta, 5.0))
+    # ESCALONADOS al salir de una pausa: si las cuatro cadenas vuelven en el
+    # mismo segundo, chocan otra vez contra la misma cuota
+    if espero:
+        time.sleep(random.uniform(0.0, ESCALON_S))
 
 
 def _pausar(segundos):
