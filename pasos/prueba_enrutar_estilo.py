@@ -238,6 +238,34 @@ def prueba_una_sola_referencia():
     igual(er.imagenes_de(mezcla), 6, "y el precio que se dice son seis")
 
 
+def prueba_el_idioma_llega_a_la_lamina():
+    seccion("7b] el idioma del canal LLEGA a las láminas de un estilo descrito")
+    # `dibujar_desde_guia` recibia el idioma y no se lo pasaba al prompt: la
+    # regla de rotulos dice que el ingles de las instrucciones no decide el
+    # idioma, y sin decir cual un canal en ingles saco «CABEZA / MANO / PIE».
+    import tempfile                                           # noqa: PLC0415
+    import medios                                             # noqa: PLC0415
+    vistos = []
+
+    class Falso:
+        @staticmethod
+        def generar(prompt, referencias, **_kw):
+            vistos.append(prompt)
+            return b"png", {"coste": 0.0}
+
+    original = medios.motor_imagen
+    medios.motor_imagen = lambda *a, **k: Falso
+    try:
+        with tempfile.TemporaryDirectory() as carpeta:
+            moodboard.dibujar_desde_guia(
+                {"guia": {"guia": "Flat ink drawing, warm palette."}}, carpeta,
+                ejes=["diagrama"], idioma="en")
+    finally:
+        medios.motor_imagen = original
+    ok(len(vistos) == 1 and "The language of this production is English" in vistos[0],
+       "el prompt de la lámina dice el idioma del canal")
+
+
 def prueba_la_lamina_llega_al_prompt():
     seccion("7] la corrección de una lámina LLEGA al dibujo")
     # UN CAJON ES UNA PROMESA. Aqui el cajon no es un param: son los argumentos
@@ -371,6 +399,7 @@ def main():
     prueba_la_tupla_vacia_es_una_respuesta()
     prueba_una_sola_referencia()
     prueba_la_lamina_llega_al_prompt()
+    prueba_el_idioma_llega_a_la_lamina()
     prueba_lo_que_devuelve_el_modelo_para_una_lamina()
     prueba_sin_frase()
     if "--con-cli" in sys.argv:

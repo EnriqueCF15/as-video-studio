@@ -23,6 +23,9 @@ websocket-client==1.9.0
 # Las credenciales de Google Cloud (ADC de gcloud o cuenta de servicio) para la
 # voz de Google (motores/voz_google) y, en la fase 2, las imagenes por Vertex.
 google-auth==2.59.1
+# Las imagenes con Gemini (Nano Banana) en Vertex AI (motores/imagen_gemini).
+# SIEMPRE con vertexai=True: la API de AI Studio no la cubre la prueba gratuita.
+google-genai==2.28.0
 
 # El alineador de palabras (torch + WhisperX, ~5 GB) NO va aqui: va aparte en
 # requirements-alineador.txt, porque necesita el indice de PyTorch con CUDA y

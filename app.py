@@ -875,9 +875,12 @@ def crear_proyecto(cuerpo: dict = Body(default=None)):
     # que nunca la fijaron en cuanto alguien tocara el ajuste -- `calidad` entra
     # en la firma de cada imagen --, y eso es dinero. Escrita aqui, lo viejo se
     # queda como estaba y esto es solo el punto de partida del proyecto nuevo.
+    # Y EL PROVEEDOR DE IMAGEN (fork), por lo mismo: es el punto de partida del
+    # proyecto nuevo, no algo que se relee al generar.
     try:
         ctx.estado.actualizar_params("assets",
-                                     {"calidad": AJUSTES.calidad_imagen()})
+                                     {"calidad": AJUSTES.calidad_imagen(),
+                                      "motor_imagen": AJUSTES.proveedor_imagen()})
     except Exception:  # noqa: BLE001
         # un ajuste ilegible no puede impedir crear un proyecto: se queda con
         # el valor por defecto del paso, que es el que habia antes de todo esto
@@ -2084,7 +2087,7 @@ def estimar_video(cuerpo: dict = Body(default=None)):
     planos = max(1, int(round(segundos / media)))
 
     calidad = str(datos.get("calidad") or "low").lower()
-    usd_imagen = light.USD_POR_IMAGEN.get(calidad, light.USD_POR_IMAGEN["low"])
+    usd_imagen = light.usd_por_imagen(calidad)
 
     imagenes = max(1, planos)
 
@@ -2335,9 +2338,9 @@ def eventos_coste(pid: str, proveedor: str = Query(default=None),
                   limite: int = Query(default=200)):
     """Detalle de cada consumo, filtrable por proveedor, paso y unidad."""
     ctx = contexto(pid)
-    if proveedor and proveedor not in COSTE.PROVEEDORES:
+    if proveedor and proveedor not in COSTE.ANOTABLES:
         raise ErrorApi(400, f"proveedor desconocido: {proveedor}. Los proveedores "
-                            f"son: {', '.join(COSTE.PROVEEDORES)}")
+                            f"son: {', '.join(COSTE.ANOTABLES)}")
     if paso:
         _validar_paso(paso)
     eventos = medidor(ctx).eventos(proveedor=proveedor, paso=paso, unidad=unidad,
@@ -5423,6 +5426,7 @@ def leer_ajustes():
     """
     return {"ajustes": AJUSTES.leer(),
             "calidades": list(AJUSTES.CALIDADES),
+            "proveedores_imagen": list(AJUSTES.PROVEEDORES_IMAGEN),
             "costes": AJUSTES.tabla_de_costes(),
             "tamano": AJUSTES.TAMANO}
 
@@ -8097,6 +8101,14 @@ def regenerar_preset_light(preset_id: str, cuerpo: dict = Body(default=None)):
     ficha = _preset_o_400(lambda p: p.leer(preset_id))
     if ficha.get("tipo") != "canal":
         raise ErrorApi(400, "esto no es un preset de canal")
+    # REHACER LA VOZ ELIGE DEL CATALOGO DE CARTESIA (`voz_descrita`). Con una voz
+    # de Google o de ElevenLabs escribiria un id de Cartesia encima de la buena:
+    # esas se cambian con sus mandos, que no rehacen nada.
+    proveedor_voz = str(((ficha.get("datos") or {}).get("voz") or {})
+                        .get("proveedor") or "cartesia")
+    if parte == "voz" and proveedor_voz != "cartesia":
+        raise ErrorApi(400, f"esta voz es de {proveedor_voz}: se cambia con sus "
+                            "mandos (voz, modelo y estilos), no regenerandola")
     ctx = _taller_de(ficha)
 
     origen = dict((ficha.get("datos") or {}).get("origen") or {})
@@ -8634,7 +8646,7 @@ def _coste_previsto(ctx, pestanas):
     planos = _planos_previstos(ctx)
     assets = ctx.estado.params("assets") or {}
     calidad = str(assets.get("calidad") or "low").lower()
-    usd_imagen = light.USD_POR_IMAGEN.get(calidad, light.USD_POR_IMAGEN["low"])
+    usd_imagen = light.usd_por_imagen(calidad)
     tarifas = COSTE.tarifas()
     usd_caracter = float(((tarifas.get("tts") or {}).get("usd_por_caracter")) or 0.0)
 
@@ -9124,6 +9136,12 @@ def crear_video_light(preset_id: str, cuerpo: dict = Body(default=None)):
     # camino que copiara las claves a mano se quedaria viejo el dia que un
     # preset guarde una mas.
     aplicado = aplicar_preset_canal(proyecto.id, preset_id)
+    # el proveedor de imagen de Configuracion, como en crear_proyecto
+    try:
+        ctx.estado.actualizar_params("assets",
+                                     {"motor_imagen": AJUSTES.proveedor_imagen()})
+    except Exception:  # noqa: BLE001
+        pass
     avisos = _sembrar_video_light(ctx, datos)
     ctx.bitacora.anotar("video_light_creado", None, {
         "preset": preset_id, "estilo": ficha_preset.get("nombre"),

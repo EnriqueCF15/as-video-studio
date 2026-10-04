@@ -68,8 +68,15 @@ def probar_encargo():
     limpio = light.validar_encargo(dict(ENCARGO_VIDEO, nombre="  Canal  "))
     igual(limpio["nombre"], "Canal", "el nombre se limpia")
     igual(limpio["idioma"], "es", "el idioma viaja")
+    # las voces de Google se llaman por su nombre, mas corto que un id de
+    # Cartesia; las de ElevenLabs llevan un id de 20
+    for voz in ("Orus", "Kore", "JBFqnCBsd6RMkjVDRZzb", "a0e99841-438c-4a64"):
+        igual(light.validar_encargo(dict(ENCARGO_VIDEO, voz_id=voz))["voz_id"],
+              voz, f"la voz «{voz}» se acepta")
 
     casos = [
+        (dict(ENCARGO_VIDEO, voz_id="Orus; borra todo"),
+         "con una voz que no es un id"),
         (dict(ENCARGO_VIDEO, nombre=""), "sin nombre"),
         (dict(ENCARGO_VIDEO, idioma="kl"), "con un idioma que no existe"),
         # DESCRIBIRLO A SECAS NO ES UN CAMINO: el estilo se COPIA de unas
@@ -607,7 +614,10 @@ def probar_el_aviso_de_cambiar_de_idioma():
        f"que nombra los DOS idiomas, en cristiano: {aviso[:80]}…")
     ok("6 imágenes" in aviso,
        "y dice cuantas imagenes cuesta arreglarlo")
-    ok("0,44 $" in aviso, f"y cuanto: {aviso[-40:]}")
+    # la cifra sale del proveedor de imagen de Configuracion (fork): 0,44 $ con
+    # OpenAI, otra con Gemini. Se calcula igual que el aviso, no se escribe.
+    esperado = f"{6 * light.usd_por_imagen('medium'):.2f}".replace(".", ",") + " $"
+    ok(esperado in aviso, f"y cuanto ({esperado}): {aviso[-40:]}")
     igual(aviso.count("$"), 1, "una cifra, no dos")
 
     igual(light.aviso_de_idioma("es", "es"), "",

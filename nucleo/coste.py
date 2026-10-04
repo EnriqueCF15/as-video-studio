@@ -64,11 +64,15 @@ RUTA_GLOBAL = (os.environ.get("ESTUDIO_COSTE_GLOBAL")
 NOMBRE_COSTE = "coste.jsonl"
 
 PROVEEDORES = ("openai", "tts", "claude_cli")
+# Los que se pueden ANOTAR. Los de PROVEEDORES salen siempre en el resumen,
+# aunque esten a cero; estos dos solo cuando han gastado algo. Sin ellos aqui,
+# `anotar` los rechazaba y la primera imagen de Gemini tumbaba la tanda entera.
+ANOTABLES = PROVEEDORES + ("elevenlabs", "gemini_imagen")
 # Claude se mide en tokens y ElevenLabs en creditos de su plan: ninguno de los
 # dos es un cargo por llamada, asi que no suman dolares al total.
 SIN_DOLARES = ("claude_cli", "elevenlabs")
 ETIQUETAS = {"openai": "OpenAI", "tts": "TTS", "claude_cli": "Claude",
-             "elevenlabs": "ElevenLabs"}
+             "elevenlabs": "ElevenLabs", "gemini_imagen": "Gemini (Vertex)"}
 
 AVISO_PRESUPUESTO = 0.8                  # fraccion a partir de la cual se avisa
 
@@ -256,9 +260,9 @@ class Medidor:
         casos se distinguen con 'sin_tarifa', y ninguno inventa un numero.
         """
         proveedor = str(proveedor)
-        if proveedor not in PROVEEDORES:
+        if proveedor not in ANOTABLES:
             raise ValueError(f"proveedor desconocido: {proveedor}. "
-                             f"Los proveedores son: {', '.join(PROVEEDORES)}")
+                             f"Los proveedores son: {', '.join(ANOTABLES)}")
         importe = None if proveedor in SIN_DOLARES else _numero(usd)
         registro = {
             "id": None,
@@ -429,12 +433,21 @@ def cabecera(proveedores, total_usd):
     abierto = proveedores.get("openai") or _vacio("openai")
     voz = proveedores.get("tts") or _vacio("tts")
     cli = proveedores.get("claude_cli") or _vacio("claude_cli")
-    return "     ".join([
+    trozos = [
         f"OpenAI  {importe(abierto)} · {corto(abierto['tokens']['total'])} tok",
         f"TTS  {importe(voz)} · {corto(voz['cantidad']['caracteres'])} car",
         f"Claude  {corto(cli['tokens']['total'])} tok",
-        f"TOTAL  ${total_usd:.2f}",
-    ])
+    ]
+    # los proveedores nuevos, solo si han gastado: sin ellos el TOTAL sumaba unas
+    # imagenes de Gemini que la linea no decia de donde salian
+    gemini = proveedores.get("gemini_imagen")
+    if gemini and gemini.get("eventos"):
+        trozos.append(f"Gemini  {importe(gemini)} · "
+                      f"{corto(gemini['cantidad']['imagenes'])} img")
+    once = proveedores.get("elevenlabs")
+    if once and once.get("eventos"):
+        trozos.append(f"ElevenLabs  {corto(once['cantidad']['creditos'])} cred")
+    return "     ".join(trozos + [f"TOTAL  ${total_usd:.2f}"])
 
 
 def agregar(registros):
@@ -851,10 +864,34 @@ def _medir_claude(operacion):
     return fabrica
 
 
+def reportar_imagen_gemini(meta, operacion="imagen", unidad=None):
+    """Una imagen de Gemini en Vertex. El importe lo calcula el motor con los
+    tokens que devolvio la API (entrada: prompt + referencias; salida: la
+    imagen) y su tabla de precios; aqui se anota tal cual, como estimado hasta
+    que la factura lo confirme."""
+    meta = meta if isinstance(meta, dict) else {}
+    usage = meta.get("usage") if isinstance(meta.get("usage"), dict) else {}
+    return _anotar("gemini_imagen", operacion, unidad=unidad,
+                   tokens={"entrada": usage.get("input_tokens"),
+                           "salida": usage.get("output_tokens"), "cache": 0},
+                   cantidad={"imagenes": 1}, usd=float(meta.get("coste") or 0.0),
+                   usd_estimado=True,
+                   detalle={"modelo": meta.get("modelo"),
+                            "resolucion": meta.get("resolucion"),
+                            "uso": meta.get("uso"), "refs": meta.get("refs"),
+                            "segundos": meta.get("segundos"),
+                            "simulado": bool(meta.get("simulado"))})
+
+
 def _medir_imagen(original):
     def medido(prompt, referencias, *args, **kwargs):
         png, meta = original(prompt, referencias, *args, **kwargs)
         meta = meta if isinstance(meta, dict) else {}
+        if meta.get("proveedor") == "vertex_gemini":
+            # su importe ya viene de los tokens de Vertex: no se re-tarifa
+            # con los precios de OpenAI
+            reportar_imagen_gemini(meta)
+            return png, meta
         calidad = kwargs.get("quality") or meta.get("quality") or "low"
         tamano = meta.get("tamano") or kwargs.get("tamano") or "apaisado"
         registro = reportar_openai(meta.get("usage"), calidad, tamano,
@@ -1015,16 +1052,19 @@ def modulos_de_imagen(pasos=None):
     for medios in candidatos:
         if medios is None or not hasattr(medios, "motor"):
             continue
-        try:
-            modulo = medios.motor("imagen_openai/imagen.py")
-        except Exception:  # noqa: BLE001
-            continue
-        if modulo not in modulos:
-            modulos.append(modulo)
+        # los DOS proveedores (fork): el de Gemini tambien gasta, y sin
+        # envolverlo sus imagenes no saldrian en el medidor
+        for ruta in ("imagen_openai/imagen.py", "imagen_gemini/imagen.py"):
+            try:
+                modulo = medios.motor(ruta)
+            except Exception:  # noqa: BLE001
+                continue
+            if modulo not in modulos:
+                modulos.append(modulo)
     for modulo in list(sys.modules.values()):
-        fichero = getattr(modulo, "__file__", "") or ""
+        fichero = (getattr(modulo, "__file__", "") or "").replace("/", os.sep)
         if os.path.basename(fichero).lower() == "imagen.py" and \
-                "imagen_openai" in fichero.replace("/", os.sep) and \
+                ("imagen_openai" in fichero or "imagen_gemini" in fichero) and \
                 modulo not in modulos:
             modulos.append(modulo)
     return modulos

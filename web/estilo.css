@@ -1812,6 +1812,14 @@ textarea.texto-bloque:focus { outline: none; }
   background: var(--panel); border-top: 1px solid var(--linea);
   box-shadow: 0 -6px 18px rgba(0, 0, 0, .28);
 }
+/* UNA AYUDA ABIERTA VA POR ENCIMA DE LA BURBUJA DEL ASISTENTE. La barra es su
+   propia capa (sticky, z-index 6) y la burbuja (fixed, 65) le tapaba el cartel
+   del boton de la esquina --«Aplicar», «Descargar»-- por mucho z-index que
+   llevara el cartel. Solo mientras se mira: el resto del tiempo, como siempre. */
+.pie-guion:has(.ayuda-de:hover), .pie-guion:has(.ayuda-de:focus-within),
+.previa-mandos:has(.ayuda-de:hover), .previa-mandos:has(.ayuda-de:focus-within) {
+  z-index: 67;
+}
 .pie-guion .barra-light { flex: 1; min-width: 0; }
 .pie-guion > button, .pie-guion > .ayuda-de { flex: 0 0 auto; white-space: nowrap; }
 
@@ -2218,6 +2226,10 @@ body.modo-light #panel > .contenido {
 }
 /* Cerca del borde izquierdo el cartel se salia por fuera del panel. */
 .pie-guion > .ayuda-de:first-child::after { left: 0; transform: none; }
+/* Y cerca del derecho igual: lo que va detras del hueco (`.crece`) esta a la
+   derecha de la barra, y su cartel centrado se cortaba contra el borde. */
+.pie-guion > .crece ~ .ayuda-de::after,
+.previa-mandos > .crece ~ .ayuda-de::after { left: auto; right: 0; transform: none; }
 
 /* ------------------------------------------ los mandos de una diapositiva
    Anclada al fondo, justo encima de la barra de pasos, con «anterior» a la

@@ -942,7 +942,12 @@ def previsualizar(ruta_png, ruta_svg, destino, ruta_fija=None, mov=None,
     ruta_html = medios.escribir_texto(destino + ".html", html)
     medios.rasterizar(ruta_html, destino, ancho, alto, transparente=False)
     os.remove(ruta_html)
-    _comprobar_previa(destino)
+    # que trozo del plano cae debajo de la esquina que se mira, en fraccion del
+    # lienzo: la misma cuenta del transform de arriba, al reves
+    caja = tuple(v / lado for v, lado in (
+        (x0 + ESQUINA[0] / escala, lienzo[0]), (y0 + ESQUINA[1] / escala, lienzo[1]),
+        (x0 + ESQUINA[2] / escala, lienzo[0]), (y0 + ESQUINA[3] / escala, lienzo[1])))
+    _comprobar_previa(destino, plano=(ruta_png, caja))
     return destino
 
 
@@ -950,8 +955,25 @@ def previsualizar(ruta_png, ruta_svg, destino, ruta_fija=None, mov=None,
 #: esquina no se parece a esto, lo que hay dentro no lo ha pintado esta funcion.
 FONDO_PREVIA = (0x0b, 0x0c, 0x09)
 
+#: La esquina que se mira, en px del cuadro de salida (x0, y0, x1, y1). Un
+#: cuadradito y no un pixel: con textura de papel un pixel suelto baila.
+ESQUINA = (2, 2, 10, 10)
 
-def _comprobar_previa(destino):
+#: Cuanto puede separarse la esquina de la previa de la del plano y seguir
+#: siendo el plano: lo que mueve el reescalado de una textura. La pagina de
+#: error es blanca puro, y sobre un papel crema (251, 241, 228) se separa 27.
+TOLERANCIA_PREVIA = 18
+
+
+def _media_de(imagen, caja):
+    """Color medio de una caja de la imagen (en px). -> (r, g, b)"""
+    from PIL import Image                                     # noqa: PLC0415
+    x0, y0, x1, y1 = (int(round(v)) for v in caja)
+    trozo = imagen.crop((x0, y0, max(x0 + 1, x1), max(y0 + 1, y1)))
+    return trozo.resize((1, 1), Image.BOX).getpixel((0, 0))[:3]
+
+
+def _comprobar_previa(destino, plano=None):
     """Levanta si el PNG compuesto no es el cuadro, sino otra cosa.
 
     EDGE NO FALLA CUANDO NO ENCUENTRA ALGO: pinta SU pagina de error --«File not
@@ -968,12 +990,30 @@ def _comprobar_previa(destino):
 
     Levanta y no borra el PNG: quien llama lo recoge como aviso (ver `ejecutar`)
     y asi queda en disco para poder mirarlo si alguien pregunta por que.
+
+    UN PLANO CLARO NO ES UNA PAGINA DE ERROR. Un estilo de papel crema tiene la
+    esquina clara de verdad, y mirando solo la previa se tomaba por la pagina de
+    Edge y tumbaba las muestras del estilo. Con `plano` = (ruta del PNG, caja en
+    fraccion del lienzo) se mira tambien ese trozo del plano: si el plano ya es
+    claro ahi y la previa se le parece, la esquina clara es suya.
     """
     try:
         from PIL import Image                                 # noqa: PLC0415
-        esquina = Image.open(destino).convert("RGB").load()[5, 5]
+        esquina = _media_de(Image.open(destino).convert("RGB"), ESQUINA)
     except Exception:                                         # noqa: BLE001
         return
+    if min(esquina) > 200 and plano:
+        try:
+            ruta, (fx0, fy0, fx1, fy1) = plano
+            imagen = Image.open(ruta).convert("RGB")
+            ancho, alto = imagen.size
+            debajo = _media_de(imagen, (fx0 * ancho, fy0 * alto,
+                                        fx1 * ancho, fy1 * alto))
+        except Exception:                                     # noqa: BLE001
+            debajo = None
+        if debajo and min(debajo) > 200 and max(
+                abs(a - b) for a, b in zip(esquina, debajo)) <= TOLERANCIA_PREVIA:
+            return
     if min(esquina) > 200:
         raise RuntimeError(
             f"la previa salio en blanco ({esquina}): Edge ha fotografiado una "

@@ -129,7 +129,10 @@ PARAMS_POR_DEFECTO = {
     # persona; a partir de ahi es un dato. QUE PLANTILLAS puede usar vive en los
     # params de rotulos, junto al resto del grafismo.
     "semilla": 7,
-    "motor_imagen": "openai",          # openai | adoptar
+    # openai | vertex_gemini | adoptar. El defecto SIGUE siendo openai: es lo que
+    # tenian los proyectos de antes. Los videos nuevos lo reciben escrito al
+    # crearse, desde Configuracion (ajustes.proveedor_imagen).
+    "motor_imagen": "openai",
     "imagenes_previas": [],            # carpetas de arte ya aprobado
     # Fotogramas REALES del video de referencia, aprobados a mano, para que el
     # dibujo de una persona o un sitio concreto se parezca al original. Vacio en
@@ -174,6 +177,8 @@ def describir(params):
     p = _con_defectos(params)
     catalogo = p["catalogo"] or {}
     motor = ("adoptando arte ya existente" if p["motor_imagen"] == "adoptar"
+             else f"generando con Gemini (Nano Banana) en Vertex, calidad {p['calidad']}"
+             if p["motor_imagen"] == "vertex_gemini"
              else f"generando con gpt-image-2 en calidad {p['calidad']}")
     encuadre = ("asigna a cada plano su clase de encuadre en texto "
                 "(caben diagramas y pantallas)")
@@ -2951,7 +2956,11 @@ def _producir_imagen(nombre, prompt, referencias, destino, p, rehacer=False,
                            # devolver la apaisada
                            "tamano": tamano if tamano != "apaisado" else None,
                            "refs": [medios.huella_fichero(r) for r in referencias]})
-    cacheada = os.path.join(p["banco_imagenes"], f"{firma}.png")
+    # Con otro proveedor, otro fichero de cache: la firma NO cambia (mueve las de
+    # todos los proyectos), pero una imagen de OpenAI no puede salir de la cache
+    # cuando se ha pedido a Gemini, ni al reves.
+    sufijo = "" if p["motor_imagen"] in ("openai", "adoptar") else f"_{p['motor_imagen']}"
+    cacheada = os.path.join(p["banco_imagenes"], f"{firma}{sufijo}.png")
     # En el modo explicito 'adoptar' el objetivo es no gastar, asi que se acepta
     # arte que solo coincide en nombre. El guardian de planos repetidos sigue
     # vigilando la salida, que es donde se nota si el arte adoptado no vale.
@@ -2973,10 +2982,16 @@ def _producir_imagen(nombre, prompt, referencias, destino, p, rehacer=False,
             medios.copiar(cacheada, destino)
             return {"origen": "cache", "firma": firma, "coste": 0.0}
 
-    imagen = medios.motor("imagen_openai/imagen.py")
+    imagen = medios.motor_imagen(p["motor_imagen"])
+    extra = {}
+    if p["motor_imagen"] == "vertex_gemini":
+        # las hojas de reparto van con el modelo de reparto (Nano Banana Pro):
+        # son pocas y de ellas depende que el personaje sea el mismo en todo
+        extra["uso"] = ("plano" if os.path.basename(os.path.dirname(destino)) == "escenas"
+                        else "reparto")
     try:
         png, meta = imagen.generar(prompt, referencias, quality=p["calidad"],
-                                   tamano=tamano)
+                                   tamano=tamano, **extra)
     except SystemExit as fallo:
         # el motor esta escrito como CLI y aborta con SystemExit (por ejemplo si
         # falta la clave); dentro de un hilo eso no lo captura nadie y el paso

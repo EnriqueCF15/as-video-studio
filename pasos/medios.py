@@ -125,6 +125,25 @@ _candado_marcha = _COMPARTIDO.candado
 AL_CARGAR = _COMPARTIDO.al_cargar
 
 
+#: El motor de imagen de cada proveedor (fork). Las dos piezas que GENERAN
+#: (p6_assets._producir_imagen y moodboard.dibujar_desde_guia) piden el suyo con
+#: `motor_imagen`; lo demas (normalizar referencias, las cuentas de OpenAI de la
+#: pantalla) sigue usando imagen_openai, que es local o es de OpenAI.
+MOTORES_IMAGEN = {"openai": "imagen_openai/imagen.py",
+                  "vertex_gemini": "imagen_gemini/imagen.py"}
+
+
+def motor_imagen(proveedor=None):
+    """El motor de imagen de ese proveedor; sin decirlo, el de Configuracion."""
+    if not proveedor:
+        try:
+            from . import ajustes                               # noqa: PLC0415
+        except ImportError:
+            import ajustes                                      # noqa: PLC0415
+        proveedor = ajustes.proveedor_imagen()
+    return motor(MOTORES_IMAGEN.get(proveedor, MOTORES_IMAGEN["openai"]))
+
+
 def motor(ruta_relativa):
     """Importa un modulo de C:\\IA\\motores por ruta ('guion/segmentar.py').
 

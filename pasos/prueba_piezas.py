@@ -311,6 +311,18 @@ def prueba_planos_por_sitio():
     ok("24 sitios COMO MINIMO" in entero,
        "y todo eso entra en el criterio que lee el agente")
 
+    # LOS HUECOS DE LA PLANTILLA SON LOS QUE SE RELLENAN. Quedo un `{fijos}` de
+    # cuando habia personajes fijos del canal, `proponer` ya no lo pasaba, y el
+    # catalogo reventaba con KeyError: 'fijos' en cuanto se pedia de verdad.
+    import inspect                                            # noqa: PLC0415
+    import string                                             # noqa: PLC0415
+    huecos = {campo for _t, campo, _f, _c in
+              string.Formatter().parse(catalogo_visual.INSTRUCCION) if campo}
+    llamada = inspect.getsource(catalogo_visual.proponer)
+    sin_rellenar = sorted(h for h in huecos if f"{h}=" not in llamada)
+    igual(sin_rellenar, [],
+          "cada hueco de la instrucción del catálogo se rellena en `proponer`")
+
 
 def _fundir_ct(escenas, puestas, p=None, idioma=None):
     """`_fundir_cartelas` con el andamiaje que la prueba no necesita ver.
@@ -4228,8 +4240,6 @@ def _prohibir_pagar():
     que envuelve a esta y la marca igual: `prueba_recarga_de_motores`, que
     comprueba la marca, sigue viendo lo que tiene que ver.
     """
-    motor = medios.motor("imagen_openai/imagen.py")
-
     def no_se_paga(*_args, **_kwargs):
         raise AssertionError(
             "una prueba ha llamado al motor de imagen DE VERDAD. Esta suite no "
@@ -4237,7 +4247,10 @@ def _prohibir_pagar():
             "`prueba_rehacer_de_verdad`) o arregla la firma de cache que ha "
             "dejado de acertar")
 
-    motor.generar = no_se_paga
+    # los DOS proveedores (fork): con Gemini en Vertex y las credenciales de
+    # gcloud puestas en la maquina, una prueba que se colara pagaria de verdad
+    for ruta in ("imagen_openai/imagen.py", "imagen_gemini/imagen.py"):
+        medios.motor(ruta).generar = no_se_paga
 
 
 def main():

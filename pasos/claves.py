@@ -116,7 +116,10 @@ def _vacio():
         # cuenta de servicio (su RUTA, no su contenido). Lo leen los motores por
         # contrato (motores/voz_google). Nunca una API key de AI Studio: la
         # prueba gratuita no la cubre y se cobraria a la tarjeta.
-        "google": {"proyecto": "", "ubicacion": "global", "cuenta_servicio": ""},
+        # modelo_planos / modelo_reparto: vacio = el de por defecto del motor
+        # (Nano Banana 2 para todo, eleccion de Enrique del 02-10-2026)
+        "google": {"proyecto": "", "ubicacion": "global", "cuenta_servicio": "",
+                   "modelo_planos": "", "modelo_reparto": ""},
     }
 
 
@@ -173,7 +176,8 @@ def _normalizar(datos):
     base["claude_cli"]["cuentas"] = _cuentas_cli_de(datos.get("claude_cli"))
     google = datos.get("google")
     if isinstance(google, dict):
-        for campo in ("proyecto", "ubicacion", "cuenta_servicio"):
+        for campo in ("proyecto", "ubicacion", "cuenta_servicio", "modelo_planos",
+                      "modelo_reparto"):
             valor = str(google.get(campo) or "").strip()
             if valor:
                 base["google"][campo] = valor
@@ -366,6 +370,10 @@ def _fusionar(actual, peticion):
     return salida
 
 
+#: Los modelos de imagen de Vertex que se pueden elegir (motores/imagen_gemini).
+MODELOS_IMAGEN_GOOGLE = ("gemini-3.1-flash-image", "gemini-3-pro-image",
+                         "gemini-2.5-flash-image")
+
 #: Lo que admite Google como id de proyecto, y como region.
 _PROYECTO_GCP = re.compile(r"^[a-z][a-z0-9-]{4,28}[a-z0-9]$")
 _UBICACION_GCP = re.compile(r"^(global|[a-z]+-[a-z]+\d+)$")
@@ -397,6 +405,13 @@ def _google_pedido(crudo):
             raise ErrorClaves(f"«{ubicacion}» no es una ubicacion de Google Cloud "
                               f"(global, us-central1...)")
         salida["ubicacion"] = ubicacion
+    for campo in ("modelo_planos", "modelo_reparto"):
+        if campo in crudo:
+            modelo = str(crudo.get(campo) or "").strip()
+            if modelo and modelo not in MODELOS_IMAGEN_GOOGLE:
+                raise ErrorClaves(f"«{modelo}» no es un modelo de imagen de Vertex. Los "
+                                  f"que hay: {', '.join(MODELOS_IMAGEN_GOOGLE)}")
+            salida[campo] = modelo
     if "cuenta_servicio" in crudo:
         ruta = str(crudo.get("cuenta_servicio") or "").strip().strip('"')
         if ruta and not (ruta.lower().endswith(".json") and os.path.isfile(ruta)):
