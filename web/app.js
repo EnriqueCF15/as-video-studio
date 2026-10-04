@@ -9642,7 +9642,15 @@ function vistaPresetLight() {
   // 🎙️ la voz, con su escucha
   const voz = h('div', {});
   voz.appendChild(escuchaDeVoz(ficha));
-  voz.appendChild(cajaDeRehacer(ficha, 'voz'));
+  /* «QUÉ LE CAMBIARÍAS» SOLO CON CARTESIA: lo que la rehace elige una voz de
+     SU catálogo. Con Google o ElevenLabs la voz se cambia con los mandos de
+     arriba, y esta caja escribía un id de Cartesia encima de la voz buena. */
+  const proveedorVoz = ((datos.voz || {}).proveedor || 'cartesia');
+  voz.appendChild(proveedorVoz === 'cartesia'
+    ? cajaDeRehacer(ficha, 'voz')
+    : h('div', { clase: 'meta' },
+      'Con esta voz no hay «qué le cambiarías»: cámbiala con los mandos de arriba '
+      + '(voz, modelo y estilos). Es gratis y no rehace nada más.'));
   caja.appendChild(bloqueLight('🎙️ Voz', 'quién lo locuta', voz));
 
   // 🌐 lo que se cambia a mano. Autoguardado, como todo lo demás.

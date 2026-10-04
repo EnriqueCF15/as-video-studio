@@ -8101,6 +8101,14 @@ def regenerar_preset_light(preset_id: str, cuerpo: dict = Body(default=None)):
     ficha = _preset_o_400(lambda p: p.leer(preset_id))
     if ficha.get("tipo") != "canal":
         raise ErrorApi(400, "esto no es un preset de canal")
+    # REHACER LA VOZ ELIGE DEL CATALOGO DE CARTESIA (`voz_descrita`). Con una voz
+    # de Google o de ElevenLabs escribiria un id de Cartesia encima de la buena:
+    # esas se cambian con sus mandos, que no rehacen nada.
+    proveedor_voz = str(((ficha.get("datos") or {}).get("voz") or {})
+                        .get("proveedor") or "cartesia")
+    if parte == "voz" and proveedor_voz != "cartesia":
+        raise ErrorApi(400, f"esta voz es de {proveedor_voz}: se cambia con sus "
+                            "mandos (voz, modelo y estilos), no regenerandola")
     ctx = _taller_de(ficha)
 
     origen = dict((ficha.get("datos") or {}).get("origen") or {})

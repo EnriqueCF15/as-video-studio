@@ -2875,6 +2875,19 @@ def probar_modo_light(cliente):
         f"/api/presets-light/{pid_preset}/regenerar", {"parte": "inventada"})
     igual(respuesta.status_code, 400, "una parte que no existe da 400")
 
+    # REHACER LA VOZ ELIGE DEL CATALOGO DE CARTESIA: con una voz de Google
+    # escribiria un id de Cartesia encima de la buena. Se cambia con sus mandos.
+    respuesta, datos = cliente.put(f"/api/presets-light/{pid_preset}", {
+        "voz": {"proveedor": "google", "modelo": "gemini-2.5-flash-tts",
+                "voz_id": "Orus"}})
+    igual(respuesta.status_code, 200, "poner una voz de Google en el estilo responde 200")
+    respuesta, datos = cliente.post(
+        f"/api/presets-light/{pid_preset}/regenerar",
+        {"parte": "voz", "peticion": "algo mas joven"})
+    igual(respuesta.status_code, 400,
+          "rehacer la voz de Google se rechaza: se cambia con sus mandos")
+    ok("mandos" in str(datos.get("error") or ""), "y lo dice")
+
     respuesta, datos = cliente.delete(f"/api/presets-light/{pid_preset}")
     igual(respuesta.status_code, 200, "borrar el preset responde 200")
     respuesta, datos = cliente.get("/api/presets-light")
