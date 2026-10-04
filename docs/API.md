@@ -153,6 +153,9 @@ Reglas que valen para toda la API y no se repiten en cada fila:
 
 | | Ruta | Qué hace |
 |---|---|---|
+| `GET` | `/api/audio-propio` | Tu carpeta de audio: lo que hay, con su ficha o sin ella (fork, Fase 3). |
+| `GET` | `/api/audio-propio/{familia}/{archivo}` | Sirve un fichero de tu carpeta, para oirlo mientras rellenas su ficha. |
+| `PUT` | `/api/audio-propio/{familia}/{archivo}` | Guarda la ficha de un fichero de tu carpeta. No cuesta nada. |
 | `GET` | `/api/efectos/{archivo}` | Sirve un efecto del banco del canal, para poder oírlo antes de vetarlo. |
 | `GET` | `/api/proyectos/{pid}/sonido` | Qué suena en este vídeo: el tema puesto, los efectos surtidos y el catálogo. |
 | `PUT` | `/api/proyectos/{pid}/sonido` | Fija el tema (bajándolo al banco), el interruptor o el nivel de música. |
@@ -263,4 +266,4 @@ Reglas que valen para toda la API y no se repiten en cada fila:
 
 ---
 
-**149 endpoints.** Escrito por `generar_api.py` desde `app.py`.
+**152 endpoints.** Escrito por `generar_api.py` desde `app.py`.

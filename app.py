@@ -5195,6 +5195,12 @@ def leer_sonido(pid: str):
         "animos": sorted(sonido.ANIMOS),
         "hay_jamendo": hay_jamendo,
         "hay_freesound": hay_freesound,
+        # la carpeta propia y el orden de fuentes (fork, Fase 3)
+        "hay_musica": sonido.hay_musica(),
+        "hay_efectos": sonido.hay_efectos(),
+        "licencias_seguras": sonido.solo_seguras(),
+        "fuentes": {"musica": sonido.fuentes_de("musica"),
+                    "efectos": sonido.fuentes_de("efectos")},
         "lufs": render.get("musica_lufs", sonido.MUSICA_LUFS),
         "resumen": sonido.describir(render),
         # los créditos, en una lista lista para pegar en la descripción: los
@@ -5263,6 +5269,11 @@ def guardar_sonido(pid: str, cuerpo: dict = Body(default=None)):
 def _correr_surtir_efectos(avisar, ctx, papeles, salteado):
     sonido = _sonido()
     render = ctx.estado.params("render") or {}
+    if not render.get("sonido", True):
+        # con el sonido apagado no hay nada que buscar, y pedir una clave para
+        # algo que no va a sonar es pararle el video a alguien por nada
+        avisar(1.0, "sonido apagado: sin efectos")
+        return {"efectos": render.get("efectos") or {}, "cuantos": 0, "omitido": True}
     surtido = dict(render.get("efectos") or {})
     total = len(papeles)
     for indice, papel in enumerate(papeles):
@@ -5278,6 +5289,9 @@ def _correr_surtir_efectos(avisar, ctx, papeles, salteado):
 def _correr_banda(avisar, ctx, tramos):
     """Monta la banda sonora entera sin preguntar nada. Ver sonido.montar_banda."""
     sonido = _sonido()
+    if not (ctx.estado.params("render") or {}).get("sonido", True):
+        avisar(1.0, "sonido apagado: sin música")
+        return {"omitido": True, "resumen": "sin música ni efectos"}
     plan = PASOS_MODULOS.p6_assets.plan_actual(ctx.proyecto, "assets", estado=ctx.estado) or {}
     escenas = plan.get("escenas") or []
     if not escenas:
@@ -5328,8 +5342,8 @@ def montar_banda_sonora(pid: str, cuerpo: dict = Body(default=None)):
     ctx = contexto(pid)
     sonido = _sonido()
     datos = _cuerpo(cuerpo)
-    if not sonido.hay_claves()[0]:
-        raise ErrorApi(409, "falta JAMENDO_CLIENT_ID: ponla en Configuracion")
+    if not sonido.hay_musica():
+        raise ErrorApi(409, sonido.falta_musica_texto())
     # los tramos se pueden pasar retocados desde avanzadas (otro ánimo), pero el
     # camino normal es no pasar nada y que los deduzca del ritmo
     tramos = datos.get("tramos") if isinstance(datos.get("tramos"), list) else None
@@ -5338,6 +5352,54 @@ def montar_banda_sonora(pid: str, cuerpo: dict = Body(default=None)):
     _registrar_trabajo(trabajo_id, ctx.id)
     return {"trabajo_id": trabajo_id, "trabajo": ctx.gestor.estado(trabajo_id),
             "eventos": f"/api/trabajos/{trabajo_id}/eventos"}
+
+
+@app.get("/api/audio-propio")
+def leer_audio_propio():
+    """Tu carpeta de audio: lo que hay, con su ficha o sin ella (fork, Fase 3).
+
+    Es del CANAL, como el banco: lo que se baja una vez de la Biblioteca de
+    audio de YouTube o de Uppbeat sirve para todos los videos. Un fichero sin
+    ficha completa no se usa: no se sabe que licencia tiene.
+    """
+    sonido = _sonido()
+    familias = {}
+    for familia in ("musica", "efectos"):
+        familias[familia] = {"carpeta": sonido.carpeta_propia(familia),
+                             "ficheros": sonido.catalogo_propio(familia)}
+    return {"familias": familias,
+            "origenes": [{"id": o, "nombre": sonido.NOMBRES_ORIGEN.get(o, o)}
+                         for o in sonido.ORIGENES_PROPIOS],
+            "animos": sorted(sonido.ANIMOS),
+            "papeles": [{"id": k, "nombre": v["nombre"],
+                         "descripcion": v["descripcion"]}
+                        for k, v in sonido.PAPELES.items()],
+            "extensiones": list(sonido.EXT_AUDIO)}
+
+
+@app.put("/api/audio-propio/{familia}/{archivo}")
+def guardar_audio_propio(familia: str, archivo: str, cuerpo: dict = Body(default=None)):
+    """Guarda la ficha de un fichero de tu carpeta. No cuesta nada."""
+    sonido = _sonido()
+    if familia not in ("musica", "efectos"):
+        raise ErrorApi(400, "la familia es 'musica' o 'efectos'")
+    try:
+        ficha = sonido.guardar_ficha_propia(familia, archivo, _cuerpo(cuerpo))
+    except ValueError as fallo:
+        raise ErrorApi(400, str(fallo))
+    return {"ficha": ficha, "familia": familia, "archivo": archivo}
+
+
+@app.get("/api/audio-propio/{familia}/{archivo}")
+def servir_audio_propio(familia: str, archivo: str, peticion: Request):
+    """Sirve un fichero de tu carpeta, para oirlo mientras rellenas su ficha."""
+    sonido = _sonido()
+    if familia not in ("musica", "efectos"):
+        raise ErrorApi(400, "la familia es 'musica' o 'efectos'")
+    destino = ruta_segura(sonido.carpeta_propia(familia), archivo)
+    if not os.path.isfile(destino):
+        raise ErrorApi(404, f"no hay ningún {archivo!r} en tu carpeta de {familia}")
+    return servir_fichero(peticion, destino)
 
 
 @app.get("/api/efectos/{archivo}")
@@ -5402,8 +5464,11 @@ def surtir_efectos(pid: str, cuerpo: dict = Body(default=None)):
     if desconocidos:
         raise ErrorApi(400, f"papeles desconocidos: {', '.join(desconocidos)}. "
                             f"Los que hay son: {', '.join(sonido.PAPELES)}")
-    if not sonido.hay_claves()[1]:
-        raise ErrorApi(409, "falta FREESOUND_API_KEY: ponla en Configuracion")
+    if not sonido.hay_efectos():
+        raise ErrorApi(409, "no hay efectos de donde sacar: suelta efectos en tu "
+                            f"carpeta ({sonido.carpeta_propia('efectos')}) y "
+                            "rellena su ficha en Configuración, o pon la clave de "
+                            "Freesound")
     # 'salteado' rota por qué consulta se empieza: volver a pulsar trae OTROS
     # sonidos en vez de los mismos, que es lo que se espera de «buscar más».
     salteado = int(datos.get("salteado") or 0)
@@ -5427,6 +5492,7 @@ def leer_ajustes():
     return {"ajustes": AJUSTES.leer(),
             "calidades": list(AJUSTES.CALIDADES),
             "proveedores_imagen": list(AJUSTES.PROVEEDORES_IMAGEN),
+            "prioridades_audio": list(AJUSTES.PRIORIDADES_AUDIO),
             "costes": AJUSTES.tabla_de_costes(),
             "tamano": AJUSTES.TAMANO}
 
@@ -5613,10 +5679,13 @@ def _esta_al_dia(ctx, tarea):
     if tid == "piezas":
         # las piezas viven dentro de assets: si assets esta al dia, estan
         return ctx.estado.al_dia("assets")
-    if tid == "banda_sonora":
-        return bool((ctx.estado.params("render") or {}).get("musica"))
-    if tid == "efectos":
-        return bool((ctx.estado.params("render") or {}).get("efectos"))
+    if tid in ("banda_sonora", "efectos"):
+        render = ctx.estado.params("render") or {}
+        # con el sonido apagado no queda nada que hacer: si no, la tanda del MP4
+        # se paraba pidiendo la clave de Jamendo para una musica que no suena
+        if not render.get("sonido", True):
+            return True
+        return bool(render.get("musica" if tid == "banda_sonora" else "efectos"))
     return False
 
 

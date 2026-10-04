@@ -56,6 +56,7 @@ import io
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -111,6 +112,303 @@ def hay_claves():
     """Si se puede salir a buscar. Renderizar NO lo necesita: eso lee del banco."""
     claves = _claves()
     return bool(claves.get("JAMENDO_CLIENT_ID")), bool(claves.get("FREESOUND_API_KEY"))
+
+
+# ===========================================================================
+# LICENCIAS, CARPETA PROPIA Y ORDEN DE FUENTES (fork, Fase 3)
+#
+# MONETIZAR PIDE LICENCIAS QUE LO PERMITAN. Jamendo solo excluia ND y dejaba
+# pasar NC (no comercial), y Freesound no filtraba nada: un video monetizado
+# con eso es un reclamo esperando. Con `audio_licencias_seguras` (defecto) de
+# las dos APIs solo entran:
+#
+#     CC0      dominio publico, sin condiciones
+#     CC BY    se puede usar para todo citando al autor (creditos.txt)
+#
+# y quedan fuera NC (no comercial), ND (sin obras derivadas: un video con
+# musica de fondo lo es) y SA (obligaria a publicar el video con la misma
+# licencia). Se clasifica la URL de la licencia que traen las dos APIs y no se
+# pide filtrado al servidor: Jamendo devuelve CERO con los filtros duros
+# combinados (ver `buscar_musica`).
+#
+# LA CARPETA PROPIA, `banco/audio/propio/{musica,efectos}/`, es lo que se baja
+# a mano: la Biblioteca de audio de YouTube, Uppbeat (no tiene API), Pixabay,
+# Mixkit... Cada fichero lleva al lado su ficha, `<fichero>.json`, que se
+# rellena en Configuracion y no se adivina: titulo, autor, licencia, si pide
+# credito y con que texto, el animo (musica) o el papel (efecto). Un fichero sin
+# ficha NO se usa: no se sabe que licencia tiene.
+# ===========================================================================
+
+#: Las licencias que dejan monetizar sin pedir permiso.
+LICENCIAS_SEGURAS = ("cc0", "cc-by")
+
+#: De donde sale un fichero propio (campo `fuente` de su ficha).
+ORIGENES_PROPIOS = ("youtube_audio_library", "uppbeat", "pixabay", "mixkit",
+                    "comprada", "otra")
+
+NOMBRES_ORIGEN = {
+    "youtube_audio_library": "Biblioteca de audio de YouTube",
+    "uppbeat": "Uppbeat", "pixabay": "Pixabay", "mixkit": "Mixkit",
+    "comprada": "comprada", "otra": "otra", "jamendo": "Jamendo",
+    "freesound": "Freesound",
+}
+
+#: Lo que se acepta en la carpeta propia. ffmpeg los abre todos.
+EXT_AUDIO = (".mp3", ".wav", ".m4a", ".ogg", ".flac", ".aac", ".opus")
+
+
+def tipo_de_licencia(texto):
+    """De la URL o el nombre de una licencia a su tipo. -> str
+
+    'cc0', 'cc-by', 'cc-by-sa', 'cc-by-nc', 'cc-by-nd', 'cc-by-nc-sa',
+    'cc-by-nc-nd', 'sampling+' o '' si no se reconoce. Acepta las URL de
+    creativecommons.org (lo que devuelven Jamendo y Freesound) y los nombres
+    largos («Attribution NonCommercial 4.0», «Creative Commons 0»).
+    """
+    t = str(texto or "").strip().lower()
+    if not t:
+        return ""
+    if "sampling" in t:
+        return "sampling+"
+    if ("publicdomain/zero" in t or "creative commons 0" in t or t == "cc0"
+            or t.startswith("cc0 ") or "cc0 1.0" in t):
+        return "cc0"
+    m = re.search(r"/licenses/([a-z-]+)/", t)
+    if m:
+        partes = set(m.group(1).split("-"))
+    else:
+        partes = set()
+        if "attribution" in t or re.search(r"\bby\b", t):
+            partes.add("by")
+        if "noncommercial" in t or "non-commercial" in t or re.search(r"\bnc\b", t):
+            partes.add("nc")
+        if "noderiv" in t or "no deriv" in t or re.search(r"\bnd\b", t):
+            partes.add("nd")
+        if "sharealike" in t or "share alike" in t or re.search(r"\bsa\b", t):
+            partes.add("sa")
+    if "by" not in partes:
+        return ""
+    return "cc-" + "-".join(p for p in ("by", "nc", "nd", "sa") if p in partes)
+
+
+def licencia_segura(texto):
+    """Si se puede monetizar con esa licencia sin pedir permiso (CC0 o CC BY)."""
+    return tipo_de_licencia(texto) in LICENCIAS_SEGURAS
+
+
+def nombre_licencia(texto):
+    """«CC BY 4.0», «CC0 1.0»... para los creditos. Lo que no se reconoce, tal cual."""
+    tipo = tipo_de_licencia(texto)
+    if not tipo:
+        return str(texto or "").strip()
+    version = re.search(r"/(\d\.\d)/?", str(texto or ""))
+    nombre = "CC0" if tipo == "cc0" else "CC " + tipo[3:].upper()
+    return f"{nombre} {version.group(1)}" if version else nombre
+
+
+def _ajustes():
+    """Los ajustes del estudio, o los de fabrica si no se pueden leer."""
+    try:
+        import ajustes                                       # noqa: PLC0415
+        return ajustes.leer()
+    except Exception:                                        # noqa: BLE001
+        return {"audio_licencias_seguras": True,
+                "audio_prioridad": "propia_primero",
+                "uppbeat_suscripcion": False, "uppbeat_canal": ""}
+
+
+def solo_seguras():
+    """Si de Jamendo y Freesound solo entran CC0 y CC BY."""
+    return bool(_ajustes().get("audio_licencias_seguras", True))
+
+
+def fuentes_de(familia):
+    """En que orden se buscan musica o efectos. -> ['propia', 'jamendo'] etc."""
+    en_linea = "jamendo" if familia == "musica" else "freesound"
+    prioridad = _ajustes().get("audio_prioridad") or "propia_primero"
+    if prioridad == "solo_propia":
+        return ["propia"]
+    if prioridad == "en_linea_primero":
+        return [en_linea, "propia"]
+    return ["propia", en_linea]
+
+
+def carpeta_propia(familia):
+    """La carpeta donde se sueltan a mano la musica o los efectos propios."""
+    if familia not in ("musica", "efectos"):
+        raise ValueError(f"familia de audio desconocida: {familia!r}")
+    return banco("propio", familia)
+
+
+def _ruta_ficha(ruta):
+    return ruta + ".json"
+
+
+def _id_propio(ruta):
+    """Identificador estable de un fichero propio: su nombre y su contenido.
+
+    El contenido entra (un trozo de su huella) para que sustituir un fichero
+    por otro con el mismo nombre no deje sonando la copia vieja del banco.
+    """
+    import hashlib                                           # noqa: PLC0415
+    estado = os.stat(ruta)
+    clave = (os.path.normcase(os.path.abspath(ruta)), estado.st_size, estado.st_mtime)
+    if clave in _IDS_PROPIOS:
+        return _IDS_PROPIOS[clave]
+    base = re.sub(r"[^a-z0-9]+", "-",
+                  os.path.splitext(os.path.basename(ruta))[0].lower()).strip("-")
+    huella = hashlib.sha1()
+    with open(ruta, "rb") as fh:
+        for trozo in iter(lambda: fh.read(1 << 20), b""):
+            huella.update(trozo)
+    _IDS_PROPIOS[clave] = f"{(base or 'audio')[:40]}-{huella.hexdigest()[:8]}"
+    return _IDS_PROPIOS[clave]
+
+
+#: Huellas ya calculadas: {(ruta, tamano, fecha): id}. Un fichero que no cambia
+#: no se vuelve a leer entero en cada busqueda.
+_IDS_PROPIOS = {}
+
+
+def catalogo_propio(familia):
+    """Lo que hay en la carpeta propia, con su ficha o sin ella. -> [dict]
+
+    Cada entrada: {archivo, id, ficha (o None), completa, falta}. `completa` es
+    que se puede usar; `falta` dice que le falta a la ficha para poder usarse.
+    """
+    carpeta = carpeta_propia(familia)
+    salida = []
+    for nombre in sorted(os.listdir(carpeta)):
+        ruta = os.path.join(carpeta, nombre)
+        if not os.path.isfile(ruta) or os.path.splitext(nombre)[1].lower() not in EXT_AUDIO:
+            continue
+        ficha = None
+        if os.path.exists(_ruta_ficha(ruta)):
+            try:
+                with open(_ruta_ficha(ruta), "r", encoding="utf-8-sig") as fh:
+                    ficha = json.load(fh)
+            except (OSError, ValueError):
+                ficha = None
+        falta = _falta_en_ficha(ficha, familia)
+        salida.append({"archivo": nombre, "id": _id_propio(ruta),
+                       "ficha": ficha, "completa": not falta, "falta": falta})
+    return salida
+
+
+def _falta_en_ficha(ficha, familia):
+    """Lo que le falta a una ficha propia para poder usarse. -> [str]"""
+    if not isinstance(ficha, dict):
+        return ["la ficha entera"]
+    falta = []
+    if ficha.get("fuente") not in ORIGENES_PROPIOS:
+        falta.append("de donde sale (fuente)")
+    if not str(ficha.get("titulo") or "").strip():
+        falta.append("el titulo")
+    if not str(ficha.get("licencia") or "").strip():
+        falta.append("la licencia")
+    if familia == "musica" and ficha.get("animo") not in ANIMOS:
+        falta.append("el animo")
+    if familia == "efectos" and ficha.get("papel") not in PAPELES:
+        falta.append("el papel (en que hueco suena)")
+    return falta
+
+
+def guardar_ficha_propia(familia, archivo, datos):
+    """Escribe la ficha de un fichero propio, validada. -> ficha guardada"""
+    carpeta = carpeta_propia(familia)
+    nombre = os.path.basename(str(archivo or ""))
+    ruta = os.path.join(carpeta, nombre)
+    if not nombre or not os.path.isfile(ruta):
+        raise ValueError(f"no hay ningun {nombre!r} en tu carpeta de {familia}")
+    datos = datos if isinstance(datos, dict) else {}
+    ficha = {
+        "fuente": str(datos.get("fuente") or "").strip(),
+        "titulo": " ".join(str(datos.get("titulo") or "").split())[:200],
+        "artista": " ".join(str(datos.get("artista") or "").split())[:200],
+        "licencia": " ".join(str(datos.get("licencia") or "").split())[:200],
+        "atribucion_requerida": bool(datos.get("atribucion_requerida")),
+        "texto_credito": str(datos.get("texto_credito") or "").strip()[:1000],
+        "codigo_credito": " ".join(str(datos.get("codigo_credito") or "").split())[:200],
+        "etiquetas": [str(x).strip()[:40] for x in (datos.get("etiquetas") or [])
+                      if str(x).strip()][:12],
+    }
+    if familia == "musica":
+        ficha["animo"] = str(datos.get("animo") or "").strip()
+        try:
+            # 0 es «no lo se»: es lo que manda un campo numerico vacio
+            ficha["bpm"] = (int(datos["bpm"]) or None) if datos.get("bpm") not in (None, "") else None
+        except (TypeError, ValueError):
+            raise ValueError("bpm es un numero entero (o vacio)")
+    else:
+        ficha["papel"] = str(datos.get("papel") or "").strip()
+    if ficha["fuente"] not in ORIGENES_PROPIOS:
+        raise ValueError(f"fuente {ficha['fuente']!r}: solo "
+                         + ", ".join(ORIGENES_PROPIOS))
+    falta = _falta_en_ficha(ficha, familia)
+    if falta:
+        raise ValueError("a la ficha le falta " + ", ".join(falta))
+    if ficha["atribucion_requerida"] and not ficha["texto_credito"] \
+            and ficha["fuente"] != "uppbeat":
+        raise ValueError("si pide atribucion, escribe el texto del credito "
+                         "(el que da la propia web al bajarla)")
+    medios.escribir_texto(_ruta_ficha(ruta),
+                          json.dumps(ficha, ensure_ascii=False, indent=1))
+    return ficha
+
+
+def ficha_propia(entrada, familia):
+    """De una entrada de `catalogo_propio` a una ficha como las de Jamendo."""
+    f = entrada.get("ficha") or {}
+    salida = {
+        "fuente": "propia", "id": entrada["id"], "archivo": entrada["archivo"],
+        "origen": f.get("fuente") or "otra",
+        "titulo": f.get("titulo") or entrada["archivo"],
+        "artista": f.get("artista") or "", "autor": f.get("artista") or "",
+        "licencia": f.get("licencia") or "",
+        "atribucion_requerida": bool(f.get("atribucion_requerida")),
+        "texto_credito": f.get("texto_credito") or "",
+        "codigo_credito": f.get("codigo_credito") or "",
+        "etiquetas": list(f.get("etiquetas") or []),
+        "duracion": 0.0, "descarga": "",
+    }
+    if familia == "musica":
+        salida.update(animo=f.get("animo") or "", bpm=f.get("bpm"))
+    else:
+        salida["papel"] = f.get("papel") or ""
+    return salida
+
+
+def propios(familia):
+    """Las fichas propias que SE PUEDEN USAR (ficha completa). -> [ficha]"""
+    return [ficha_propia(e, familia) for e in catalogo_propio(familia)
+            if e["completa"]]
+
+
+def hay_musica():
+    """Si hay de donde sacar musica: carpeta propia o Jamendo, segun el orden."""
+    for fuente in fuentes_de("musica"):
+        if fuente == "propia" and propios("musica"):
+            return True
+        if fuente == "jamendo" and hay_claves()[0]:
+            return True
+    return False
+
+
+def hay_efectos():
+    """Si hay de donde sacar efectos: carpeta propia o Freesound, segun el orden."""
+    for fuente in fuentes_de("efectos"):
+        if fuente == "propia" and propios("efectos"):
+            return True
+        if fuente == "freesound" and hay_claves()[1]:
+            return True
+    return False
+
+
+def falta_musica_texto():
+    """Que hacer cuando no hay musica de donde sacar. Para errores y avisos."""
+    return ("no hay música de donde sacar: suelta temas en tu carpeta "
+            f"({carpeta_propia('musica')}) y rellena su ficha en Configuración, "
+            "o pon la clave de Jamendo, o apaga la música de este vídeo")
 
 
 # ===========================================================================
@@ -303,9 +601,12 @@ def buscar_musica(animo="sobrio", duracion_s=0, cuantas=12, velocidad="low",
     if extra:
         etiquetas = f"{etiquetas} {extra}".strip()
     tope = max(1, min(50, int(cuantas)))
+    seguras = solo_seguras()
+    # CON EL FILTRO DE LICENCIAS SE PIDEN MAS: en Jamendo casi todo es NC, y de
+    # cada cien temas pasan unos pocos. 200 es el maximo que admite su API.
     comun = {"client_id": claves["JAMENDO_CLIENT_ID"], "format": "json",
-             "limit": tope * 2, "include": "musicinfo licenses",
-             "boost": "popularity_total"}
+             "limit": 200 if seguras else tope * 2,
+             "include": "musicinfo licenses", "boost": "popularity_total"}
     if instrumental:
         comun["vocalinstrumental"] = "instrumental"
     minimo = int(max(60, min((duracion_s or 0) * 0.45, 420))) if duracion_s else 0
@@ -328,6 +629,10 @@ def buscar_musica(animo="sobrio", duracion_s=0, cuantas=12, velocidad="low",
             ficha = _ficha_musica(track)
             # lo unico innegociable: que se pueda bajar. Sin esto no hay tema.
             if not ficha["descarga"] or ficha["id"] in vistos:
+                continue
+            # y, con el filtro puesto, que se pueda MONETIZAR: CC0 o CC BY
+            if seguras and not licencia_segura(ficha["licencia"]):
+                vistos.add(ficha["id"])
                 continue
             vistos.add(ficha["id"])
             salida.append(ficha)
@@ -592,9 +897,30 @@ def medir(ruta):
     Se hace en numpy y no con un grafo de ffmpeg porque el WAV ya esta
     decodificado para todo lo demas: tres FFT contra tres llamadas a un proceso.
     """
+    # LO MEDIDO NO CAMBIA mientras el fichero no cambie: con la carpeta propia,
+    # el mismo tema se puede mirar en cada tramo de un video de veinte minutos
+    try:
+        estado = os.stat(ruta)
+        clave = (os.path.normcase(os.path.abspath(ruta)), estado.st_size,
+                 estado.st_mtime)
+    except OSError:
+        clave = None
+    if clave and clave in _MEDIDAS:
+        return dict(_MEDIDAS[clave])
     muestras = _leer(_a_wav(ruta))
     if not len(muestras):
         return {"lufs": -99.0, "graves": -99.0, "medios": -99.0, "agudos": -99.0}
+    ficha = _medir_muestras(muestras)
+    if clave:
+        _MEDIDAS[clave] = dict(ficha)
+    return ficha
+
+
+#: Lo medido de cada tema: {(ruta, tamano, fecha): ficha}.
+_MEDIDAS = {}
+
+
+def _medir_muestras(muestras):
     mono = muestras.mean(axis=1)
     # un trozo del centro: el arranque y el final de un tema suelen ser fundidos
     # y medir ahi dice mas del fundido que del tema
@@ -638,6 +964,10 @@ def elegir_tema(candidatos, evitar=()):
         try:
             ruta = traer(ficha, "musica")
             medida = medir(ruta)
+            # los propios no traen duracion: se mide, que la cama la necesita
+            # para saber si hay que repetir el tema dentro de su tramo
+            if not float(ficha.get("duracion") or 0):
+                ficha["duracion"] = round(float(medios.duracion_media(ruta) or 0), 2)
         except Exception as fallo:                     # un tema caido no corta
             ficha["error"] = str(fallo)[:120]
             continue
@@ -661,27 +991,65 @@ def montar_banda(escenas, duracion_s, avisar=None, tramos=None):
     arco = tramos or arco_del_video(escenas, duracion_s)
     if not arco:
         raise RuntimeError("no hay planos con tiempos: no se puede leer el ritmo")
+    if not hay_musica():
+        raise RuntimeError(falta_musica_texto())
     puestos, usados = [], []
     for tramo in arco:
         avisar(0.1 + 0.8 * tramo["i"] / max(1, len(arco)),
                f"tramo {tramo['i'] + 1} de {len(arco)}: buscando algo "
                f"«{tramo['animo']}»")
-        candidatos = buscar_musica(animo=tramo["animo"], cuantas=6,
-                                   duracion_s=(tramo["hasta"] - tramo["desde"]),
-                                   velocidad=tramo["velocidad"])
-        elegido = elegir_tema(candidatos, evitar=usados)
+        elegido = _tema_para(tramo, usados)
         if elegido is None:
-            raise RuntimeError(f"tramo {tramo['i'] + 1}: Jamendo no ha devuelto "
-                               f"ningun tema «{tramo['animo']}» que se pueda bajar")
+            raise RuntimeError(f"tramo {tramo['i'] + 1}: no hay ningun tema "
+                               f"«{tramo['animo']}» que se pueda usar ("
+                               + falta_musica_texto() + ")")
         usados.append(str(elegido["id"]))
         puestos.append({**{k: elegido.get(k) for k in
                            ("fuente", "id", "titulo", "artista", "licencia",
                             "duracion", "medida", "punto")},
+                        # los de la carpeta propia: con que se encuentra el
+                        # fichero y que credito pide
+                        **{k: elegido.get(k) for k in
+                           ("archivo", "origen", "atribucion_requerida",
+                            "texto_credito", "codigo_credito")
+                           if elegido.get(k) not in (None, "")},
                         "animo": tramo["animo"], "velocidad": tramo["velocidad"],
                         "fraccion": tramo["fraccion"], "planos": tramo["planos"],
                         "por_que": tramo["por_que"]})
     return {"tramos": puestos, "ganancia_db": CAMA_GANANCIA_DB,
             "cruce_s": CRUCE_S, "modo": "cama"}
+
+
+def _tema_para(tramo, usados):
+    """El tema de un tramo, mirando las fuentes en su orden. -> ficha o None
+
+    De la carpeta propia: primero los de ese animo y, si no hay, cualquiera de
+    la carpeta (con la carpeta primero, lo de fuera solo entra si esta vacia).
+    Si todos estan ya usados se REPITE uno: un tema dos veces en un video largo
+    es mejor que un tramo mudo o que salir a buscar fuera lo que no se pidio.
+    """
+    for fuente in fuentes_de("musica"):
+        if fuente == "propia":
+            lista = propios("musica")
+            if not lista:
+                continue
+            del_animo = [f for f in lista if f.get("animo") == tramo["animo"]
+                         or tramo["animo"] in (f.get("etiquetas") or [])]
+            candidatos = del_animo or lista
+            elegido = (elegir_tema(candidatos, evitar=usados)
+                       or elegir_tema(lista, evitar=usados)
+                       or elegir_tema(candidatos))
+            if elegido is not None:
+                return elegido
+        elif fuente == "jamendo" and hay_claves()[0]:
+            candidatos = buscar_musica(
+                animo=tramo["animo"], cuantas=6,
+                duracion_s=(tramo["hasta"] - tramo["desde"]),
+                velocidad=tramo["velocidad"])
+            elegido = elegir_tema(candidatos, evitar=usados)
+            if elegido is not None:
+                return elegido
+    return None
 
 
 def construir_cama(ficha, duracion_s, destino):
@@ -763,6 +1131,8 @@ def buscar_efectos(consulta, dur_min=0.2, dur_max=8.0, cuantos=15):
     claves = _claves()
     if not claves.get("FREESOUND_API_KEY"):
         raise RuntimeError("falta FREESOUND_API_KEY: ponla en Configuracion")
+    seguras = solo_seguras()
+    tope = max(1, min(50, int(cuantos)))
     respuesta = requests.get(
         "https://freesound.org/apiv2/search/text/", timeout=45,
         headers={"Authorization": "Token " + claves["FREESOUND_API_KEY"]},
@@ -771,11 +1141,16 @@ def buscar_efectos(consulta, dur_min=0.2, dur_max=8.0, cuantos=15):
                 "fields": ("id,name,tags,duration,license,username,url,previews,"
                            "ac_analysis"),
                 "sort": "downloads_desc",
-                "page_size": max(1, min(50, int(cuantos)))})
+                # con el filtro de licencias se piden mas: parte se queda fuera
+                "page_size": min(150, tope * 3) if seguras else tope})
     if respuesta.status_code != 200:
         raise RuntimeError(f"Freesound {respuesta.status_code}: "
                            f"{respuesta.text[:200]}")
-    return [_ficha_efecto(s) for s in respuesta.json().get("results") or []]
+    fichas = [_ficha_efecto(s) for s in respuesta.json().get("results") or []]
+    # SOLO LO MONETIZABLE: CC0 o CC BY. Fuera NC y el viejo Sampling+.
+    if seguras:
+        fichas = [f for f in fichas if licencia_segura(f.get("licencia"))]
+    return fichas[:tope]
 
 
 def _ficha_efecto(crudo):
@@ -805,6 +1180,10 @@ def _ficha_efecto(crudo):
 # ------------------------------------------------------------------- banco
 
 def _nombre_de(ficha, extension=".mp3"):
+    # lo propio conserva su extension: un WAV de la Biblioteca de YouTube no se
+    # llama .mp3 en el banco
+    if extension == ".mp3" and ficha.get("fuente") == "propia" and ficha.get("archivo"):
+        extension = os.path.splitext(str(ficha["archivo"]))[1].lower() or ".mp3"
     return f"{ficha.get('fuente', 'x')}_{ficha.get('id', '0')}{extension}"
 
 
@@ -1108,6 +1487,19 @@ def traer(ficha, familia):
     destino = banco(familia, _nombre_de(ficha))
     if os.path.exists(destino) and os.path.getsize(destino) > 2000:
         return destino
+    if ficha.get("fuente") == "propia":
+        # DE TU CARPETA AL BANCO, sin red. Se copia (no se enlaza) para que el
+        # render no dependa de que el fichero siga en la carpeta: el id lleva la
+        # huella del contenido, asi que un fichero cambiado es otra copia.
+        origen = os.path.join(carpeta_propia(familia),
+                              os.path.basename(str(ficha.get("archivo") or "")))
+        if not ficha.get("archivo") or not os.path.isfile(origen):
+            raise RuntimeError(f"«{ficha.get('titulo') or ficha.get('id')}» ya no "
+                               f"esta en tu carpeta de {familia}")
+        temporal = destino + ".parcial"
+        shutil.copyfile(origen, temporal)
+        os.replace(temporal, destino)
+        return destino
     url = ficha.get("descarga") or ""
     if not url:
         raise RuntimeError(f"{ficha.get('id')}: no trae URL de descarga")
@@ -1138,12 +1530,42 @@ def surtir(papel, cuantos=None, salteado=0):
         raise RuntimeError(f"papel de efecto desconocido: {papel}")
     cuantos = int(cuantos or ficha_papel["cuantos"])
     dur_min, dur_max = ficha_papel["duracion"]
-    vistos, salida = set(), []
+    salida = []
     # LO VETADO NO VUELVE. Freesound ordena por descargas, o sea que devuelve
     # los mismos ficheros a todo el mundo y a la tercera busqueda vuelve a salir
     # el mismo laser. Borrarlo del banco no serviria de nada: se bajaria otra
     # vez. Ver «los vetados» arriba.
     fuera = vetados()
+    # LAS FUENTES EN SU ORDEN (Configuracion): la carpeta propia y Freesound.
+    # Sin clave de Freesound se sigue con lo propio, sin error: un papel sin
+    # efectos se queda mudo, que es lo que pasa tambien si se vetan todos.
+    for fuente in fuentes_de("efectos"):
+        if fuente == "propia":
+            for ficha in propios("efectos"):
+                if ficha.get("papel") != papel or clave_de(ficha) in fuera:
+                    continue
+                try:
+                    traer(ficha, "efectos")
+                except Exception as fallo:            # un fichero caido no corta
+                    ficha["error"] = str(fallo)[:120]
+                    continue
+                salida.append(ficha)
+                if len(salida) >= cuantos:
+                    return salida
+        elif fuente == "freesound" and hay_claves()[1]:
+            salida.extend(_surtir_de_freesound(papel, ficha_papel, cuantos - len(salida),
+                                               salteado, fuera, dur_min, dur_max))
+            if len(salida) >= cuantos:
+                return salida[:cuantos]
+    return salida
+
+
+def _surtir_de_freesound(papel, ficha_papel, cuantos, salteado, fuera, dur_min,
+                         dur_max):
+    """Lo de `surtir` que sale a Freesound: varias consultas, sin vetados."""
+    vistos, salida = set(), []
+    if cuantos <= 0:
+        return salida
     consultas = list(ficha_papel["consultas"])
     for indice in range(len(consultas)):
         consulta = consultas[(indice + int(salteado)) % len(consultas)]
@@ -1544,3 +1966,119 @@ def describir(params):
     if cuantos:
         trozos.append(f"{cuantos} efectos en {len(surtido)} papeles")
     return " · ".join(trozos) if trozos else "sin música ni efectos"
+
+
+# ------------------------------------------------------------ los creditos
+#
+# CREDITOS.TXT, JUNTO AL MP4 (fork, Fase 3). CC BY permite monetizar a cambio
+# de citar al autor, y la Biblioteca de audio de YouTube o el plan gratis de
+# Uppbeat piden su linea en la descripcion. Hacerlo a mano en cada video es
+# como se acaba olvidando uno. Arriba va lo que hay que PEGAR; debajo, separado,
+# todo lo que suena con su licencia, para tu registro.
+
+_TEXTOS_CREDITOS = {
+    "es": {"musica": "Música", "efectos": "Efectos de sonido",
+           "nada": "No hace falta atribución.",
+           "registro": "Todo lo que suena en este vídeo (para tu registro, NO lo pegues)",
+           "por": "de", "si": "pide crédito", "no": "sin crédito"},
+    "en": {"musica": "Music", "efectos": "Sound effects",
+           "nada": "No attribution required.",
+           "registro": "Everything heard in this video (for your records, do NOT paste)",
+           "por": "by", "si": "credit required", "no": "no credit required"},
+}
+
+
+def _url_de(ficha):
+    if ficha.get("fuente") == "jamendo" and ficha.get("id"):
+        return f"https://www.jamendo.com/track/{ficha['id']}"
+    return ficha.get("pagina") or ""
+
+
+def _credito_de(ficha, textos, uppbeat_suscripcion):
+    """(pide_credito, linea para pegar, aviso o '') de un tema o un efecto."""
+    titulo = ficha.get("titulo") or ficha.get("id") or "?"
+    autor = ficha.get("artista") or ficha.get("autor") or ""
+    licencia = ficha.get("licencia") or ""
+    if ficha.get("fuente") == "propia":
+        origen = ficha.get("origen") or "otra"
+        if origen == "uppbeat":
+            if uppbeat_suscripcion:
+                return False, "", ""
+            texto = ficha.get("texto_credito") or ficha.get("codigo_credito") or ""
+            if not texto:
+                return True, f'"{titulo}" (Uppbeat) — FALTA EL CÓDIGO DE CRÉDITO', (
+                    f"falta el código de crédito de Uppbeat de «{titulo}»: "
+                    "con el plan gratis cada pista lo pide en la descripción")
+            return True, texto, ""
+        if not ficha.get("atribucion_requerida"):
+            return False, "", ""
+        texto = ficha.get("texto_credito") or (
+            f'"{titulo}"' + (f" {textos['por']} {autor}" if autor else "")
+            + f" — {licencia} ({NOMBRES_ORIGEN.get(origen, origen)})")
+        return True, texto, ""
+    tipo = tipo_de_licencia(licencia)
+    if tipo == "cc0":
+        return False, "", ""
+    linea = (f'"{titulo}"' + (f" {textos['por']} {autor}" if autor else "")
+             + f" ({NOMBRES_ORIGEN.get(ficha.get('fuente'), ficha.get('fuente') or '')})"
+             + f" — {nombre_licencia(licencia)}"
+             + (f" — {_url_de(ficha)}" if _url_de(ficha) else ""))
+    aviso = "" if tipo in LICENCIAS_SEGURAS else (
+        f"«{titulo}» tiene licencia {nombre_licencia(licencia) or 'desconocida'}: "
+        "no es CC0 ni CC BY, revisa si se puede monetizar")
+    return True, linea, aviso
+
+
+def creditos(params, lista_eventos=None, idioma="en"):
+    """El texto de creditos.txt y sus avisos. -> {texto, avisos, piezas}
+
+    Mira lo que DE VERDAD suena: los temas de la musica y los efectos de
+    `lista_eventos` (los que reparte `eventos`), no todo el surtido.
+    """
+    p = params or {}
+    textos = _TEXTOS_CREDITOS.get(str(idioma or "en")[:2], _TEXTOS_CREDITOS["en"])
+    suscrito = bool(_ajustes().get("uppbeat_suscripcion"))
+    musica = p.get("musica") or {}
+    temas = list(musica.get("tramos") or ([musica] if musica.get("id") else []))
+    efectos, vistos = [], set()
+    for evento in lista_eventos or []:
+        ficha = evento.get("ficha") if isinstance(evento, dict) else None
+        if isinstance(ficha, dict) and clave_de(ficha) not in vistos:
+            vistos.add(clave_de(ficha))
+            efectos.append(ficha)
+    vistos_temas, unicos = set(), []
+    for tema in temas:
+        if clave_de(tema) not in vistos_temas:
+            vistos_temas.add(clave_de(tema))
+            unicos.append(tema)
+
+    pegar, registro, avisos, piezas = [], [], [], []
+    for familia, lista in (("musica", unicos), ("efectos", efectos)):
+        lineas = []
+        for ficha in lista:
+            pide, linea, aviso = _credito_de(ficha, textos, suscrito)
+            if aviso:
+                avisos.append(aviso)
+            if pide and linea:
+                lineas.append(linea)
+            origen = (NOMBRES_ORIGEN.get(ficha.get("origen"), ficha.get("origen"))
+                      if ficha.get("fuente") == "propia"
+                      else NOMBRES_ORIGEN.get(ficha.get("fuente"), ficha.get("fuente")))
+            registro.append(
+                f"- [{textos[familia]}] \"{ficha.get('titulo') or ficha.get('id')}\""
+                + (f" {textos['por']} {ficha.get('artista') or ficha.get('autor')}"
+                   if ficha.get("artista") or ficha.get("autor") else "")
+                + f" · {origen} · {ficha.get('licencia') or '?'}"
+                + f" · {textos['si'] if pide else textos['no']}"
+                + (f" · {_url_de(ficha)}" if _url_de(ficha) else ""))
+            piezas.append({"familia": familia, "titulo": ficha.get("titulo"),
+                           "pide_credito": pide, "linea": linea})
+        if lineas:
+            pegar.append(f"{textos[familia]}:")
+            pegar.extend(lineas)
+            pegar.append("")
+    if not pegar:
+        pegar = [textos["nada"], ""]
+    texto = "\n".join(pegar + ["-" * 60, textos["registro"] + ":"]
+                      + (registro or ["-"])) + "\n"
+    return {"texto": texto, "avisos": avisos, "piezas": piezas}

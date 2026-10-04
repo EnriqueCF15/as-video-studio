@@ -53,7 +53,7 @@ FAMILIAS = (
       "/api/proyectos/{pid}/direccion", "/api/proyectos/{pid}/imagenes")),
     ("Sonido y transiciones", ("/api/proyectos/{pid}/sonido",
                                "/api/proyectos/{pid}/transiciones",
-                               "/api/efectos")),
+                               "/api/efectos", "/api/audio-propio")),
     ("Render y montaje", ("/api/proyectos/{pid}/montaje",
                           "/api/proyectos/{pid}/capturas",
                           "/api/proyectos/{pid}/render")),
