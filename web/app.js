@@ -387,6 +387,8 @@ const API = {
   ajustesCLI: () => `${BASE}/api/ajustes-cli`,
   claves: () => `${BASE}/api/claves`,
   ajustes: () => `${BASE}/api/ajustes`,
+  audioPropio: (familia, archivo) => `${BASE}/api/audio-propio`
+    + (familia ? `/${encodeURIComponent(familia)}/${encodeURIComponent(archivo)}` : ''),
   cuentasCLI: refrescar => `${BASE}/api/claves/cli${refrescar ? '?refrescar=1' : ''}`,
   entrarCLI: cid => `${BASE}/api/claves/cli/${encodeURIComponent(cid)}/entrar`,
   codigoCLI: cid => `${BASE}/api/claves/cli/${encodeURIComponent(cid)}/codigo`,
@@ -2284,6 +2286,7 @@ function pintarConfig() {
   caja.appendChild(seccionCartesia(ficha));
   caja.appendChild(seccionCLI());
   caja.appendChild(seccionOtrasClaves(ficha));
+  caja.appendChild(seccionAudioPropio());
   caja.appendChild(h('div', { clase: 'fila' },
     h('button', {
       clase: 'mini fantasma',
@@ -2302,6 +2305,20 @@ async function cargarAjustes() {
     vista.ajustes = await pedir(API.ajustes());
   } catch (e) {
     vista.ajustes = null;
+  }
+  repintarClaves();
+  cargarAudioPropio();
+}
+
+/* TU CARPETA DE AUDIO (fork, Fase 3): lo que has soltado a mano en
+   banco/audio/propio, con su ficha o sin ella. Aparte de los ajustes porque
+   calcula la huella de cada fichero, y el cajón tiene que abrirse ya. */
+async function cargarAudioPropio() {
+  const vista = estadoConfig();
+  try {
+    vista.audio = await pedir(API.audioPropio());
+  } catch (e) {
+    vista.audio = { error: e.message };
   }
   repintarClaves();
 }
@@ -2991,6 +3008,195 @@ function seccionOtrasClaves(ficha) {
         onclick: () => guardarClaves({ [id]: { clave: '' } }),
       }, 'Quitar') : null)));
   });
+  return caja;
+}
+
+/* TU MÚSICA Y TUS EFECTOS (fork, Fase 3).
+ *
+ * Tres decisiones y una carpeta. Las decisiones son ajustes del estudio (como
+ * la calidad de imagen): solo licencias que dejan monetizar, en qué orden se
+ * buscan las fuentes, y si tienes suscripción de Uppbeat. La carpeta es
+ * `banco/audio/propio/{musica,efectos}`: sueltas ahí lo que bajas a mano (la
+ * Biblioteca de audio de YouTube, Uppbeat, Pixabay, Mixkit) y aquí le pones la
+ * ficha. Un fichero sin ficha NO se usa: no se sabe qué licencia tiene, y
+ * adivinarla es como acaba llegando un reclamo. */
+const ORDEN_AUDIO = [
+  { valor: 'propia_primero', nombre: 'Primero tu carpeta; si no hay nada, Freesound y Jamendo' },
+  { valor: 'solo_propia', nombre: 'Solo tu carpeta (nada de fuera)' },
+  { valor: 'en_linea_primero', nombre: 'Primero Freesound y Jamendo; tu carpeta de reserva' },
+];
+
+/* La licencia que se propone al elegir de dónde sale. Es una propuesta: se
+   puede cambiar, y en la Biblioteca de YouTube algunas pistas piden crédito. */
+const LICENCIA_POR_ORIGEN = {
+  youtube_audio_library: 'YouTube Audio Library',
+  uppbeat: 'Uppbeat',
+  pixabay: 'Pixabay Content License',
+  mixkit: 'Mixkit License',
+};
+
+function seccionAudioPropio() {
+  const vista = estadoConfig();
+  const datos = vista.ajustes;
+  const audio = vista.audio;
+  const caja = h('section', { clase: 'bloque-config' },
+    h('h3', {}, 'Tu música y tus efectos'),
+    h('div', { clase: 'pista' },
+      'Qué audio se usa en los vídeos y con qué licencia. Lo de tu carpeta va primero; '
+      + 'Jamendo y Freesound (claves de arriba) solo si los dejas.'));
+  if (datos) {
+    const a = datos.ajustes;
+    caja.appendChild(h('label', { clase: 'plano' },
+      h('input', {
+        type: 'checkbox', checked: !!a.audio_licencias_seguras,
+        // los ajustes se guardan con la misma llamada que los de imagen
+        onchange: ev => guardarAjusteImagen({ audio_licencias_seguras: ev.target.checked }),
+      }),
+      h('b', {}, 'Solo licencias que dejan monetizar (CC0 y CC BY) en Jamendo y Freesound')));
+    caja.appendChild(h('div', { clase: a.audio_licencias_seguras ? 'pista' : 'caja-aviso' },
+      a.audio_licencias_seguras
+        ? 'Fuera lo no comercial (NC), lo que no admite obras derivadas (ND) y el «compartir '
+          + 'igual» (SA). Lo CC BY sale en el creditos.txt que se deja junto a cada MP4.'
+        : 'APAGADO: pueden entrar pistas no comerciales. Bajo tu responsabilidad: un vídeo '
+          + 'monetizado con ellas puede recibir reclamaciones.'));
+    caja.appendChild(campoSelect('De dónde sale el audio', a.audio_prioridad || 'propia_primero',
+      ORDEN_AUDIO, valor => guardarAjusteImagen({ audio_prioridad: valor })));
+
+    // Uppbeat: preparado para el día que haya suscripción
+    caja.appendChild(h('label', { clase: 'plano' },
+      h('input', {
+        type: 'checkbox', checked: !!a.uppbeat_suscripcion,
+        onchange: ev => guardarAjusteImagen({ uppbeat_suscripcion: ev.target.checked }),
+      }),
+      h('b', {}, 'Tengo suscripción de Uppbeat')));
+    if (a.uppbeat_suscripcion) {
+      caja.appendChild(campoTexto('Tu canal de YouTube en la lista blanca de Uppbeat',
+        a.uppbeat_canal || '', v => { a.uppbeat_canal = v; },
+        { pista: 'https://www.youtube.com/@tucanal' }));
+      caja.appendChild(h('div', { clase: 'fila' },
+        h('button', {
+          clase: 'mini', onclick: () => guardarAjusteImagen({ uppbeat_canal: a.uppbeat_canal || '' }),
+        }, 'Guardar el canal')));
+      caja.appendChild(h('div', { clase: 'pista' },
+        'Con suscripción, sus pistas no piden crédito en la descripción. Ojo: lo publicado '
+        + 'DURANTE la suscripción sigue protegido si la cancelas; lo nuevo, no.'));
+    } else {
+      caja.appendChild(h('div', { clase: 'pista' },
+        'Sin suscripción (plan gratis), cada pista de Uppbeat pide su código de crédito en la '
+        + 'descripción: ponlo en su ficha y saldrá en el creditos.txt.'));
+    }
+  }
+
+  if (!audio) {
+    caja.appendChild(h('div', { clase: 'cargando' }, 'mirando tu carpeta de audio…'));
+    return caja;
+  }
+  if (audio.error) {
+    caja.appendChild(h('div', { clase: 'vacio' }, `no se ha podido leer tu carpeta: ${audio.error}`));
+    return caja;
+  }
+  [['musica', 'Tu música'], ['efectos', 'Tus efectos']].forEach(([familia, titulo]) => {
+    const datosFam = (audio.familias || {})[familia] || {};
+    const ficheros = datosFam.ficheros || [];
+    const listos = ficheros.filter(f => f.completa).length;
+    caja.appendChild(h('div', { clase: 'fila' },
+      h('b', {}, titulo),
+      h('span', { clase: 'crece' }),
+      pastillaEstado(listos ? 'ok' : 'vacio',
+        ficheros.length ? `${listos} de ${ficheros.length} con ficha` : 'vacía')));
+    caja.appendChild(h('div', { clase: 'pista' },
+      `Suelta aquí los ficheros (${(audio.extensiones || []).join(' ')}): `,
+      h('code', {}, datosFam.carpeta || '')));
+    ficheros.forEach(f => caja.appendChild(filaAudioPropio(familia, f, audio)));
+  });
+  caja.appendChild(h('div', { clase: 'fila' },
+    h('button', { clase: 'mini fantasma', onclick: () => cargarAudioPropio() },
+      'Volver a mirar la carpeta')));
+  return caja;
+}
+
+function filaAudioPropio(familia, entrada, audio) {
+  const vista = estadoConfig();
+  const clave = `${familia}/${entrada.archivo}`;
+  const abierta = vista.audioAbierto === clave;
+  const ficha = entrada.ficha || {};
+  const caja = h('div', { clase: 'audio-propio' });
+  caja.appendChild(h('div', { clase: 'fila' },
+    h('span', {}, ficha.titulo ? `${ficha.titulo}` : entrada.archivo),
+    ficha.titulo ? h('span', { clase: 'meta' }, ` · ${entrada.archivo}`) : null,
+    h('span', { clase: 'crece' }),
+    pastillaEstado(entrada.completa ? 'ok' : 'parcial',
+      entrada.completa ? 'lista' : `falta: ${(entrada.falta || []).join(', ')}`),
+    h('button', {
+      clase: 'mini fantasma',
+      onclick: () => {
+        vista.audioAbierto = abierta ? null : clave;
+        vista.borradorAudio = abierta ? null : { familia, archivo: entrada.archivo,
+          datos: { ...ficha } };
+        repintarClaves();
+      },
+    }, abierta ? 'Cerrar' : (entrada.completa ? 'Editar ficha' : 'Poner ficha'))));
+  if (!abierta || !vista.borradorAudio) return caja;
+
+  const b = vista.borradorAudio.datos;
+  const form = h('div', { clase: 'form-audio' });
+  form.appendChild(registrarReproductor(h('audio', {
+    controls: true, preload: 'none', src: API.audioPropio(familia, entrada.archivo),
+  })));
+  form.appendChild(campoSelect('De dónde sale', b.fuente || '',
+    [{ valor: '', nombre: '— elige —' },
+      ...(audio.origenes || []).map(o => ({ valor: o.id, nombre: o.nombre }))],
+    valor => {
+      b.fuente = valor;
+      if (!b.licencia && LICENCIA_POR_ORIGEN[valor]) b.licencia = LICENCIA_POR_ORIGEN[valor];
+      repintarClaves();
+    }));
+  form.appendChild(campoTexto('Título', b.titulo || '', v => { b.titulo = v; }));
+  form.appendChild(campoTexto('Autor o artista', b.artista || '', v => { b.artista = v; }));
+  form.appendChild(campoTexto('Licencia', b.licencia || '', v => { b.licencia = v; },
+    { ayuda: 'Tal y como la da la web: «YouTube Audio Library», «CC BY 4.0»…' }));
+  if (familia === 'musica') {
+    form.appendChild(campoSelect('Ánimo (para qué tramos encaja)', b.animo || '',
+      [{ valor: '', nombre: '— elige —' }, ...(audio.animos || [])], v => { b.animo = v; }));
+    form.appendChild(campoTexto('BPM (opcional)', b.bpm === undefined || b.bpm === null ? '' : b.bpm,
+      v => { b.bpm = v; }, { tipo: 'number', min: 0, max: 300, ancho: '90px' }));
+  } else {
+    form.appendChild(campoSelect('Papel (en qué hueco suena)', b.papel || '',
+      [{ valor: '', nombre: '— elige —' },
+        ...(audio.papeles || []).map(p => ({ valor: p.id, nombre: `${p.nombre} — ${p.descripcion}` }))],
+      v => { b.papel = v; }));
+  }
+  if (b.fuente === 'uppbeat') {
+    form.appendChild(campoTexto('Código de crédito de Uppbeat (plan gratis)', b.codigo_credito || '',
+      v => { b.codigo_credito = v; }, { ayuda: 'El que te da Uppbeat al bajar la pista.' }));
+  } else {
+    form.appendChild(h('label', { clase: 'plano' },
+      h('input', {
+        type: 'checkbox', checked: !!b.atribucion_requerida,
+        onchange: ev => { b.atribucion_requerida = ev.target.checked; repintarClaves(); },
+      }),
+      h('b', {}, 'Pide atribución (crédito en la descripción)')));
+  }
+  if (b.atribucion_requerida && b.fuente !== 'uppbeat') {
+    form.appendChild(campoTexto('Texto del crédito', b.texto_credito || '',
+      v => { b.texto_credito = v; },
+      { filas: 3, ayuda: 'El que da la propia web; se copia tal cual al creditos.txt.' }));
+  }
+  form.appendChild(h('div', { clase: 'fila' },
+    h('button', {
+      onclick: async () => {
+        try {
+          await pedir(API.audioPropio(familia, entrada.archivo), { method: 'PUT', cuerpo: b });
+          vista.audioAbierto = null;
+          vista.borradorAudio = null;
+          toast('ficha guardada');
+          cargarAudioPropio();
+        } catch (e) {
+          toast(e.message, true);
+        }
+      },
+    }, 'Guardar ficha')));
+  caja.appendChild(form);
   return caja;
 }
 
@@ -8397,7 +8603,16 @@ function vistaVideoLight() {
       'Baja el MP4 tal y como esta ahora mismo.',
       h('a', {
         clase: 'boton mini', href: urlMp4Light(), download: '',
-      }, 'Descargar')) : null);
+      }, 'Descargar')) : null,
+    // los creditos de la musica y los efectos, para pegar en la descripcion
+    (hayMp4Light() && ((videoAbierto().fichas.render || {}).salidas || {}).creditos)
+      ? conAyuda(
+        'Los créditos de la música y los efectos que suenan, listos para pegar en la '
+        + 'descripción del vídeo. Debajo, para tu registro, todo lo que suena con su licencia.',
+        h('a', {
+          clase: 'boton mini fantasma', href: urlDeVideoLight('render', 'creditos.txt'),
+          download: 'creditos.txt',
+        }, 'Créditos')) : null);
   BARRA_INFERIOR.nodo = pie;
 
   /* EL REPASO VA DEBAJO DEL VÍDEO Y SOLO CUANDO HAY VÍDEO. Antes de eso no hay
