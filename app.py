@@ -5201,6 +5201,12 @@ def leer_sonido(pid: str):
         "licencias_seguras": sonido.solo_seguras(),
         "fuentes": {"musica": sonido.fuentes_de("musica"),
                     "efectos": sonido.fuentes_de("efectos")},
+        # lo que se elige a mano por tramo, y entre que (tu carpeta)
+        "fijadas": render.get("musica_fijada") or {},
+        "propias": [{c: f.get(c) for c in ("archivo", "titulo", "artista",
+                                            "animo", "duracion")}
+                    | {"trozos": len(f.get("fragmentos") or [])}
+                    for f in sonido.propios("musica")],
         "lufs": render.get("musica_lufs", sonido.MUSICA_LUFS),
         "resumen": sonido.describir(render),
         # los créditos, en una lista lista para pegar en la descripción: los
@@ -5302,11 +5308,17 @@ def _correr_banda(avisar, ctx, tramos):
         largo = (float(escenas[-1].get("t_out") or 0)
                  - float(escenas[0].get("t_in") or 0))
     avisar(0.05, "leyendo el ritmo del montaje")
-    ficha = sonido.montar_banda(escenas, largo, avisar=avisar, tramos=tramos)
+    # las canciones elegidas a mano en la pantalla del video (fork, Fase 3)
+    fijadas = (ctx.estado.params("render") or {}).get("musica_fijada") or {}
+    ficha = sonido.montar_banda(escenas, largo, avisar=avisar, tramos=tramos,
+                                fijadas=fijadas)
     ctx.estado.actualizar_params("render", {"musica": ficha})
     ctx.bitacora.anotar("banda_sonora", "render", {
         "tramos": len(ficha["tramos"]),
-        "animos": [t["animo"] for t in ficha["tramos"]]})
+        "animos": [t["animo"] for t in ficha["tramos"]],
+        "canciones": sorted({str(p.get("titulo")) for t in ficha["tramos"]
+                             for p in (t.get("piezas") or [t])}),
+        "avisos": ficha.get("avisos") or []})
     avisar(1.0, sonido.describir(ctx.estado.params("render") or {}))
     return {**ficha, "resumen": sonido.describir(ctx.estado.params("render") or {})}
 
@@ -5342,11 +5354,25 @@ def montar_banda_sonora(pid: str, cuerpo: dict = Body(default=None)):
     ctx = contexto(pid)
     sonido = _sonido()
     datos = _cuerpo(cuerpo)
-    if not sonido.hay_musica():
-        raise ErrorApi(409, sonido.falta_musica_texto())
     # los tramos se pueden pasar retocados desde avanzadas (otro ánimo), pero el
     # camino normal es no pasar nada y que los deduzca del ritmo
     tramos = datos.get("tramos") if isinstance(datos.get("tramos"), list) else None
+    # LAS CANCIONES ELEGIDAS A MANO: {tramo: fichero de tu carpeta}. Se validan
+    # lo primero, y se guardan en los params ANTES de montar, para que el MP4
+    # que salga las recuerde.
+    fijadas = None
+    if isinstance(datos.get("fijadas"), dict):
+        fijadas = {}
+        for clave, archivo in datos["fijadas"].items():
+            if not str(clave).isdigit():
+                raise ErrorApi(400, f"tramo {clave!r}: los tramos son 0, 1, 2…")
+            archivo = os.path.basename(str(archivo or "")).strip()
+            if archivo:
+                fijadas[str(int(clave))] = archivo
+    if not sonido.hay_musica():
+        raise ErrorApi(409, sonido.falta_musica_texto())
+    if fijadas is not None:
+        ctx.estado.actualizar_params("render", {"musica_fijada": fijadas})
     trabajo_id = ctx.gestor.lanzar("banda_sonora", _correr_banda, ctx, tramos,
                                    paso="render")
     _registrar_trabajo(trabajo_id, ctx.id)
@@ -5388,6 +5414,28 @@ def guardar_audio_propio(familia: str, archivo: str, cuerpo: dict = Body(default
     except ValueError as fallo:
         raise ErrorApi(400, str(fallo))
     return {"ficha": ficha, "familia": familia, "archivo": archivo}
+
+
+@app.get("/api/audio-propio/musica/{archivo}/partes")
+def partes_audio_propio(archivo: str):
+    """Los trozos que el estudio usaria de una cancion de tu carpeta.
+
+    Los marcados en su ficha si hay; si no, los automaticos (sin silencios, sin
+    el final que cae ni los picos que tapan la voz). Para enseñarlos en la
+    ficha mientras se escucha.
+    """
+    sonido = _sonido()
+    ruta = ruta_segura(sonido.carpeta_propia("musica"), archivo)
+    if not os.path.isfile(ruta):
+        raise ErrorApi(404, f"no hay ningún {archivo!r} en tu carpeta de música")
+    try:
+        automaticas = sonido.partes_automaticas(ruta)
+        duracion = float(PASOS_MODULOS.medios.duracion_media(ruta) or 0)
+    except Exception as fallo:                              # noqa: BLE001
+        raise ErrorApi(422, f"no se ha podido analizar {archivo!r}: {fallo}")
+    return {"archivo": archivo, "duracion": round(duracion, 2),
+            "automaticas": [{"desde": d, "hasta": h} for d, h in automaticas],
+            "minimo_s": sonido.MIN_FRAGMENTO_S}
 
 
 @app.get("/api/audio-propio/{familia}/{archivo}")

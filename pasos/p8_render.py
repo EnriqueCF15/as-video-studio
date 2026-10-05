@@ -101,6 +101,10 @@ PARAMS_POR_DEFECTO = {
     # Lo que iguala unos efectos con otros va aparte y siempre puesto
     # (`sonido.igualar_por_papel`); esto decide cuanto suenan TODOS.
     "efectos_db": 0.0,
+    # LAS CANCIONES ELEGIDAS A MANO (fork, Fase 3): {indice de tramo: fichero de
+    # tu carpeta}. Las lee la banda sonora al montarse; lo que no esta aqui lo
+    # elige ella sola por el animo del tramo.
+    "musica_fijada": {},
 }
 
 CALIDADES = {

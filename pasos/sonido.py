@@ -339,6 +339,14 @@ def guardar_ficha_propia(familia, archivo, datos):
             ficha["bpm"] = (int(datos["bpm"]) or None) if datos.get("bpm") not in (None, "") else None
         except (TypeError, ValueError):
             raise ValueError("bpm es un numero entero (o vacio)")
+        # LOS TROZOS BUENOS: lo unico de la cancion que se usa. Se mide la
+        # duracion aqui para no aceptar un trozo que se sale del fichero.
+        try:
+            duracion = float(medios.duracion_media(ruta) or 0.0)
+        except Exception:                                    # noqa: BLE001
+            duracion = 0.0
+        ficha["duracion"] = round(duracion, 2)
+        ficha["fragmentos"] = _limpiar_fragmentos(datos.get("fragmentos"), duracion)
     else:
         ficha["papel"] = str(datos.get("papel") or "").strip()
     if ficha["fuente"] not in ORIGENES_PROPIOS:
@@ -354,6 +362,54 @@ def guardar_ficha_propia(familia, archivo, datos):
     medios.escribir_texto(_ruta_ficha(ruta),
                           json.dumps(ficha, ensure_ascii=False, indent=1))
     return ficha
+
+
+#: Lo minimo que puede durar un trozo bueno: menos no da para asentarse, y
+#: encadenado con fundidos de tres segundos seria casi todo fundido.
+MIN_FRAGMENTO_S = 8.0
+
+#: Cuantos trozos se pueden marcar en una cancion.
+MAX_FRAGMENTOS = 20
+
+#: El fundido entre dos trozos dentro de un mismo tramo. Mas corto que el
+#: cruce entre tramos (CRUCE_S): aqui no cambia el relato, solo se empalma.
+CRUCE_PIEZA_S = 3.0
+
+
+def _limpiar_fragmentos(lista, duracion=0.0):
+    """Los trozos buenos de una cancion, validados y ordenados. -> [dict]
+
+    Acepta [{desde, hasta}] o [[desde, hasta]] en segundos. Se ordenan y los
+    que se pisan se juntan: dos trozos solapados son un trozo.
+    """
+    pares = []
+    for trozo in lista or []:
+        if isinstance(trozo, dict):
+            desde, hasta = trozo.get("desde"), trozo.get("hasta")
+        elif isinstance(trozo, (list, tuple)) and len(trozo) == 2:
+            desde, hasta = trozo
+        else:
+            raise ValueError("cada trozo es {desde, hasta} en segundos")
+        try:
+            desde, hasta = float(desde), float(hasta)
+        except (TypeError, ValueError):
+            raise ValueError("desde y hasta son segundos (numeros)")
+        if duracion:
+            hasta = min(hasta, duracion)
+        if desde < 0 or hasta - desde < MIN_FRAGMENTO_S:
+            raise ValueError(f"cada trozo tiene que durar al menos "
+                             f"{MIN_FRAGMENTO_S:.0f} segundos y caber en la cancion")
+        pares.append([round(desde, 2), round(hasta, 2)])
+    pares.sort()
+    juntos = []
+    for desde, hasta in pares:
+        if juntos and desde <= juntos[-1][1]:
+            juntos[-1][1] = max(juntos[-1][1], hasta)
+        else:
+            juntos.append([desde, hasta])
+    if len(juntos) > MAX_FRAGMENTOS:
+        raise ValueError(f"como mucho {MAX_FRAGMENTOS} trozos por cancion")
+    return [{"desde": d, "hasta": h} for d, h in juntos]
 
 
 def ficha_propia(entrada, familia):
@@ -372,7 +428,9 @@ def ficha_propia(entrada, familia):
         "duracion": 0.0, "descarga": "",
     }
     if familia == "musica":
-        salida.update(animo=f.get("animo") or "", bpm=f.get("bpm"))
+        salida.update(animo=f.get("animo") or "", bpm=f.get("bpm"),
+                      fragmentos=list(f.get("fragmentos") or []),
+                      duracion=float(f.get("duracion") or 0.0))
     else:
         salida["papel"] = f.get("papel") or ""
     return salida
@@ -950,106 +1008,319 @@ def puntuar(ficha_medida):
     return float(m.get("graves", -99)) - float(m.get("medios", -99))
 
 
-def elegir_tema(candidatos, evitar=()):
-    """El mejor candidato para llevar voz encima, y por que. Sin oir nada.
+def ordenar_temas(candidatos, evitar=()):
+    """Los candidatos, de mejor a peor para llevar voz encima. Sin oir nada.
 
-    `evitar` son los ids que ya han salido en otro tramo: dos tramos seguidos
-    con el mismo tema es exactamente lo que esto viene a quitar.
+    Cada uno se trae al banco y se mide (`medir`, `puntuar`); los que fallan se
+    quedan fuera. `evitar` son los ids que ya han salido en otro tramo: van al
+    FINAL de la lista y no fuera de ella, porque repetir un tema en un video
+    largo es mejor que un tramo mudo.
     """
     evitar = {str(i) for i in (evitar or [])}
-    mejor, mejor_punto = None, None
+    medidos = []
     for ficha in candidatos or []:
-        if str(ficha.get("id")) in evitar:
-            continue
         try:
             ruta = traer(ficha, "musica")
             medida = medir(ruta)
-            # los propios no traen duracion: se mide, que la cama la necesita
-            # para saber si hay que repetir el tema dentro de su tramo
-            if not float(ficha.get("duracion") or 0):
+            # los propios se miden siempre (su ficha puede ser de un fichero
+            # anterior con el mismo nombre); los de fuera, si no la traen
+            if ficha.get("fuente") == "propia" or not float(ficha.get("duracion") or 0):
                 ficha["duracion"] = round(float(medios.duracion_media(ruta) or 0), 2)
         except Exception as fallo:                     # un tema caido no corta
             ficha["error"] = str(fallo)[:120]
             continue
-        punto = puntuar(medida)
         ficha["medida"] = medida
-        ficha["punto"] = round(punto, 1)
-        if mejor_punto is None or punto > mejor_punto:
-            mejor, mejor_punto = ficha, punto
-    return mejor
+        ficha["punto"] = round(puntuar(medida), 1)
+        medidos.append(ficha)
+    medidos.sort(key=lambda f: (str(f.get("id")) in evitar, -float(f.get("punto") or 0)))
+    return medidos
 
 
-def montar_banda(escenas, duracion_s, avisar=None, tramos=None):
-    """La banda sonora entera, decidida sola. Devuelve la ficha para params.
+def elegir_tema(candidatos, evitar=()):
+    """El mejor candidato para llevar voz encima, o None. Ver `ordenar_temas`.
 
-    NO deja fichero: deja escrito QUE tema va en cada tramo. La cama se
-    construye al renderizar (`construir_cama`), sin salir a la red, desde los
-    ficheros que esto ha dejado en el banco. Es el mismo contrato que todo lo
-    demas: lo que se guarda es la decision, y el mismo plan suena igual siempre.
+    Los de `evitar` no se eligen aqui: quien quiera repetir, que lo pida.
     """
-    avisar = avisar or (lambda *a, **k: None)
-    arco = tramos or arco_del_video(escenas, duracion_s)
-    if not arco:
-        raise RuntimeError("no hay planos con tiempos: no se puede leer el ritmo")
-    if not hay_musica():
-        raise RuntimeError(falta_musica_texto())
-    puestos, usados = [], []
-    for tramo in arco:
-        avisar(0.1 + 0.8 * tramo["i"] / max(1, len(arco)),
-               f"tramo {tramo['i'] + 1} de {len(arco)}: buscando algo "
-               f"«{tramo['animo']}»")
-        elegido = _tema_para(tramo, usados)
-        if elegido is None:
-            raise RuntimeError(f"tramo {tramo['i'] + 1}: no hay ningun tema "
-                               f"«{tramo['animo']}» que se pueda usar ("
-                               + falta_musica_texto() + ")")
-        usados.append(str(elegido["id"]))
-        puestos.append({**{k: elegido.get(k) for k in
-                           ("fuente", "id", "titulo", "artista", "licencia",
-                            "duracion", "medida", "punto")},
-                        # los de la carpeta propia: con que se encuentra el
-                        # fichero y que credito pide
-                        **{k: elegido.get(k) for k in
-                           ("archivo", "origen", "atribucion_requerida",
-                            "texto_credito", "codigo_credito")
-                           if elegido.get(k) not in (None, "")},
-                        "animo": tramo["animo"], "velocidad": tramo["velocidad"],
-                        "fraccion": tramo["fraccion"], "planos": tramo["planos"],
-                        "por_que": tramo["por_que"]})
-    return {"tramos": puestos, "ganancia_db": CAMA_GANANCIA_DB,
-            "cruce_s": CRUCE_S, "modo": "cama"}
+    evitar = {str(i) for i in (evitar or [])}
+    for ficha in ordenar_temas(candidatos, evitar):
+        if str(ficha.get("id")) not in evitar:
+            return ficha
+    return None
 
 
-def _tema_para(tramo, usados):
-    """El tema de un tramo, mirando las fuentes en su orden. -> ficha o None
+# ------------------------------------------- los trozos buenos de una cancion
+#
+# DE UNA CANCION NO SE USA TODO. Las de la Biblioteca de audio de YouTube y
+# parecidas tienen buenos momentos y otros que no: una intro de diez segundos
+# de silencio, un final que cae, un golpe de bateria que se come la voz. Asi
+# que lo que entra en la cama son TROZOS:
+#
+#   · los que hayas marcado en su ficha (`fragmentos`), si hay. Mandan siempre:
+#     que momento es bueno lo decide quien lo escucha.
+#   · si no hay ninguno, los que salen de mirar su energia (`partes_automaticas`):
+#     fuera lo flojo (silencios, intros y colas muy bajas), fuera los picos que
+#     pelean con la voz, y fuera los ultimos segundos, que son la caida del final.
 
-    De la carpeta propia: primero los de ese animo y, si no hay, cualquiera de
+#: Por debajo de esto respecto a lo tipico de la cancion, es silencio, intro o
+#: cola: no vale de cama.
+FLOJO_DB = -10.0
+
+#: Por encima de esto respecto a lo tipico, es un pico que se come la voz.
+PICO_DB = 6.0
+
+#: Lo que se quita siempre del final: la caida con la que acaba la cancion.
+COLA_FINAL_S = 3.0
+
+_PARTES = {}
+
+
+def partes_automaticas(ruta):
+    """Los trozos usables de una cancion sin trozos marcados. -> [(desde, hasta)]
+
+    Se mide la energia por segundos. Un segundo vale si no esta muy por debajo
+    de lo tipico de la cancion (FLOJO_DB) ni muy por encima (PICO_DB); los
+    ultimos COLA_FINAL_S nunca valen. Los tramos seguidos que valen y duran al
+    menos MIN_FRAGMENTO_S son los trozos. Si no sale ninguno, la cancion entera
+    menos su cola: mejor algo que nada.
+    """
+    try:
+        estado = os.stat(ruta)
+        clave = (os.path.normcase(os.path.abspath(ruta)), estado.st_size, estado.st_mtime)
+    except OSError:
+        clave = None
+    if clave and clave in _PARTES:
+        return list(_PARTES[clave])
+    muestras = _leer(_a_wav(ruta))
+    mono = muestras.mean(axis=1) if muestras.ndim > 1 else muestras
+    total = len(mono) / float(FRECUENCIA)
+    segundos = int(len(mono) // FRECUENCIA)
+    if segundos < 2:
+        return [(0.0, round(total, 2))] if total > 0 else []
+    trozos = mono[:segundos * FRECUENCIA].reshape(segundos, FRECUENCIA)
+    db = 20.0 * np.log10(np.sqrt(np.mean(np.square(trozos), axis=1)) + 1e-9)
+    tipico = float(np.median(db))
+    vale = (db >= tipico + FLOJO_DB) & (db <= tipico + PICO_DB)
+    cola = int(np.ceil(COLA_FINAL_S))
+    vale[max(0, segundos - cola):] = False
+    partes, inicio = [], None
+    for indice, bueno in enumerate(list(vale) + [False]):
+        if bueno and inicio is None:
+            inicio = indice
+        elif not bueno and inicio is not None:
+            if indice - inicio >= MIN_FRAGMENTO_S:
+                partes.append((float(inicio), float(indice)))
+            inicio = None
+    if not partes:
+        partes = [(0.0, round(max(1.0, total - COLA_FINAL_S), 2))]
+    if clave:
+        _PARTES[clave] = list(partes)
+    return partes
+
+
+def partes_utiles(ficha, ruta=None):
+    """Los trozos de una cancion que se pueden usar. -> [(desde, hasta)]"""
+    ruta = ruta or traer(ficha, "musica")
+    # la del FICHERO, no la de la ficha: si cambias el fichero por otro con el
+    # mismo nombre, la ficha guarda la duracion del de antes
+    try:
+        duracion = float(medios.duracion_media(ruta) or 0)
+    except Exception:                                        # noqa: BLE001
+        duracion = float(ficha.get("duracion") or 0)
+    marcados = []
+    for trozo in ficha.get("fragmentos") or []:
+        try:
+            desde = float(trozo["desde"])
+            hasta = float(trozo["hasta"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if duracion:
+            hasta = min(hasta, duracion)
+        if hasta - desde >= 1.0:
+            marcados.append((desde, hasta))
+    return marcados or partes_automaticas(ruta)
+
+
+#: Lo de una cancion que viaja en cada trozo puesto en la cama.
+_CAMPOS_PIEZA = ("fuente", "id", "titulo", "artista", "licencia", "archivo",
+                 "origen", "atribucion_requerida", "texto_credito",
+                 "codigo_credito", "duracion")
+
+
+def llenar_tramo(largo, candidatos):
+    """Trozos de canciones que cubren `largo` segundos. -> [pieza]
+
+    Se recorren los candidatos en su orden y, de cada uno, sus trozos buenos,
+    hasta cubrir el tramo contando lo que se comen los fundidos entre trozos.
+    Si no alcanza, se VUELVE a empezar por el primero: un trozo repetido con
+    fundido suena a cancion, un salto al principio del fichero suena a error.
+    """
+    piezas, cubierto = [], 0.0
+    fuentes = []
+    for ficha in candidatos:
+        try:
+            partes = partes_utiles(ficha)
+        except Exception:                                    # noqa: BLE001
+            continue
+        if partes:
+            fuentes.append((ficha, partes))
+    if not fuentes:
+        return []
+    for _vuelta in range(50):
+        for ficha, partes in fuentes:
+            for desde, hasta in partes:
+                aporta = (hasta - desde) - (CRUCE_PIEZA_S if piezas else 0.0)
+                if aporta <= 0.5:
+                    continue
+                piezas.append({**{k: ficha.get(k) for k in _CAMPOS_PIEZA
+                                  if ficha.get(k) not in (None, "")},
+                               "desde": round(desde, 2), "hasta": round(hasta, 2)})
+                cubierto += aporta
+                if cubierto >= largo:
+                    return piezas
+    return piezas
+
+
+def _candidatos_de(tramo, fijada=None):
+    """Las canciones que pueden ir en un tramo, de la primera fuente que tenga.
+
+    De la carpeta propia: la FIJADA a mano primero (si sigue en la carpeta),
+    luego las del animo del tramo, y si ninguna es de ese animo, cualquiera de
     la carpeta (con la carpeta primero, lo de fuera solo entra si esta vacia).
-    Si todos estan ya usados se REPITE uno: un tema dos veces en un video largo
-    es mejor que un tramo mudo o que salir a buscar fuera lo que no se pidio.
+    -> (lista, fijada_encontrada)
     """
     for fuente in fuentes_de("musica"):
         if fuente == "propia":
             lista = propios("musica")
             if not lista:
                 continue
-            del_animo = [f for f in lista if f.get("animo") == tramo["animo"]
+            fija = [f for f in lista if fijada and f.get("archivo") == fijada]
+            resto = [f for f in lista if f not in fija]
+            del_animo = [f for f in resto if f.get("animo") == tramo["animo"]
                          or tramo["animo"] in (f.get("etiquetas") or [])]
-            candidatos = del_animo or lista
-            elegido = (elegir_tema(candidatos, evitar=usados)
-                       or elegir_tema(lista, evitar=usados)
-                       or elegir_tema(candidatos))
-            if elegido is not None:
-                return elegido
-        elif fuente == "jamendo" and hay_claves()[0]:
+            return fija + (del_animo or resto), bool(fija)
+        if fuente == "jamendo" and hay_claves()[0]:
             candidatos = buscar_musica(
                 animo=tramo["animo"], cuantas=6,
                 duracion_s=(tramo["hasta"] - tramo["desde"]),
                 velocidad=tramo["velocidad"])
-            elegido = elegir_tema(candidatos, evitar=usados)
-            if elegido is not None:
-                return elegido
-    return None
+            if candidatos:
+                return candidatos, False
+    return [], False
+
+
+def montar_banda(escenas, duracion_s, avisar=None, tramos=None, fijadas=None):
+    """La banda sonora entera, decidida sola. Devuelve la ficha para params.
+
+    NO deja fichero: deja escrito QUE trozos de que canciones van en cada
+    tramo. La cama se construye al renderizar (`construir_cama`), sin salir a la
+    red, desde los ficheros que esto ha dejado en el banco. Es el mismo contrato
+    que todo lo demas: lo que se guarda es la decision, y el mismo plan suena
+    igual siempre.
+
+    UN TRAMO PUEDE LLEVAR VARIAS CANCIONES. Con canciones de uno a tres minutos
+    y tramos de cuatro, repetir una sola desde el principio se oia como un
+    salto; ahora el tramo se llena con los trozos buenos de las mejores
+    canciones de su animo, empalmados con fundidos (`llenar_tramo`).
+
+    `fijadas` es {indice de tramo: fichero de tu carpeta}: esa cancion va
+    primero en ese tramo, sea del animo que sea. Es lo que se elige a mano en
+    la pantalla del video.
+    """
+    avisar = avisar or (lambda *a, **k: None)
+    fijadas = {str(k): str(v) for k, v in (fijadas or {}).items() if v}
+    arco = tramos or arco_del_video(escenas, duracion_s)
+    if not arco:
+        raise RuntimeError("no hay planos con tiempos: no se puede leer el ritmo")
+    if not hay_musica():
+        raise RuntimeError(falta_musica_texto())
+    total = float(duracion_s or 0) or float(arco[-1]["hasta"])
+    puestos, usados, avisos = [], [], []
+    for tramo in arco:
+        avisar(0.1 + 0.8 * tramo["i"] / max(1, len(arco)),
+               f"tramo {tramo['i'] + 1} de {len(arco)}: buscando algo "
+               f"«{tramo['animo']}»")
+        fijada = fijadas.get(str(tramo["i"]))
+        candidatos, encontrada = _candidatos_de(tramo, fijada)
+        if fijada and not encontrada:
+            avisos.append(f"tramo {tramo['i'] + 1}: «{fijada}» ya no está en tu "
+                          "carpeta (o no tiene ficha); se ha elegido otra")
+        ordenados = ordenar_temas(candidatos, evitar=usados)
+        if encontrada:
+            # la fijada va primero aunque otra puntue mejor: la has elegido tu
+            fija = [f for f in ordenados if f.get("archivo") == fijada]
+            ordenados = fija + [f for f in ordenados if f not in fija]
+        cola = CRUCE_S if tramo is not arco[-1] else 0.0
+        largo = total * float(tramo.get("fraccion") or 0) + cola
+        piezas = llenar_tramo(largo, ordenados)
+        if not piezas:
+            raise RuntimeError(f"tramo {tramo['i'] + 1}: no hay ningun tema "
+                               f"«{tramo['animo']}» que se pueda usar ("
+                               + falta_musica_texto() + ")")
+        principal = next(f for f in ordenados if f.get("id") == piezas[0].get("id"))
+        for pieza in piezas:
+            if str(pieza.get("id")) not in usados:
+                usados.append(str(pieza.get("id")))
+        puestos.append({**{k: principal.get(k) for k in
+                           ("fuente", "id", "titulo", "artista", "licencia",
+                            "duracion", "medida", "punto")},
+                        # los de la carpeta propia: con que se encuentra el
+                        # fichero y que credito pide
+                        **{k: principal.get(k) for k in
+                           ("archivo", "origen", "atribucion_requerida",
+                            "texto_credito", "codigo_credito")
+                           if principal.get(k) not in (None, "")},
+                        "piezas": piezas, "fijada": fijada if encontrada else "",
+                        "animo": tramo["animo"], "velocidad": tramo["velocidad"],
+                        "fraccion": tramo["fraccion"], "planos": tramo["planos"],
+                        "desde": tramo["desde"], "hasta": tramo["hasta"],
+                        "por_que": ("elegida a mano" if encontrada
+                                    else tramo["por_que"])})
+    return {"tramos": puestos, "ganancia_db": CAMA_GANANCIA_DB,
+            "cruce_s": CRUCE_S, "modo": "cama", "avisos": avisos}
+
+
+def _ffmpeg(*args):
+    subprocess.run([medios.ffmpeg(), "-y", "-loglevel", "error", *args],
+                   capture_output=True, text=True, timeout=600, check=True,
+                   **medios.SIN_VENTANA)
+
+
+def _tramo_de_piezas(piezas, quiere, destino, carpeta, faltan):
+    """Los trozos de un tramo, empalmados con fundido, al largo exacto. -> bool"""
+    hechos = []
+    for pieza in piezas:
+        origen = banco("musica", _nombre_de(pieza))
+        if not os.path.exists(origen):
+            nombre = pieza.get("titulo") or pieza.get("id")
+            if nombre not in faltan:
+                faltan.append(nombre)
+            continue
+        desde = float(pieza.get("desde") or 0.0)
+        hasta = float(pieza.get("hasta") or 0.0)
+        largo = hasta - desde
+        if largo <= 0.5:
+            continue
+        salida = os.path.join(carpeta, f"{os.path.splitext(os.path.basename(destino))[0]}"
+                                       f"_p{len(hechos)}.wav")
+        # loudnorm en CADA trozo: dos canciones distintas no suenan igual de alto
+        _ffmpeg("-ss", f"{desde:.3f}", "-t", f"{largo:.3f}", "-i", origen,
+                "-af", f"loudnorm=I={MUSICA_LUFS:.0f}:TP=-2:LRA=11",
+                "-ar", str(FRECUENCIA), "-ac", "2", salida)
+        hechos.append((salida, largo))
+    if not hechos:
+        return False
+    cadena, largo_cadena = hechos[0]
+    for indice, (siguiente, largo) in enumerate(hechos[1:], start=1):
+        fundido = max(0.1, min(CRUCE_PIEZA_S, 0.4 * largo_cadena, 0.4 * largo))
+        junto = os.path.join(carpeta, f"{os.path.splitext(os.path.basename(destino))[0]}"
+                                      f"_c{indice}.wav")
+        _ffmpeg("-i", cadena, "-i", siguiente, "-filter_complex",
+                f"[0:a][1:a]acrossfade=d={fundido:.2f}:c1=tri:c2=tri", junto)
+        cadena, largo_cadena = junto, largo_cadena + largo - fundido
+    # al largo EXACTO del tramo: se recorta, o se rellena si faltara algo
+    _ffmpeg("-i", cadena, "-af", f"apad=whole_dur={quiere:.3f},atrim=0:{quiere:.3f}",
+            "-ar", str(FRECUENCIA), "-ac", "2", destino)
+    return True
 
 
 def construir_cama(ficha, duracion_s, destino):
@@ -1062,9 +1333,10 @@ def construir_cama(ficha, duracion_s, destino):
     Los pasos son los del motor anterior (docs/08 §C) y cada uno esta por algo:
       · loudnorm a -23 en CADA tramo antes de encadenar, o se oye el salto de
         volumen entre un tema y el siguiente
-      · `-stream_loop` cuando el tema es mas corto que su tramo
-      · `acrossfade` de seis segundos, que es lo que hace que el cambio suene a
-        montaje y no a lista de reproduccion
+      · los trozos buenos de cada tramo (`piezas`) empalmados con fundidos
+        cortos; un tramo de antes, sin piezas, repite su tema con `-stream_loop`
+      · `acrossfade` de seis segundos entre tramos, que es lo que hace que el
+        cambio suene a montaje y no a lista de reproduccion
       · relleno y recorte al largo EXACTO, con fundido de entrada y de salida
     """
     tramos = [t for t in (ficha or {}).get("tramos") or [] if t.get("id")]
@@ -1077,23 +1349,26 @@ def construir_cama(ficha, duracion_s, destino):
 
     trozos, faltan = [], []
     for tramo in tramos:
-        origen = banco("musica", _nombre_de(tramo))
-        if not os.path.exists(origen):
-            faltan.append(tramo.get("titulo") or tramo.get("id"))
-            continue
         # el ultimo no necesita cola de cruce: no se encadena con nada
         cola = cruce if tramo is not tramos[-1] else 0.0
         quiere = max(1.0, total * float(tramo.get("fraccion") or 0) + cola)
         trozo = os.path.join(carpeta, f"tramo{len(trozos)}.wav")
+        if tramo.get("piezas"):
+            if _tramo_de_piezas(tramo["piezas"], quiere, trozo, carpeta, faltan):
+                trozos.append(trozo)
+            continue
+        origen = banco("musica", _nombre_de(tramo))
+        if not os.path.exists(origen):
+            faltan.append(tramo.get("titulo") or tramo.get("id"))
+            continue
         corto = float(tramo.get("duracion") or 0) < quiere + 1
-        orden = [medios.ffmpeg(), "-y", "-loglevel", "error"]
+        orden = []
         if corto:
             orden += ["-stream_loop", "3"]
         orden += ["-i", origen, "-t", f"{quiere:.2f}",
                   "-af", f"loudnorm=I={MUSICA_LUFS:.0f}:TP=-2:LRA=11",
                   "-ar", str(FRECUENCIA), "-ac", "2", trozo]
-        subprocess.run(orden, capture_output=True, text=True, timeout=600,
-                       check=True, **medios.SIN_VENTANA)
+        _ffmpeg(*orden)
         trozos.append(trozo)
     if not trozos:
         return None, faltan
@@ -1101,21 +1376,14 @@ def construir_cama(ficha, duracion_s, destino):
     cadena = trozos[0]
     for indice in range(1, len(trozos)):
         siguiente = os.path.join(carpeta, f"cadena{indice}.wav")
-        subprocess.run(
-            [medios.ffmpeg(), "-y", "-loglevel", "error",
-             "-i", cadena, "-i", trozos[indice], "-filter_complex",
-             f"[0:a][1:a]acrossfade=d={cruce:g}:c1=tri:c2=tri", siguiente],
-            capture_output=True, text=True, timeout=600, check=True,
-            **medios.SIN_VENTANA)
+        _ffmpeg("-i", cadena, "-i", trozos[indice], "-filter_complex",
+                f"[0:a][1:a]acrossfade=d={cruce:g}:c1=tri:c2=tri", siguiente)
         cadena = siguiente
     salida = float(min(cruce, max(1.0, total * 0.05)))
-    subprocess.run(
-        [medios.ffmpeg(), "-y", "-loglevel", "error", "-i", cadena, "-af",
-         f"apad=whole_dur={total + 1:.2f},atrim=0:{total:.3f},"
-         f"afade=t=in:st=0:d=3,afade=t=out:st={max(0.0, total - salida):.2f}:d={salida:g}",
-         "-ar", str(FRECUENCIA), "-ac", "2", destino],
-        capture_output=True, text=True, timeout=600, check=True,
-        **medios.SIN_VENTANA)
+    _ffmpeg("-i", cadena, "-af",
+            f"apad=whole_dur={total + 1:.2f},atrim=0:{total:.3f},"
+            f"afade=t=in:st=0:d=3,afade=t=out:st={max(0.0, total - salida):.2f}:d={salida:g}",
+            "-ar", str(FRECUENCIA), "-ac", "2", destino)
     return destino, faltan
 
 
@@ -2039,7 +2307,10 @@ def creditos(params, lista_eventos=None, idioma="en"):
     textos = _TEXTOS_CREDITOS.get(str(idioma or "en")[:2], _TEXTOS_CREDITOS["en"])
     suscrito = bool(_ajustes().get("uppbeat_suscripcion"))
     musica = p.get("musica") or {}
-    temas = list(musica.get("tramos") or ([musica] if musica.get("id") else []))
+    temas = []
+    for tramo in musica.get("tramos") or ([musica] if musica.get("id") else []):
+        # un tramo puede llevar trozos de VARIAS canciones: se citan todas
+        temas.extend(tramo.get("piezas") or [tramo])
     efectos, vistos = [], set()
     for evento in lista_eventos or []:
         ficha = evento.get("ficha") if isinstance(evento, dict) else None

@@ -181,9 +181,50 @@ def prueba_carpeta_propia():
               "traer copia el tema al banco con su extension")
     igual(os.path.basename(ruta), f"propia_{tema['id']}.wav", "con el nombre de siempre")
 
-    tono(os.path.join(musica, "Calma Total.wav"), 6.0, 190.0)
+    tono(os.path.join(musica, "Calma Total.wav"), 20.0, 190.0)
     nuevo = sonido.propios("musica")[0]["id"]
     comprobar(nuevo != tema["id"], "si el fichero cambia, cambia el id (no suena la copia vieja)")
+
+    print("\n[3b] los trozos buenos de una cancion")
+    tono(os.path.join(musica, "Paseo.wav"), 25.0, 240.0)
+    falla(lambda: sonido.guardar_ficha_propia("musica", "Paseo.wav", {
+        "fuente": "pixabay", "titulo": "Paseo", "licencia": "Pixabay Content License",
+        "animo": "sobrio", "fragmentos": [{"desde": 2, "hasta": 6}]}),
+        "un trozo de menos de 8 s se rechaza", ValueError)
+    falla(lambda: sonido.guardar_ficha_propia("musica", "Paseo.wav", {
+        "fuente": "pixabay", "titulo": "Paseo", "licencia": "Pixabay Content License",
+        "animo": "sobrio", "fragmentos": [{"desde": "a", "hasta": 9}]}),
+        "un trozo que no son numeros se rechaza", ValueError)
+    paseo = sonido.guardar_ficha_propia("musica", "Paseo.wav", {
+        "fuente": "pixabay", "titulo": "Paseo", "licencia": "Pixabay Content License",
+        "animo": "sobrio",
+        "fragmentos": [[12, 99], {"desde": 3, "hasta": 13}]})
+    igual(paseo["fragmentos"], [{"desde": 3.0, "hasta": 25.0}],
+          "los trozos se ordenan, se juntan si se pisan y no pasan del final")
+    comprobar(abs(paseo["duracion"] - 25.0) < 0.2, "y la duracion se mide al guardar")
+    ficha_paseo = next(f for f in sonido.propios("musica") if f["archivo"] == "Paseo.wav")
+    igual(sonido.partes_utiles(ficha_paseo), [(3.0, 25.0)],
+          "con trozos marcados, se usan esos")
+    sonido.guardar_ficha_propia("musica", "Paseo.wav", {
+        "fuente": "pixabay", "titulo": "Paseo", "licencia": "Pixabay Content License",
+        "animo": "sobrio", "fragmentos": [{"desde": 5, "hasta": 17}]})
+
+    # una cancion con sus partes malas: 4 s de silencio, 20 s buenos, un golpe
+    # fuerte de 3 s, 12 s buenos y la caida del final
+    f = sonido.FRECUENCIA
+    t = np.arange(f) / f
+    seg = 0.25 * np.sin(2 * np.pi * 330 * t)
+    partes = ([np.zeros(f)] * 4 + [seg] * 20 + [seg * 4] * 3 + [seg] * 12
+              + [seg * 0.02] * 4)
+    mono = np.concatenate(partes)
+    ruta_mala = os.path.join(BASE, "con_partes_malas.wav")
+    sonido._escribir(ruta_mala, np.stack([mono, mono], axis=1).astype(np.float32))
+    auto = sonido.partes_automaticas(ruta_mala)
+    comprobar(len(auto) == 2, f"salen dos trozos: el golpe los separa ({auto})")
+    if len(auto) == 2:
+        comprobar(auto[0][0] >= 4.0, "el primero empieza despues del silencio")
+        comprobar(auto[0][1] <= 24.0 and auto[1][0] >= 27.0, "y el golpe fuerte se salta")
+        comprobar(auto[1][1] <= 39.0, "y el final que cae no se usa")
 
 
 def prueba_banda_con_lo_propio():
@@ -191,16 +232,44 @@ def prueba_banda_con_lo_propio():
     escenas = [{"id": f"S{i:03d}", "t_in": i * 4.0, "t_out": (i + 1) * 4.0} for i in range(40)]
     banda = sonido.montar_banda(escenas, 160.0)
     tramos = banda["tramos"]
-    comprobar(len(tramos) >= 1, f"monta {len(tramos)} tramo(s)")
+    comprobar(len(tramos) == 2, f"un video de 160 s son 2 tramos ({len(tramos)})")
     comprobar(all(t["fuente"] == "propia" for t in tramos), "todos de la carpeta propia")
-    comprobar(all(t.get("archivo") == "Calma Total.wav" for t in tramos),
-              "con un solo tema propio, se REPITE en vez de dejar tramos mudos")
-    comprobar(all(float(t.get("duracion") or 0) > 5 for t in tramos),
-              "la duracion del propio se mide (la cama la necesita)")
+    for tramo in tramos:
+        canciones = {p["archivo"] for p in tramo["piezas"]}
+        igual(canciones, {"Calma Total.wav", "Paseo.wav"},
+              f"tramo {tramos.index(tramo) + 1}: un tramo largo se llena con VARIAS canciones")
+    paseo = [p for p in tramos[0]["piezas"] if p["archivo"] == "Paseo.wav"]
+    comprobar(paseo and all((p["desde"], p["hasta"]) == (5.0, 17.0) for p in paseo),
+              "de Paseo solo entra su trozo marcado (5-17 s)")
+    calma = [p for p in tramos[0]["piezas"] if p["archivo"] == "Calma Total.wav"]
+    comprobar(calma and all(p["hasta"] <= 17.0 for p in calma),
+              "de Calma, sin trozos marcados, los automaticos (sin la caida del final)")
+    largo_1 = 80.0 + sonido.CRUCE_S
+    cubierto = sum(p["hasta"] - p["desde"] for p in tramos[0]["piezas"]) \
+        - sonido.CRUCE_PIEZA_S * (len(tramos[0]["piezas"]) - 1)
+    comprobar(cubierto >= largo_1, f"y cubren el tramo entero ({cubierto:.0f} de {largo_1:.0f} s)")
+    igual(banda["avisos"], [], "sin avisos")
+
+    fijada = sonido.montar_banda(escenas, 160.0, fijadas={"1": "Paseo.wav"})
+    igual(fijada["tramos"][1]["piezas"][0]["archivo"], "Paseo.wav",
+          "una cancion fijada a mano va primero en su tramo")
+    igual(fijada["tramos"][1]["fijada"], "Paseo.wav", "y queda dicho que la elegiste tu")
+    igual(fijada["tramos"][1]["por_que"], "elegida a mano", "con su porque")
+    perdida = sonido.montar_banda(escenas, 160.0, fijadas={"0": "ya-no-esta.wav"})
+    comprobar(perdida["avisos"] and "ya no está" in perdida["avisos"][0],
+              "si la fijada ya no esta en la carpeta, se avisa y se elige otra")
+
     destino = os.path.join(BASE, "cama.wav")
-    hecho, faltan = sonido.construir_cama(banda, 20.0, destino)
+    hecho, faltan = sonido.construir_cama(banda, 160.0, destino)
     comprobar(hecho and os.path.exists(destino) and not faltan,
               "la cama se construye desde el banco sin salir a la red")
+    if hecho:
+        duracion = len(sonido._leer(destino)) / sonido.FRECUENCIA
+        comprobar(abs(duracion - 160.0) < 0.1, f"y dura lo que el video ({duracion:.1f} s)")
+
+    hecho = sonido.creditos({"musica": banda}, [], idioma="en")
+    comprobar("Calma Total" in hecho["texto"] and "Paseo" in hecho["texto"],
+              "los creditos citan TODAS las canciones de un tramo, no solo la primera")
 
 
 def prueba_efectos_propios():
