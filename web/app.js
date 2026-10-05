@@ -3132,17 +3132,29 @@ function filaAudioPropio(familia, entrada, audio) {
       onclick: () => {
         vista.audioAbierto = abierta ? null : clave;
         vista.borradorAudio = abierta ? null : { familia, archivo: entrada.archivo,
-          datos: { ...ficha } };
+          datos: { ...ficha, fragmentos: [...(ficha.fragmentos || [])] } };
         repintarClaves();
+        // los trozos que usaría solo, para enseñarlos mientras no marques ninguno
+        if (!abierta && familia === 'musica') {
+          pedir(`${API.audioPropio('musica', entrada.archivo)}/partes`).then(d => {
+            const borrador = vista.borradorAudio;
+            if (!borrador || borrador.archivo !== entrada.archivo) return;
+            borrador.automaticas = d.automaticas || [];
+            borrador.minimo = d.minimo_s || 8;
+            if (borrador.pintarTrozos) borrador.pintarTrozos();
+          }).catch(() => { /* sin la vista previa se puede marcar igual */ });
+        }
       },
     }, abierta ? 'Cerrar' : (entrada.completa ? 'Editar ficha' : 'Poner ficha'))));
   if (!abierta || !vista.borradorAudio) return caja;
 
   const b = vista.borradorAudio.datos;
   const form = h('div', { clase: 'form-audio' });
-  form.appendChild(registrarReproductor(h('audio', {
-    controls: true, preload: 'none', src: API.audioPropio(familia, entrada.archivo),
-  })));
+  const reproductor = registrarReproductor(h('audio', {
+    controls: true, preload: 'metadata', src: API.audioPropio(familia, entrada.archivo),
+  }));
+  form.appendChild(reproductor);
+  if (familia === 'musica') form.appendChild(trozosDeCancion(b, reproductor, vista.borradorAudio));
   form.appendChild(campoSelect('De dónde sale', b.fuente || '',
     [{ valor: '', nombre: '— elige —' },
       ...(audio.origenes || []).map(o => ({ valor: o.id, nombre: o.nombre }))],
@@ -3197,6 +3209,73 @@ function filaAudioPropio(familia, entrada, audio) {
       },
     }, 'Guardar ficha')));
   caja.appendChild(form);
+  return caja;
+}
+
+/* LOS TROZOS BUENOS DE UNA CANCIÓN. Se escucha y se marca «empieza aquí» y
+   «termina aquí»; el estudio solo usará esos trozos, empalmados con fundidos.
+   Se repinta SOLO la lista y no el formulario entero: repintar el formulario
+   rehace el reproductor, y marcar un trozo te devolvería al segundo cero. */
+function trozosDeCancion(b, audio, borrador) {
+  if (!Array.isArray(b.fragmentos)) b.fragmentos = [];
+  let inicio = null;
+  const lista = h('div', {});
+  const estado = h('span', { clase: 'meta' });
+  const pintar = () => {
+    vaciar(lista);
+    b.fragmentos.sort((x, y) => x.desde - y.desde);
+    if (!b.fragmentos.length) {
+      const auto = (borrador.automaticas || [])
+        .map(p => `${mmss(p.desde)}–${mmss(p.hasta)}`).join(', ');
+      lista.appendChild(h('div', { clase: 'pista' },
+        'Sin trozos marcados: usará los automáticos'
+        + (auto ? ` (${auto})` : '')
+        + ' — sin silencios, sin el final que cae ni los picos que tapan la voz.'));
+    }
+    b.fragmentos.forEach((f, i) => lista.appendChild(h('div', { clase: 'fila' },
+      h('span', {}, `${mmss(f.desde)} – ${mmss(f.hasta)}`),
+      h('span', { clase: 'meta' }, ` · ${Math.round(f.hasta - f.desde)} s`),
+      h('span', { clase: 'crece' }),
+      h('button', {
+        clase: 'mini fantasma', title: 'Escuchar este trozo',
+        onclick: () => { audio.currentTime = f.desde; audio.play(); },
+      }, '▶'),
+      h('button', {
+        clase: 'mini fantasma peligro', title: 'Quitar este trozo',
+        onclick: () => { b.fragmentos.splice(i, 1); pintar(); },
+      }, '✕'))));
+    estado.textContent = inicio === null ? ''
+      : `empieza en ${mmss(inicio)}: ahora pulsa «Termina aquí»`;
+  };
+  borrador.pintarTrozos = pintar;
+  const caja = h('div', { clase: 'trozos' },
+    h('b', {}, 'Trozos buenos'),
+    h('div', { clase: 'pista' },
+      'Escucha y marca los momentos que te gustan (cada trozo, 8 s como mínimo). '
+      + 'Solo se usarán esos, empalmados con fundidos suaves.'),
+    h('div', { clase: 'fila' },
+      h('button', {
+        clase: 'mini', onclick: () => { inicio = audio.currentTime; pintar(); },
+      }, 'Empieza aquí'),
+      h('button', {
+        clase: 'mini',
+        onclick: () => {
+          if (inicio === null) { toast('primero «Empieza aquí»', true); return; }
+          const fin = audio.currentTime;
+          const minimo = borrador.minimo || 8;
+          if (fin - inicio < minimo) {
+            toast(`ese trozo dura ${Math.round(fin - inicio)} s: tiene que durar al menos ${minimo}`, true);
+            return;
+          }
+          b.fragmentos.push({ desde: Math.round(inicio * 10) / 10,
+            hasta: Math.round(fin * 10) / 10 });
+          inicio = null;
+          pintar();
+        },
+      }, 'Termina aquí'),
+      estado),
+    lista);
+  pintar();
   return caja;
 }
 
@@ -5970,6 +6049,8 @@ async function cargarVideoLight(pid) {
     // el coste es de ESTE vídeo: arrastrar el del anterior seria enseñar la
     // cifra de otro proyecto mientras llega la buena
     v.coste = null;
+    // y la música (las canciones de cada tramo), por lo mismo
+    v.musica = null;
     // y las escenas del previsualizador, por lo mismo: son las de otro vídeo
     pararPrevia();
     PREVIA.ficha = null;
@@ -8619,6 +8700,156 @@ function vistaVideoLight() {
      nada que comentar, y una caja de texto vacía debajo de una barra de
      progreso invita a escribir sobre algo que todavía no existe. */
   if (hayMp4Light() && !trabajoVideoLight()) caja.appendChild(panelRepaso());
+  /* LA MÚSICA, con los planos ya cortados: el arco de tramos sale del ritmo
+     del montaje, así que antes de eso no hay tramos que enseñar. */
+  if (versionDe(videoAbierto().fichas.assets || {}) && !trabajoVideoLight()) {
+    caja.appendChild(panelMusicaLight());
+  }
+  return caja;
+}
+
+/* ==========================================================================
+   LA MÚSICA DE ESTE VÍDEO (fork, Fase 3)
+
+   Por defecto la elige el estudio solo: un tramo cada ~2,5 minutos, cada uno
+   con el ánimo que pide el ritmo del montaje, y lo llena con los TROZOS BUENOS
+   de las mejores canciones de tu carpeta para ese ánimo (los marcados en su
+   ficha o, si no hay, los automáticos). Aquí se puede fijar a mano la canción
+   de un tramo; las demás las sigue eligiendo él. Elegir es gratis —no llama a
+   nadie— y deja el MP4 obsoleto: «Regenerar Vídeo» la monta. */
+function estadoMusicaLight() {
+  const v = videoAbierto();
+  if (!v.musica) {
+    v.musica = { cargado: false, cargando: false, sonido: null, arco: [],
+      fijadas: {}, trabajando: false, error: '' };
+  }
+  return v.musica;
+}
+
+async function cargarMusicaLight(forzar) {
+  const v = videoAbierto();
+  const m = estadoMusicaLight();
+  if (!v.pid || m.cargando || (m.cargado && !forzar)) return;
+  m.cargando = true;
+  try {
+    const [sonido, arco] = await Promise.all([
+      pedir(API.sonido(v.pid)), pedir(API.sonidoArco(v.pid))]);
+    m.sonido = sonido;
+    m.arco = arco.tramos || [];
+    m.fijadas = { ...(sonido.fijadas || {}) };
+    m.error = '';
+  } catch (e) {
+    m.error = e.message;
+  }
+  m.cargado = true;
+  m.cargando = false;
+  repintarVideo();
+}
+
+async function esperarFinDeTrabajo(tid) {
+  for (let vuelta = 0; vuelta < 400; vuelta++) {
+    await new Promise(r => setTimeout(r, 1500));
+    const t = await pedir(`${BASE}/api/trabajos/${encodeURIComponent(tid)}`);
+    if (['listo', 'error', 'cancelado'].includes(t.estado)) return t;
+  }
+  return { estado: 'error', error: 'está tardando demasiado; mira la bitácora' };
+}
+
+async function elegirMusicaLight() {
+  const v = videoAbierto();
+  const m = estadoMusicaLight();
+  m.trabajando = true;
+  repintarVideo();
+  try {
+    const r = await pedir(API.sonidoBanda(v.pid),
+      { method: 'POST', cuerpo: { fijadas: m.fijadas || {} } });
+    const fin = await esperarFinDeTrabajo(r.trabajo_id);
+    if (fin.estado === 'listo') toast('música elegida: «Regenerar Vídeo» la monta en el MP4');
+    else toast(fin.error || fin.mensaje || 'no se ha podido elegir la música', true);
+  } catch (e) {
+    toast(e.message, true);
+  }
+  m.trabajando = false;
+  await cargarMusicaLight(true);
+  // el MP4 se ha quedado viejo: que la barra de abajo lo diga
+  try { await refrescarFichasLight(); } catch (e) { /* se vera al recargar */ }
+  repintarVideo();
+}
+
+async function activarMusicaLight(activo) {
+  const v = videoAbierto();
+  try {
+    await pedir(API.sonido(v.pid), { method: 'PUT', cuerpo: { activo } });
+    await refrescarFichasLight();
+  } catch (e) {
+    toast(e.message, true);
+  }
+  await cargarMusicaLight(true);
+}
+
+function panelMusicaLight() {
+  const m = estadoMusicaLight();
+  if (!m.cargado && !m.cargando) cargarMusicaLight();
+  const caja = h('div', { clase: 'repaso musica-light' });
+  caja.appendChild(h('div', { clase: 'repaso-cab' },
+    h('h3', {}, 'La música'),
+    h('span', { clase: 'meta' }, 'qué suena en cada tramo del vídeo')));
+  if (!m.sonido) {
+    caja.appendChild(h('div', { clase: 'cargando' }, m.error || 'leyendo la música…'));
+    return caja;
+  }
+  const s = m.sonido;
+  caja.appendChild(h('label', { clase: 'plano' },
+    h('input', {
+      type: 'checkbox', checked: !!s.activo,
+      onchange: ev => activarMusicaLight(ev.target.checked),
+    }),
+    h('b', {}, 'Con música y efectos')));
+  if (!s.activo) {
+    caja.appendChild(h('div', { clase: 'pista' }, 'Apagada: el vídeo lleva solo la voz.'));
+    return caja;
+  }
+  if (!s.hay_musica) {
+    caja.appendChild(h('div', { clase: 'caja-aviso' },
+      'No hay música de donde sacar: añade canciones a tu carpeta y ponles ficha en '
+      + '⚙ Configuración → «Tu música y tus efectos».'));
+    return caja;
+  }
+  const puestos = (s.musica || {}).tramos || [];
+  const tramos = puestos.length ? puestos : m.arco;
+  const opciones = [{ valor: '', nombre: 'Automática (la elige por el ánimo del tramo)' },
+    ...(s.propias || []).map(p => ({
+      valor: p.archivo,
+      nombre: `${p.titulo || p.archivo} · ${p.animo || '?'}`
+        + (p.trozos ? ` · ${p.trozos} trozo${p.trozos === 1 ? '' : 's'}` : ''),
+    }))];
+  tramos.forEach((t, i) => {
+    const piezas = t.piezas || (t.titulo ? [t] : []);
+    const canciones = [...new Set(piezas.map(p => p.titulo).filter(Boolean))];
+    caja.appendChild(h('div', { clase: 'tramo-musica' },
+      h('div', { clase: 'fila' },
+        h('b', {}, `Tramo ${i + 1}`),
+        h('span', { clase: 'meta' },
+          ` · ${mmss(t.desde)}–${mmss(t.hasta)}` + (t.animo ? ` · ${t.animo}` : ''))),
+      h('div', { clase: 'meta' }, canciones.length
+        ? `Suena: ${canciones.join(' + ')}`
+        : 'Aún sin elegir: se elige sola al montar el vídeo'),
+      campoSelect('Canción', m.fijadas[String(i)] || '', opciones, valor => {
+        if (valor) m.fijadas[String(i)] = valor;
+        else delete m.fijadas[String(i)];
+        repintarVideo();
+      })));
+  });
+  const cambiado = JSON.stringify(m.fijadas || {}) !== JSON.stringify(s.fijadas || {});
+  caja.appendChild(h('div', { clase: 'fila' },
+    h('button', {
+      clase: (cambiado || !puestos.length) ? 'primario' : 'mini',
+      disabled: m.trabajando,
+      onclick: () => elegirMusicaLight(),
+    }, m.trabajando ? 'Eligiendo…'
+      : (puestos.length ? 'Volver a elegir la música' : 'Elegir la música ahora')),
+    h('span', { clase: 'meta' },
+      'Gratis: no llama a nadie. Después, «Regenerar Vídeo» la monta en el MP4.')));
   return caja;
 }
 /* ==========================================================================
