@@ -3132,7 +3132,8 @@ function filaAudioPropio(familia, entrada, audio) {
       onclick: () => {
         vista.audioAbierto = abierta ? null : clave;
         vista.borradorAudio = abierta ? null : { familia, archivo: entrada.archivo,
-          datos: { ...ficha, fragmentos: [...(ficha.fragmentos || [])] } };
+          datos: { ...propuestaDeNombre(entrada.archivo), ...ficha,
+            fragmentos: [...(ficha.fragmentos || [])] } };
         repintarClaves();
         // los trozos que usaría solo, para enseñarlos mientras no marques ninguno
         if (!abierta && familia === 'musica') {
@@ -3210,6 +3211,18 @@ function filaAudioPropio(familia, entrada, audio) {
     }, 'Guardar ficha')));
   caja.appendChild(form);
   return caja;
+}
+
+/* EL TÍTULO Y EL AUTOR, PROPUESTOS DESDE EL NOMBRE DEL FICHERO. La Biblioteca
+   de audio de YouTube los baja como «Título - Autor.mp3», con la «/» de los
+   autores dobles cambiada por «_» («The Grey Room _ Density & Time»). Es una
+   propuesta: si la ficha ya tiene los suyos, mandan los de la ficha. */
+function propuestaDeNombre(archivo) {
+  const base = String(archivo || '').replace(/\.[^.]+$/, '').trim();
+  const corte = base.indexOf(' - ');
+  const limpio = s => s.replace(/\s_\s/g, ' / ').replace(/_$/, '').replace(/\s+/g, ' ').trim();
+  if (corte < 0) return { titulo: limpio(base) };
+  return { titulo: limpio(base.slice(0, corte)), artista: limpio(base.slice(corte + 3)) };
 }
 
 /* LOS TROZOS BUENOS DE UNA CANCIÓN. Se escucha y se marca «empieza aquí» y
