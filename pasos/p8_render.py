@@ -118,6 +118,85 @@ CALIDADES = {
 }
 
 
+# ------------------------------------------------------- la huella de un clip
+#
+# UN CLIP QUE NO HA CAMBIADO NO SE VUELVE A DIBUJAR (fork, Fase 4). Cambiar la
+# musica, encender el sonido o volver a montar tras un corte redibujaba TODOS
+# los planos en Edge: 13 minutos para un video de uno, horas para uno de 25.
+# El modo `solo_montar` lo evitaba, pero solo lo usaba el repaso.
+#
+# Cada clip deja al lado su huella («S001.mp4.huella»): un resumen de todo lo
+# que decide sus fotogramas. En la pasada siguiente, un clip con la misma huella
+# se conserva tal cual. Sirve para las dos cosas: cambiar la musica solo vuelve
+# a mezclar, y un render cortado se REANUDA (la carpeta de trabajo conserva los
+# clips terminados, y cada uno escribe su huella al acabar, nunca antes).
+
+EXT_HUELLA = ".huella"
+
+#: Se sube A MANO cuando cambie COMO se dibuja un clip (el codigo, no sus
+#: datos): con otra version ninguna huella vieja vale y se redibuja todo.
+VERSION_HUELLA = 1
+
+_HUELLAS_FICHERO = {}
+
+
+def _huella_fichero(ruta):
+    """sha1 del contenido de un fichero, recordado por (ruta, tamano, fecha)."""
+    import hashlib                                           # noqa: PLC0415
+    try:
+        estado = os.stat(ruta)
+    except OSError:
+        return ""
+    clave = (os.path.normcase(os.path.abspath(ruta)), estado.st_size, estado.st_mtime)
+    if clave not in _HUELLAS_FICHERO:
+        suma = hashlib.sha1()
+        with open(ruta, "rb") as fh:
+            for trozo in iter(lambda: fh.read(1 << 20), b""):
+                suma.update(trozo)
+        _HUELLAS_FICHERO[clave] = suma.hexdigest()
+    return _HUELLAS_FICHERO[clave]
+
+
+def huella_de_clip(escena, mov, hyper, capa, capa_fija, corte, fps, resolucion,
+                   calidad, paleta=None, huella_anterior=""):
+    """Todo lo que decide los fotogramas de un clip, resumido. -> str
+
+    El tramo de tiempo, la camara, la imagen (su CONTENIDO, no su nombre), las
+    dos capas, la transicion y como se codifica. Si la transicion se cuece
+    sobre el ultimo fotograma del plano anterior, entra tambien la huella de
+    ese: cambiar un plano cambia la entrada del siguiente.
+    """
+    import hashlib                                           # noqa: PLC0415
+    cuece = transiciones.cuece_el_anterior(corte or {})
+    datos = {
+        "v": VERSION_HUELLA,
+        "escena": [escena.get("id"), round(float(escena.get("t_in") or 0), 3),
+                   round(float(escena.get("t_out") or 0), 3)],
+        "mov": {k: (mov or {}).get(k) for k in ("ventana_ini", "ventana_fin",
+                                                 "hyperframe_px")},
+        "hyper": _huella_fichero(hyper),
+        "capa": hashlib.sha1((capa or "").encode("utf-8")).hexdigest(),
+        "fija": hashlib.sha1((capa_fija or "").encode("utf-8")).hexdigest(),
+        "corte": corte or {}, "fps": int(fps), "resolucion": list(resolucion),
+        "calidad": calidad,
+        "paleta": paleta if cuece else None,
+        "anterior": huella_anterior if cuece else "",
+    }
+    return hashlib.sha1(json.dumps(datos, sort_keys=True, default=str)
+                        .encode("utf-8")).hexdigest()
+
+
+def huella_guardada(clip):
+    """La huella que dejo un clip al terminarse, o '' si no hay o falta el clip."""
+    if not os.path.exists(clip):
+        return ""
+    try:
+        with open(clip + EXT_HUELLA, "r", encoding="utf-8") as fh:
+            return fh.read().strip()
+    except OSError:
+        return ""
+
+
 def describir(params):
     """Frase corta con lo que hara el paso con estos parametros."""
     p = _con_defectos(params)
@@ -634,6 +713,97 @@ def _concatenar(clips, destino, audio, desfase, trabajo, musica=None,
     return destino
 
 
+# ------------------------------------------------- escuchar la mezcla (fork)
+
+def escuchar_mezcla(proyecto, params, destino):
+    """La banda sonora del video SIN montar el video: voz, musica y efectos en
+    un MP3. -> {mp3, duracion, musica}
+
+    Para decidir la musica sin pagar un render: es la MISMA mezcla que hace
+    `_concatenar` al muxear (mismo grafo, misma medida en dos pasadas, misma
+    cola), solo que sin clips. No sale a la red ni toca ningun paso: lee la voz,
+    el plan y lo que la banda sonora dejo en el banco.
+    """
+    p = _con_defectos(params)
+    ruta_plan = medios.salida_de(proyecto, "assets", claves=("plan",),
+                                 patrones=(r"plan\.json",))
+    plan = medios.leer_json(ruta_plan, {}) if ruta_plan else {}
+    escenas = (plan or {}).get("escenas") or []
+    if not escenas:
+        raise RuntimeError("todavía no hay planos: la mezcla sigue el corte del vídeo")
+    audio = p["audio"] or medios.salida_de(
+        proyecto, "voz", claves=("wav", "audio", "narracion"),
+        patrones=(r"narracion\.wav", r".*\.wav"))
+    if not audio or not os.path.exists(audio):
+        raise RuntimeError("todavía no hay voz grabada")
+    desfase = float(escenas[0]["t_in"])
+    largo = float(escenas[-1]["t_out"]) - desfase
+    largo_con_cola = largo + COLA_NEGRO_S
+    carpeta = os.path.join(os.path.dirname(os.path.abspath(destino)), "_mezcla")
+    os.makedirs(carpeta, exist_ok=True)
+
+    pista_efectos, pista_musica, cama = None, None, False
+    if p.get("sonido", True):
+        cortes = transiciones.resolver(escenas, p, semilla=(plan.get("semilla") or 0))
+        lista = sonido.eventos(escenas, cortes, p, semilla=(plan.get("semilla") or 0))
+        if lista:
+            pista_efectos, _cuantos = sonido.pista_de_efectos(
+                lista, largo, os.path.join(carpeta, "efectos.wav"))
+        musica = p.get("musica") or {}
+        if musica.get("tramos"):
+            pista_musica, _faltan = sonido.construir_cama(
+                musica, largo_con_cola, os.path.join(carpeta, "cama.wav"))
+            cama = bool(pista_musica)
+        elif musica.get("id"):
+            candidata = sonido.banco("musica", sonido._nombre_de(musica))
+            pista_musica = candidata if os.path.exists(candidata) else None
+
+    # una entrada 0 de relleno: el grafo de la mezcla cuenta la voz como [1:a]
+    # porque en el MP4 la 0 es el video
+    orden = [medios.ffmpeg(), "-y", "-loglevel", "error",
+             "-f", "lavfi", "-t", f"{largo_con_cola:.3f}",
+             "-i", f"anullsrc=r={sonido.FRECUENCIA}:cl=stereo",
+             "-ss", f"{max(0.0, desfase):.3f}", "-i", audio]
+    con_musica = bool(pista_musica and os.path.exists(pista_musica))
+    con_efectos = bool(pista_efectos and os.path.exists(pista_efectos))
+    if con_musica:
+        if not cama:
+            orden += ["-stream_loop", "-1"]
+        orden += ["-i", pista_musica]
+    if con_efectos:
+        orden += ["-i", pista_efectos]
+    try:
+        ajuste_musica = float(p.get("musica_db") or 0.0)
+    except (TypeError, ValueError):
+        ajuste_musica = 0.0
+    try:
+        ajuste_efectos = float(p.get("efectos_db") or 0.0)
+    except (TypeError, ValueError):
+        ajuste_efectos = 0.0
+    if con_musica or con_efectos:
+        def mezcla(medida=None):
+            lufs = p.get("musica_lufs")
+            return sonido.filtro_de_mezcla(
+                con_musica, con_efectos, max(0.1, largo_con_cola),
+                lufs if lufs is not None else sonido.MUSICA_LUFS,
+                ya_normalizada=cama, ajuste_db=ajuste_musica,
+                master=True, medida=medida, efectos_db=ajuste_efectos)
+        medida = _medir_mezcla(orden + ["-filter_complex", mezcla(),
+                                        "-map", "[salida]", "-f", "null", "-"])
+        orden += ["-filter_complex", mezcla(medida), "-map", "[salida]"]
+    else:
+        orden += ["-map", "1:a"]
+    orden += ["-c:a", "libmp3lame", "-b:a", "160k", destino]
+    proceso = subprocess.run(orden, capture_output=True, text=True, timeout=1800,
+                             **medios.SIN_VENTANA)
+    if proceso.returncode != 0 or not os.path.exists(destino):
+        raise RuntimeError(f"ffmpeg no pudo mezclar: {proceso.stderr[-400:]}")
+    shutil.rmtree(carpeta, ignore_errors=True)
+    return {"mp3": destino, "duracion": round(largo_con_cola, 2),
+            "musica": sonido.describir(p), "con_musica": con_musica,
+            "con_efectos": con_efectos}
+
+
 # -------------------------------------------------------------- reproductor
 
 def reproductor(proyecto):
@@ -876,6 +1046,10 @@ def renderizar_plano(tarea, navegador=None):
     fps = int(tarea["fps"])
     total = int(tarea["frames"])
     carpeta = tarea["carpeta"]
+    # LA HUELLA VIEJA FUERA ANTES DE TOCAR EL CLIP: si este render se corta a
+    # mitad, el clip a medio escribir no puede quedar con una huella que lo de
+    # por bueno en la pasada siguiente (ver `huella_de_clip`).
+    medios.borrar(tarea["clip"] + EXT_HUELLA)
     # SE VACIA, NO SE BORRA: el mismo Edge acaba de tener abiertos como textura
     # los PNG del plano anterior de este lote, y borrar la carpeta con un handle
     # vivo dentro la deja en BORRADO PENDIENTE -- existe para `os.path.exists`,
@@ -927,6 +1101,9 @@ def renderizar_plano(tarea, navegador=None):
                                          anterior, carpeta, total, fps, corte)
 
     _codificar(carpeta, tarea["clip"], fps, tarea["calidad"])
+    # y la nueva SOLO con el clip ya escrito entero
+    if tarea.get("huella"):
+        medios.escribir_texto(tarea["clip"] + EXT_HUELLA, tarea["huella"])
     medios.borrar(pagina)
     if not tarea.get("conservar_frames"):
         shutil.rmtree(carpeta, ignore_errors=True)
@@ -1204,6 +1381,7 @@ def ejecutar(proyecto, params, avisar=None, unidades=None, solo_montar=False):
     resultados = {}
     clips = []
     tareas = []
+    huellas = {}
     for indice, escena in enumerate(escenas):
         sid = escena["id"]
         uid = f"escena:{sid}"
@@ -1220,6 +1398,7 @@ def ejecutar(proyecto, params, avisar=None, unidades=None, solo_montar=False):
                            and os.path.exists(clip)):
             resultados[uid] = {"clip": os.path.relpath(clip, trabajo),
                                "frames": total, "origen": "conservado"}
+            huellas[sid] = huella_guardada(clip)
             continue
 
         mov = movimientos.get(sid)
@@ -1248,7 +1427,22 @@ def ejecutar(proyecto, params, avisar=None, unidades=None, solo_montar=False):
                 with open(ruta_fija, "r", encoding="utf-8") as fh:
                     fija = fh.read()
 
+        # LA MISMA HUELLA QUE EL CLIP QUE YA HAY: se conserva sin dibujarlo. Es
+        # lo que hace que cambiar la musica solo vuelva a mezclar y que un
+        # render cortado siga por donde iba (ver `huella_de_clip`). Una peticion
+        # de planos concretos (`pedidas`) los redibuja siempre: es lo pedido.
+        previo = escenas[indice - 1]["id"] if indice else None
+        huella = huella_de_clip(escena, mov, hyper, svg, fija, cortes.get(sid) or {},
+                                fps, (ancho, alto), p["calidad_video"], paleta,
+                                huellas.get(previo, ""))
+        huellas[sid] = huella
+        if pedidas is None and huella_guardada(clip) == huella:
+            resultados[uid] = {"clip": os.path.relpath(clip, trabajo),
+                               "frames": total, "origen": "conservado"}
+            continue
+
         tareas.append({
+            "huella": huella,
             "id": sid, "escena": {"id": sid, "t_in": escena["t_in"],
                                   "t_out": escena["t_out"]},
             "mov": {"ventana_ini": mov["ventana_ini"],

@@ -956,6 +956,11 @@ def probar_cartelas_y_transiciones(cliente, pid, raiz_proyecto=None):
     respuesta, _ = cliente.post(f"/api/proyectos/{pid}/sonido/banda",
                                 {"fijadas": {"uno": "x.mp3"}})
     igual(respuesta.status_code, 400, "fijar una cancion a un tramo que no es un numero da 400")
+    # escuchar la mezcla (Fase 4) sin planos ni voz: se dice, no revienta
+    respuesta, datos = cliente.post(f"/api/proyectos/{pid}/sonido/escuchar", {})
+    ok(respuesta.status_code in (200, 409),
+       f"escuchar la mezcla responde (200 con planos y voz, 409 sin ellos): "
+       f"{respuesta.status_code} {str(datos)[:120]}")
 
     # --- EL VETO DE UN EFECTO (PENDIENTE 19). Se veta lo que se acaba de oir,
     # donde se oye: la pantalla trae cada efecto con su muestra y su ✕, y el

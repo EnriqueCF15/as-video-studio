@@ -5327,6 +5327,28 @@ def _correr_banda(avisar, ctx, tramos):
     return {**ficha, "resumen": sonido.describir(ctx.estado.params("render") or {})}
 
 
+@app.post("/api/proyectos/{pid}/sonido/escuchar")
+def escuchar_mezcla(pid: str):
+    """La voz con la música y los efectos elegidos, en un MP3, SIN montar el vídeo.
+
+    Es la misma mezcla que hace el render al muxear (`p8_render.escuchar_mezcla`),
+    pero en segundos: sirve para decidir la música antes de pagar el tiempo de
+    un render. No cambia ningún paso ni sale a la red. (fork, Fase 4)
+    """
+    ctx = contexto(pid)
+    destino = ctx.proyecto.ruta("escucha", "mezcla.mp3")
+    os.makedirs(os.path.dirname(destino), exist_ok=True)
+    try:
+        hecho = PASOS_MODULOS.p8_render.escuchar_mezcla(
+            ctx.proyecto, ctx.estado.params("render") or {}, destino)
+    except RuntimeError as fallo:
+        raise ErrorApi(409, str(fallo))
+    ctx.bitacora.anotar("mezcla_escuchada", "render", {
+        "duracion": hecho["duracion"], "musica": hecho["musica"]})
+    return {**{k: v for k, v in hecho.items() if k != "mp3"},
+            "ruta": "escucha/mezcla.mp3"}
+
+
 @app.get("/api/proyectos/{pid}/sonido/arco")
 def leer_arco(pid: str):
     """El arco que sale del RITMO del montaje. Gratis, sin salir a la red.

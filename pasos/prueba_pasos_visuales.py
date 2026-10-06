@@ -985,6 +985,22 @@ def probar_banda_sonora(proyecto, estado, params, plan):
         n2 = min(len(con_cama), len(sin))
         ok(float(np.abs(con_cama[:n2] - sin[:n2]).mean()) > 0.001,
            "y la cama llega al MP4, no se queda en un wav al lado")
+
+        # ESCUCHAR LA MEZCLA SIN MONTAR (fork, Fase 4): la misma banda sonora en
+        # un MP3, sin clips, para decidir la musica sin esperar a un render
+        print("\n  PASO 8 · escuchar la mezcla sin montar el video")
+        destino_mezcla = os.path.join(CARPETA, "_mezcla", "mezcla.mp3")
+        os.makedirs(os.path.dirname(destino_mezcla), exist_ok=True)
+        hecho = p8_render.escuchar_mezcla(proyecto, p, destino_mezcla)
+        ok(os.path.exists(destino_mezcla), "sale un MP3 con la mezcla")
+        ok(hecho.get("con_musica"), "con la musica dentro")
+        dura = medios.duracion_media(destino_mezcla)
+        ok(abs(dura - (largo + p8_render.COLA_NEGRO_S)) < 0.3,
+           f"y dura lo que el video con su cola ({dura:.2f}s)")
+        mezcla_pcm = _pista_de(destino_mezcla, trabajo, "mezcla.wav")
+        n3 = min(len(mezcla_pcm), len(sin))
+        ok(float(np.abs(mezcla_pcm[:n3] - sin[:n3]).mean()) > 0.001,
+           "y suena distinta que la voz sola: la musica esta en la mezcla")
     finally:
         for ruta in puestos:
             for resto in (ruta, os.path.splitext(ruta)[0] + ".48000.wav"):
@@ -1073,6 +1089,12 @@ def probar_render(proyecto, estado, params):
     ok(all(h.startswith("MD5=") for h in huellas.values()),
        f"se pueden leer los clips de la version sellada: "
        f"{[h for h in huellas.values() if not h.startswith('MD5=')][:1]}")
+    # SIN HUELLAS, para que de verdad se vuelvan a dibujar en fila: con ellas el
+    # render las conservaria (ver p8_render.huella_de_clip) y esta comparacion
+    # mediria un clip contra si mismo
+    for nombre in os.listdir(os.path.join(versionado, "clips")):
+        if nombre.endswith(p8_render.EXT_HUELLA):
+            os.remove(os.path.join(versionado, "clips", nombre))
     en_fila = p8_render.ejecutar(proyecto, dict(params, lotes=1), avisador("p8"))
     trabajo_f = proyecto.ruta_trabajo("render", crear=False)
     distintos = [sid for sid, ruta in en_fila["salidas"]["clips"].items()
@@ -1082,6 +1104,30 @@ def probar_render(proyecto, estado, params):
           "el video sale identico se reparta en procesos o corra en fila: "
           "repartir es una palanca de velocidad, no de imagen")
     estado.completar("render", en_fila["salidas"], en_fila["unidades"])
+
+    # LA HUELLA DE CADA CLIP (fork, Fase 4): un render entero sin cambiar nada
+    # no redibuja ningun plano; es lo que hace que cambiar la musica solo
+    # mezcle y que un render cortado se reanude
+    print("      un render sin cambios no redibuja ningun plano")
+    igual_otra = p8_render.ejecutar(proyecto, params, avisador("p8"))
+    origenes = {f.get("origen") for uid, f in igual_otra["unidades"].items()
+                if uid.startswith("escena:")}
+    igual(origenes, {"conservado"}, "con la misma huella, todos los clips se conservan")
+    ok(os.path.exists(os.path.join(proyecto.ruta_trabajo("render", crear=False),
+                                   "video.mp4")), "y el MP4 se vuelve a montar igual")
+    estado.completar("render", igual_otra["salidas"], igual_otra["unidades"])
+    escena0 = plan["escenas"][0]
+    base_h = dict(escena=escena0, mov={"ventana_ini": [0, 0, 1, 1]}, hyper="",
+                  capa="<svg/>", capa_fija="", corte={"tipo": "corte"}, fps=30,
+                  resolucion=(1920, 1080), calidad="media")
+    h0 = p8_render.huella_de_clip(**base_h)
+    igual(p8_render.huella_de_clip(**base_h), h0, "la huella es estable")
+    ok(p8_render.huella_de_clip(**dict(base_h, calidad="alta")) != h0,
+       "otra calidad es otra huella (se redibuja)")
+    ok(p8_render.huella_de_clip(**dict(base_h, capa="<svg>x</svg>")) != h0,
+       "otro subtitulo es otra huella")
+    ok(p8_render.huella_de_clip(**dict(base_h, escena=dict(escena0, t_out=float(escena0["t_out"]) + 1))) != h0,
+       "otro tramo de tiempo es otra huella")
 
     # rehacer un plano no rehace el video entero
     print("      re-render de un solo plano")

@@ -163,6 +163,7 @@ Reglas que valen para toda la API y no se repiten en cada fila:
 | `GET` | `/api/proyectos/{pid}/sonido/arco` | El arco que sale del RITMO del montaje. Gratis, sin salir a la red. |
 | `POST` | `/api/proyectos/{pid}/sonido/banda` | Monta la banda sonora SOLA: un tema por tramo, elegido por el ritmo. |
 | `POST` | `/api/proyectos/{pid}/sonido/efectos` | Llena el banco de efectos del canal para los papeles que se pidan. |
+| `POST` | `/api/proyectos/{pid}/sonido/escuchar` | La voz con la música y los efectos elegidos, en un MP3, SIN montar el vídeo. |
 | `POST` | `/api/proyectos/{pid}/sonido/musica` | Temas de Jamendo que pegan con el tono. Devuelve candidatos, no elige. |
 | `POST` | `/api/proyectos/{pid}/sonido/vetados` | Prohíbe un efecto en TODO el canal, o levanta el veto con `quitar`. |
 | `GET` | `/api/proyectos/{pid}/transiciones` | Las transiciones que existen, con su GLSL, y cuales entran en este video. |
@@ -267,4 +268,4 @@ Reglas que valen para toda la API y no se repiten en cada fila:
 
 ---
 
-**153 endpoints.** Escrito por `generar_api.py` desde `app.py`.
+**154 endpoints.** Escrito por `generar_api.py` desde `app.py`.

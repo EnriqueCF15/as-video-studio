@@ -8896,6 +8896,7 @@ async function elegirMusicaLight() {
     toast(e.message, true);
   }
   m.trabajando = false;
+  m.mezcla = '';            // la mezcla de antes ya no es la de esta música
   await cargarMusicaLight(true);
   // el MP4 se ha quedado viejo: que la barra de abajo lo diga
   try { await refrescarFichasLight(); } catch (e) { /* se vera al recargar */ }
@@ -8976,7 +8977,41 @@ function panelMusicaLight() {
       : (puestos.length ? 'Volver a elegir la música' : 'Elegir la música ahora')),
     h('span', { clase: 'meta' },
       'Gratis: no llama a nadie. Después, «Regenerar Vídeo» la monta en el MP4.')));
+
+  /* ESCUCHAR LA MEZCLA ANTES DE MONTAR (fork, Fase 4): la voz con esta música,
+     en un MP3 y en segundos, para decidir sin esperar a un render. */
+  if (puestos.length) {
+    caja.appendChild(h('div', { clase: 'fila' },
+      h('button', {
+        clase: 'mini', disabled: m.mezclando || m.trabajando,
+        onclick: () => escucharMezclaLight(),
+      }, m.mezclando ? 'Mezclando…' : '🎧 Escuchar la mezcla'),
+      h('span', { clase: 'meta' },
+        'La voz con esta música, sin montar el vídeo. Gratis y en segundos.')));
+    if (m.mezcla) {
+      caja.appendChild(registrarReproductor(h('audio', {
+        controls: true, preload: 'auto', src: m.mezcla, clase: 'mezcla-light',
+      })));
+    }
+  }
   return caja;
+}
+
+async function escucharMezclaLight() {
+  const v = videoAbierto();
+  const m = estadoMusicaLight();
+  m.mezclando = true;
+  repintarVideo();
+  try {
+    const r = await pedir(`${API.sonido(v.pid)}/escuchar`, { method: 'POST', cuerpo: {} });
+    // con la hora detras: el fichero se llama siempre igual y el navegador
+    // serviria el de la vez anterior
+    m.mezcla = `${API.archivo(v.pid, r.ruta)}?t=${Date.now()}`;
+  } catch (e) {
+    toast(e.message, true);
+  }
+  m.mezclando = false;
+  repintarVideo();
 }
 /* ==========================================================================
    EL REPASO: escribir sobre el vídeo montado, y aplicarlo
