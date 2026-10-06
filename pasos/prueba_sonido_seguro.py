@@ -205,6 +205,15 @@ def prueba_carpeta_propia():
     ficha_paseo = next(f for f in sonido.propios("musica") if f["archivo"] == "Paseo.wav")
     igual(sonido.partes_utiles(ficha_paseo), [(3.0, 25.0)],
           "con trozos marcados, se usan esos")
+    # analizar un fichero DE TU CARPETA no deja copias de trabajo en ella
+    sonido.partes_automaticas(os.path.join(musica, "Paseo.wav"))
+    igual(sorted(n for n in os.listdir(musica) if n.endswith(".wav")),
+          ["Calma Total.wav", "Paseo.wav", "sin ficha.wav"],
+          "analizar tu cancion no deja un .48000.wav en tu carpeta")
+    tono(os.path.join(musica, "vieja.48000.wav"), 1.0)
+    comprobar("vieja.48000.wav" not in [e["archivo"] for e in sonido.catalogo_propio("musica")],
+              "y una copia de trabajo vieja no sale como cancion")
+    os.remove(os.path.join(musica, "vieja.48000.wav"))
     sonido.guardar_ficha_propia("musica", "Paseo.wav", {
         "fuente": "pixabay", "titulo": "Paseo", "licencia": "Pixabay Content License",
         "animo": "sobrio", "fragmentos": [{"desde": 5, "hasta": 17}]})

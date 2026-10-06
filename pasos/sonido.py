@@ -282,6 +282,10 @@ def catalogo_propio(familia):
         ruta = os.path.join(carpeta, nombre)
         if not os.path.isfile(ruta) or os.path.splitext(nombre)[1].lower() not in EXT_AUDIO:
             continue
+        # las copias de trabajo («cancion.48000.wav») no son canciones: las
+        # dejaba aqui una version anterior de `_a_wav`
+        if re.search(rf"\.{FRECUENCIA}\.wav$", nombre, re.IGNORECASE):
+            continue
         ficha = None
         if os.path.exists(_ruta_ficha(ruta)):
             try:
@@ -1982,8 +1986,21 @@ def eventos(escenas, cortes, params, semilla=0):
 # ------------------------------------------------------------------ mezcla
 
 def _a_wav(origen, destino=None):
-    """Decodifica a WAV 48k estereo. Se cachea al lado del fichero del banco."""
-    destino = destino or os.path.splitext(origen)[0] + f".{FRECUENCIA}.wav"
+    """Decodifica a WAV 48k estereo. Se cachea al lado del fichero del banco.
+
+    NUNCA AL LADO DE LO TUYO: la copia de trabajo de un fichero de tu carpeta
+    propia va a `banco/audio/cache_wav`. Al lado del original aparecia en tu
+    carpeta como si fuera otra cancion (y se volvia a convertir a si misma).
+    """
+    if not destino:
+        propio = os.path.normcase(os.path.abspath(banco("propio")))
+        absoluto = os.path.abspath(origen)
+        if os.path.normcase(absoluto).startswith(propio + os.sep):
+            relativo = os.path.relpath(absoluto, banco("propio"))
+            nombre = re.sub(r"[^A-Za-z0-9._-]+", "_", relativo)
+            destino = os.path.join(banco("cache_wav"), f"{nombre}.{FRECUENCIA}.wav")
+        else:
+            destino = os.path.splitext(origen)[0] + f".{FRECUENCIA}.wav"
     if os.path.exists(destino) and os.path.getmtime(destino) >= os.path.getmtime(origen):
         return destino
     proceso = subprocess.run(

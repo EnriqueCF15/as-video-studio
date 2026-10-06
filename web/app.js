@@ -2265,8 +2265,27 @@ function repintarClaves() {
   if (INICIO.abierta) pintarInicio();
 }
 
+/* EL CAJÓN SE REPINTA ENTERO, Y LA POSICIÓN NO SE PIERDE. Vaciar el cuerpo lo
+   devolvía arriba del todo: rellenando una ficha de audio, cada opción elegida
+   te mandaba al principio de Configuración y había que volver a bajar. */
 function pintarConfig() {
-  const caja = vaciar($('#cuerpo-config'));
+  const cuerpo = $('#cuerpo-config');
+  const arriba = cuerpo ? cuerpo.scrollTop : 0;
+  try {
+    pintarConfigDentro(vaciar(cuerpo));
+  } finally {
+    if (cuerpo) cuerpo.scrollTop = arriba;
+  }
+  // la ficha recién abierta, a la vista (solo al abrirla, no en cada repintado)
+  const vista = estadoConfig();
+  if (vista.audioRecienAbierto) {
+    const abierta = cuerpo && cuerpo.querySelector('.audio-propio.abierta');
+    vista.audioRecienAbierto = false;
+    if (abierta) abierta.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }
+}
+
+function pintarConfigDentro(caja) {
   const vista = estadoConfig();
   if (vista.error) {
     caja.appendChild(h('div', { clase: 'vacio' },
@@ -3120,98 +3139,155 @@ function filaAudioPropio(familia, entrada, audio) {
   const clave = `${familia}/${entrada.archivo}`;
   const abierta = vista.audioAbierto === clave;
   const ficha = entrada.ficha || {};
-  const caja = h('div', { clase: 'audio-propio' });
-  caja.appendChild(h('div', { clase: 'fila' },
-    h('span', {}, ficha.titulo ? `${ficha.titulo}` : entrada.archivo),
-    ficha.titulo ? h('span', { clase: 'meta' }, ` · ${entrada.archivo}`) : null,
-    h('span', { clase: 'crece' }),
+  const titulo = ficha.titulo || propuestaDeNombre(entrada.archivo).titulo || entrada.archivo;
+  const caja = h('div', { clase: 'audio-propio' + (abierta ? ' abierta' : '')
+    + (entrada.completa ? ' lista' : '') });
+  const abrirOCerrar = () => {
+    vista.audioAbierto = abierta ? null : clave;
+    vista.audioRecienAbierto = !abierta;
+    vista.borradorAudio = abierta ? null : { familia, archivo: entrada.archivo,
+      datos: { ...propuestaDeNombre(entrada.archivo), ...ficha,
+        fragmentos: [...(ficha.fragmentos || [])] } };
+    repintarClaves();
+    // los trozos que usaría solo, para enseñarlos mientras no marques ninguno
+    if (!abierta && familia === 'musica') {
+      pedir(`${API.audioPropio('musica', entrada.archivo)}/partes`).then(d => {
+        const borrador = vista.borradorAudio;
+        if (!borrador || borrador.archivo !== entrada.archivo) return;
+        borrador.automaticas = d.automaticas || [];
+        borrador.minimo = d.minimo_s || 8;
+        if (borrador.pintarTrozos) borrador.pintarTrozos();
+      }).catch(() => { /* sin la vista previa se puede marcar igual */ });
+    }
+  };
+  // la cabecera de la tarjeta: qué canción es, cómo está y el botón
+  caja.appendChild(h('div', { clase: 'audio-propio-cab' },
+    h('div', { clase: 'audio-propio-nombre' },
+      h('b', {}, titulo),
+      h('div', { clase: 'meta' }, entrada.archivo)),
     pastillaEstado(entrada.completa ? 'ok' : 'parcial',
-      entrada.completa ? 'lista' : `falta: ${(entrada.falta || []).join(', ')}`),
+      entrada.completa ? 'lista' : 'sin ficha'),
     h('button', {
-      clase: 'mini fantasma',
-      onclick: () => {
-        vista.audioAbierto = abierta ? null : clave;
-        vista.borradorAudio = abierta ? null : { familia, archivo: entrada.archivo,
-          datos: { ...propuestaDeNombre(entrada.archivo), ...ficha,
-            fragmentos: [...(ficha.fragmentos || [])] } };
-        repintarClaves();
-        // los trozos que usaría solo, para enseñarlos mientras no marques ninguno
-        if (!abierta && familia === 'musica') {
-          pedir(`${API.audioPropio('musica', entrada.archivo)}/partes`).then(d => {
-            const borrador = vista.borradorAudio;
-            if (!borrador || borrador.archivo !== entrada.archivo) return;
-            borrador.automaticas = d.automaticas || [];
-            borrador.minimo = d.minimo_s || 8;
-            if (borrador.pintarTrozos) borrador.pintarTrozos();
-          }).catch(() => { /* sin la vista previa se puede marcar igual */ });
-        }
-      },
+      clase: abierta ? 'mini fantasma' : (entrada.completa ? 'mini fantasma' : 'mini'),
+      onclick: abrirOCerrar,
     }, abierta ? 'Cerrar' : (entrada.completa ? 'Editar ficha' : 'Poner ficha'))));
   if (!abierta || !vista.borradorAudio) return caja;
 
+  /* LA FICHA ABIERTA. Nada de aquí dentro repinta el cajón: elegir una opción
+     solo enseña o esconde los campos que dependen de ella. Repintar rehacía el
+     reproductor (la canción volvía al segundo cero) y movía la pantalla. */
   const b = vista.borradorAudio.datos;
   const form = h('div', { clase: 'form-audio' });
+  const paso = (numero, texto) => h('div', { clase: 'paso-ficha' },
+    h('span', { clase: 'numero' }, String(numero)), h('span', {}, texto));
+  form.appendChild(h('div', { clase: 'form-audio-cab' },
+    h('b', {}, `Ficha de «${titulo}»`),
+    h('div', { clase: 'pista' }, 'Rellena de arriba abajo y pulsa «Guardar ficha» al final.')));
+
   const reproductor = registrarReproductor(h('audio', {
     controls: true, preload: 'metadata', src: API.audioPropio(familia, entrada.archivo),
   }));
+  let n = 1;
+  form.appendChild(paso(n++, familia === 'musica'
+    ? 'Escúchala y, si quieres, marca sus trozos buenos' : 'Escúchalo'));
   form.appendChild(reproductor);
   if (familia === 'musica') form.appendChild(trozosDeCancion(b, reproductor, vista.borradorAudio));
+
+  form.appendChild(paso(n++, 'De dónde sale y su licencia'));
+  const campoLicencia = campoTexto('Licencia', b.licencia || '', v => { b.licencia = v; },
+    { ayuda: 'Tal y como la da la web: «YouTube Audio Library», «CC BY 4.0»…' });
   form.appendChild(campoSelect('De dónde sale', b.fuente || '',
     [{ valor: '', nombre: '— elige —' },
       ...(audio.origenes || []).map(o => ({ valor: o.id, nombre: o.nombre }))],
     valor => {
       b.fuente = valor;
-      if (!b.licencia && LICENCIA_POR_ORIGEN[valor]) b.licencia = LICENCIA_POR_ORIGEN[valor];
-      repintarClaves();
+      // la licencia que da esa web, si aún no has escrito otra
+      const entradaLicencia = campoLicencia.querySelector('input');
+      if (!b.licencia && LICENCIA_POR_ORIGEN[valor]) {
+        b.licencia = LICENCIA_POR_ORIGEN[valor];
+        if (entradaLicencia) entradaLicencia.value = b.licencia;
+      }
+      mostrarSegunOrigen();
     }));
+  form.appendChild(campoLicencia);
+
+  form.appendChild(paso(n++, 'Título y autor (ya vienen del nombre del archivo: revísalos)'));
   form.appendChild(campoTexto('Título', b.titulo || '', v => { b.titulo = v; }));
   form.appendChild(campoTexto('Autor o artista', b.artista || '', v => { b.artista = v; }));
-  form.appendChild(campoTexto('Licencia', b.licencia || '', v => { b.licencia = v; },
-    { ayuda: 'Tal y como la da la web: «YouTube Audio Library», «CC BY 4.0»…' }));
+
   if (familia === 'musica') {
-    form.appendChild(campoSelect('Ánimo (para qué tramos encaja)', b.animo || '',
-      [{ valor: '', nombre: '— elige —' }, ...(audio.animos || [])], v => { b.animo = v; }));
-    form.appendChild(campoTexto('BPM (opcional)', b.bpm === undefined || b.bpm === null ? '' : b.bpm,
+    form.appendChild(paso(n++, 'Ánimo: en qué parte del vídeo encaja'));
+    form.appendChild(campoSelect('Ánimo', b.animo || '',
+      [{ valor: '', nombre: '— elige —' }, ...(audio.animos || []).map(a => ({
+        valor: a, nombre: ANIMOS_EXPLICADOS[a] ? `${a} — ${ANIMOS_EXPLICADOS[a]}` : a }))],
+      v => { b.animo = v; }));
+    form.appendChild(campoTexto('BPM (opcional, puedes dejarlo vacío)',
+      b.bpm === undefined || b.bpm === null ? '' : b.bpm,
       v => { b.bpm = v; }, { tipo: 'number', min: 0, max: 300, ancho: '90px' }));
   } else {
-    form.appendChild(campoSelect('Papel (en qué hueco suena)', b.papel || '',
+    form.appendChild(paso(n++, 'Papel: en qué momento suena'));
+    form.appendChild(campoSelect('Papel', b.papel || '',
       [{ valor: '', nombre: '— elige —' },
         ...(audio.papeles || []).map(p => ({ valor: p.id, nombre: `${p.nombre} — ${p.descripcion}` }))],
       v => { b.papel = v; }));
   }
-  if (b.fuente === 'uppbeat') {
-    form.appendChild(campoTexto('Código de crédito de Uppbeat (plan gratis)', b.codigo_credito || '',
-      v => { b.codigo_credito = v; }, { ayuda: 'El que te da Uppbeat al bajar la pista.' }));
-  } else {
-    form.appendChild(h('label', { clase: 'plano' },
-      h('input', {
-        type: 'checkbox', checked: !!b.atribucion_requerida,
-        onchange: ev => { b.atribucion_requerida = ev.target.checked; repintarClaves(); },
-      }),
-      h('b', {}, 'Pide atribución (crédito en la descripción)')));
-  }
-  if (b.atribucion_requerida && b.fuente !== 'uppbeat') {
-    form.appendChild(campoTexto('Texto del crédito', b.texto_credito || '',
-      v => { b.texto_credito = v; },
-      { filas: 3, ayuda: 'El que da la propia web; se copia tal cual al creditos.txt.' }));
-  }
-  form.appendChild(h('div', { clase: 'fila' },
+
+  form.appendChild(paso(n++, 'Crédito en la descripción'));
+  const codigoUppbeat = campoTexto('Código de crédito de Uppbeat (plan gratis)',
+    b.codigo_credito || '', v => { b.codigo_credito = v; },
+    { ayuda: 'El que te da Uppbeat al bajar la pista.' });
+  const casillaCredito = h('label', { clase: 'plano' },
+    h('input', {
+      type: 'checkbox', checked: !!b.atribucion_requerida,
+      onchange: ev => { b.atribucion_requerida = ev.target.checked; mostrarSegunOrigen(); },
+    }),
+    h('b', {}, 'Pide atribución (en YouTube decía «Se requiere atribución»)'));
+  const textoCredito = campoTexto('Texto del crédito', b.texto_credito || '',
+    v => { b.texto_credito = v; },
+    { filas: 3, ayuda: 'El que da la propia web; se copia tal cual al creditos.txt.' });
+  form.appendChild(codigoUppbeat);
+  form.appendChild(casillaCredito);
+  form.appendChild(textoCredito);
+  const mostrarSegunOrigen = () => {
+    const uppbeat = b.fuente === 'uppbeat';
+    codigoUppbeat.hidden = !uppbeat;
+    casillaCredito.hidden = uppbeat;
+    textoCredito.hidden = uppbeat || !b.atribucion_requerida;
+  };
+  mostrarSegunOrigen();
+
+  form.appendChild(h('div', { clase: 'fila form-audio-pie' },
     h('button', {
+      clase: 'primario',
       onclick: async () => {
         try {
           await pedir(API.audioPropio(familia, entrada.archivo), { method: 'PUT', cuerpo: b });
           vista.audioAbierto = null;
           vista.borradorAudio = null;
-          toast('ficha guardada');
+          toast(`ficha guardada: «${b.titulo || titulo}»`);
           cargarAudioPropio();
         } catch (e) {
           toast(e.message, true);
         }
       },
-    }, 'Guardar ficha')));
+    }, 'Guardar ficha'),
+    h('button', { clase: 'mini fantasma', onclick: abrirOCerrar }, 'Cancelar')));
   caja.appendChild(form);
   return caja;
 }
+
+/* Lo que quiere decir cada ánimo, para elegirlo sin adivinar. Los cinco
+   primeros son los que el estudio pide solo (`sonido.arco_del_video`). */
+const ANIMOS_EXPLICADOS = {
+  sobrio: 'tranquilo, de fondo (el cuerpo del vídeo)',
+  tension: 'con pulso, algo de urgencia (arranque o tramos rápidos)',
+  misterioso: 'intriga, ambiente (arranque pausado)',
+  melancolico: 'reflexivo, suave (cierre pausado)',
+  epico: 'crece y remata (cierre rápido)',
+  esperanzador: 'optimista (solo si la eliges a mano)',
+  corporativo: 'limpio, de empresa (solo si la eliges a mano)',
+  oscuro: 'grave, sombrío (solo si la eliges a mano)',
+};
 
 /* EL TÍTULO Y EL AUTOR, PROPUESTOS DESDE EL NOMBRE DEL FICHERO. La Biblioteca
    de audio de YouTube los baja como «Título - Autor.mp3», con la «/» de los
