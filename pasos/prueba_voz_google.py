@@ -540,6 +540,58 @@ def prueba_fuga_de_estilo():
     igual(p4_voz.omisiones_por_seccion({}, hablados), {}, "sin nada que falte, nada")
 
 
+def prueba_toma_unica():
+    print("\n[11] una sola toma para las secciones seguidas con el mismo estilo")
+    calma = "Speak naturally and warmly. Relaxed conversational pace, even tone."
+    bloques = [{"id": f"B{i}", "texto": texto} for i, texto in enumerate((
+        "At her kitchen table, a grandmother slides a shoebox toward her grandson.",
+        "In the nineteen fifties, she got paid in cash.",
+        "Empty envelope means you stop buying until next payday."), 1)]
+    secciones = [{"id": f"SB00{i}", "bloques": [f"B{i}"],
+                  "tramo": "intro" if i == 1 else "cuerpo"} for i in (1, 2, 3)]
+    doble_google, doble_alin = _GoogleDoble(goo), _AlineadorDoble()
+    real_google, real_alin = p4_voz.motor_google, p4_voz.alineador
+    tope = p4_voz.BYTES_TOMA_UNICA
+    simular = os.environ.get("ESTUDIO_SIMULAR")
+    p4_voz.motor_google, p4_voz.alineador = doble_google, doble_alin
+    os.environ["ESTUDIO_SIMULAR"] = "0"
+    nada = lambda f, m="": None                                 # noqa: E731
+    try:
+        cfg = p4_voz.resolver_params({"proveedor": "google", "idioma": "en",
+                                      "estilos": {"intro": calma, "cuerpo": calma}})
+        p4_voz._toma_google(secciones, bloques, cfg, nada)
+        llamada = doble_google.llamadas[-1]
+        igual(len(llamada), 1, "con el mismo estilo en todo, UNA sola toma")
+        igual(llamada[0]["secciones"], ["SB001", "SB002", "SB003"],
+              "que lleva las tres secciones seguidas")
+        cfg = p4_voz.resolver_params({"proveedor": "google", "idioma": "en",
+                                      "estilos": {"intro": INTRO, "cuerpo": CUERPO}})
+        p4_voz._toma_google(secciones, bloques, cfg, nada)
+        igual([t["secciones"] for t in doble_google.llamadas[-1]],
+              [["SB001"], ["SB002", "SB003"]],
+              "con la intro distinta: la intro aparte y el cuerpo junto")
+        p4_voz.BYTES_TOMA_UNICA = 60
+        p4_voz._toma_google(secciones, bloques, cfg, nada)
+        igual(len(doble_google.llamadas[-1]), 3, "y si no cabe en una toma, se parte")
+    finally:
+        p4_voz.motor_google, p4_voz.alineador = real_google, real_alin
+        p4_voz.BYTES_TOMA_UNICA = tope
+        if simular is None:
+            os.environ.pop("ESTUDIO_SIMULAR", None)
+        else:
+            os.environ["ESTUDIO_SIMULAR"] = simular
+
+    # LA OMISION SE MIDE POR SECCION aunque vaya en una toma con otras: se regraba
+    # la toma que la lleva
+    hablados = ["one two three four five six", "a b c d e f g h", "q r s t u v w x"]
+    trozos = [{"texto": hablados[0], "estilo": calma, "seccion": "SB001"},
+              {"texto": " ".join(hablados[1:]), "estilo": calma, "seccion": "SB002"}]
+    malas = p4_voz._secciones_mal({"faltan_idx": list(range(14, 20))}, {"piezas": []},
+                                  trozos, hablados, trozo_de=[0, 1, 1])
+    igual(malas, {1: ("omision", 6)},
+          "seis palabras saltadas en la tercera seccion: se regraba la toma que la lleva")
+
+
 def prueba_coste():
     print("\n[8] coste: lo que se paga a Google sale en pantalla")
     from nucleo import coste
@@ -583,6 +635,7 @@ def main():
         prueba_toma_y_regrabado(base)
         prueba_simulado(base)
         prueba_fuga_de_estilo()
+        prueba_toma_unica()
         prueba_coste()
     finally:
         shutil.rmtree(base, ignore_errors=True)
