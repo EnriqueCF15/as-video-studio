@@ -276,6 +276,25 @@ def prueba_banda_con_lo_propio():
         duracion = len(sonido._leer(destino)) / sonido.FRECUENCIA
         comprobar(abs(duracion - 160.0) < 0.1, f"y dura lo que el video ({duracion:.1f} s)")
 
+    print("\n[4b] los animos de cada parte del video, por Estilo")
+    igual(sonido.animos_arco({}), sonido.ANIMOS_ARCO, "sin tabla del Estilo, la de siempre")
+    falla(lambda: sonido.validar_animos_arco({"intro": {"lento": "sobrio"}}),
+          "una parte inventada se rechaza", ValueError)
+    falla(lambda: sonido.validar_animos_arco({"inicio": {"lento": "alegre"}}),
+          "un animo inventado se rechaza", ValueError)
+    falla(lambda: sonido.validar_animos_arco({"inicio": {"medio": "sobrio"}}),
+          "un ritmo inventado se rechaza", ValueError)
+    tabla = sonido.validar_animos_arco({"inicio": {"lento": "sobrio", "rapido": "sobrio"},
+                                        "cierre": {"lento": "esperanzador"}})
+    igual((tabla["inicio"]["rapido"], tabla["medio"]["lento"], tabla["cierre"]["lento"]),
+          ("sobrio", "sobrio", "esperanzador"), "lo que no se dice se queda como siempre")
+    arco = sonido.arco_del_video(escenas, 160.0, tabla)
+    igual([t["animo"] for t in arco], ["sobrio", "esperanzador"],
+          "el arranque ya no pide tension y el cierre pide esperanzador")
+    con_tabla = sonido.montar_banda(escenas, 160.0, animos=tabla)
+    igual([t["animo"] for t in con_tabla["tramos"]], ["sobrio", "esperanzador"],
+          "y la banda sonora monta con esa tabla")
+
     hecho = sonido.creditos({"musica": banda}, [], idioma="en")
     comprobar("Calma Total" in hecho["texto"] and "Paseo" in hecho["texto"],
               "los creditos citan TODAS las canciones de un tramo, no solo la primera")

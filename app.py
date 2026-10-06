@@ -5203,6 +5203,8 @@ def leer_sonido(pid: str):
                     "efectos": sonido.fuentes_de("efectos")},
         # lo que se elige a mano por tramo, y entre que (tu carpeta)
         "fijadas": render.get("musica_fijada") or {},
+        # que animo pide cada parte del video (la tabla del Estilo)
+        "animos_arco": sonido.animos_arco(render.get("animos_arco")),
         "propias": [{c: f.get(c) for c in ("archivo", "titulo", "artista",
                                             "animo", "duracion")}
                     | {"trozos": len(f.get("fragmentos") or [])}
@@ -5308,10 +5310,12 @@ def _correr_banda(avisar, ctx, tramos):
         largo = (float(escenas[-1].get("t_out") or 0)
                  - float(escenas[0].get("t_in") or 0))
     avisar(0.05, "leyendo el ritmo del montaje")
-    # las canciones elegidas a mano en la pantalla del video (fork, Fase 3)
-    fijadas = (ctx.estado.params("render") or {}).get("musica_fijada") or {}
+    # las canciones elegidas a mano en la pantalla del video (fork, Fase 3) y
+    # la tabla de animos del Estilo
+    render = ctx.estado.params("render") or {}
+    fijadas = render.get("musica_fijada") or {}
     ficha = sonido.montar_banda(escenas, largo, avisar=avisar, tramos=tramos,
-                                fijadas=fijadas)
+                                fijadas=fijadas, animos=render.get("animos_arco"))
     ctx.estado.actualizar_params("render", {"musica": ficha})
     ctx.bitacora.anotar("banda_sonora", "render", {
         "tramos": len(ficha["tramos"]),
@@ -5339,7 +5343,8 @@ def leer_arco(pid: str):
     if not largo and escenas:
         largo = (float(escenas[-1].get("t_out") or 0)
                  - float(escenas[0].get("t_in") or 0))
-    return {"tramos": sonido.arco_del_video(escenas, largo),
+    animos = (ctx.estado.params("render") or {}).get("animos_arco")
+    return {"tramos": sonido.arco_del_video(escenas, largo, animos),
             "duracion": largo, "planos": len(escenas)}
 
 
@@ -7736,8 +7741,9 @@ def _correr_preset_light(avisar, ctx, encargo, solo, preset_id, retomar=False):
 def _congelar_preset(ctx, encargo, preset_id=None):
     """Guarda lo que ha producido el taller como preset de canal. -> ficha."""
     presets = _presets()
+    # `render` por el bloque `musica` del preset (los animos de cada parte)
     params = {paso: (ctx.estado.params(paso) or {})
-              for paso in ("brief", "guion", "assets", "voz", "callouts")}
+              for paso in ("brief", "guion", "assets", "voz", "callouts", "render")}
     datos = presets.datos_de_params(params)
     datos["origen"] = {c: encargo[c] for c in presets.CLAVES_ORIGEN
                        if encargo.get(c)}
@@ -7887,7 +7893,12 @@ def listar_presets_light():
     fichas = (_preset_o_400(lambda p: p.listar())["presets"] or {}).get("canal") or []
     for ficha in fichas:
         _curar_muestras(ficha)
+    sonido = _sonido()
     return {"presets": fichas,
+            # los animos de la musica: la tabla de siempre y los que hay, para
+            # el bloque «Música» de la ficha del estilo (fork)
+            "musica_por_defecto": sonido.ANIMOS_ARCO,
+            "animos_musica": sorted(sonido.ANIMOS),
             "idiomas": [{"valor": c, "nombre": presets.NOMBRES_IDIOMA.get(c, c)}
                         for c in light.IDIOMAS],
             "partes": {k: v["nombre"] for k, v in light.PARTES.items()},
@@ -8446,6 +8457,20 @@ def editar_preset_light(preset_id: str, cuerpo: dict = Body(default=None)):
         try:
             _taller_de(ficha).estado.actualizar_params(
                 "guion", {"cta": contenido["guion"]["cta"]})
+        except ErrorApi:
+            pass                    # sin taller el preset sigue siendo correcto
+
+    # LOS ANIMOS DE LA MUSICA (fork): que pide el arranque, el cuerpo y el
+    # cierre segun su ritmo. Al bloque `musica` del preset y AL TALLER, por lo
+    # mismo que la guia de tono: la proxima congelacion sale de alli.
+    if datos.get("animos_arco") is not None:
+        try:
+            animos = _sonido().validar_animos_arco(datos["animos_arco"])
+        except ValueError as fallo:
+            raise ErrorApi(400, f"animos de la musica: {fallo}")
+        contenido["musica"] = {"animos_arco": animos}
+        try:
+            _taller_de(ficha).estado.actualizar_params("render", {"animos_arco": animos})
         except ErrorApi:
             pass                    # sin taller el preset sigue siendo correcto
 

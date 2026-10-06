@@ -2885,6 +2885,22 @@ def probar_modo_light(cliente):
     respuesta, datos = cliente.put(f"/api/presets-light/{pid_preset}", {"idioma": "kl"})
     igual(respuesta.status_code, 400, "un idioma que no existe da 400 al editar")
 
+    # LOS ANIMOS DE LA MUSICA DEL ESTILO (fork): se guardan con el resto
+    respuesta, datos = cliente.put(f"/api/presets-light/{pid_preset}", {
+        "animos_arco": {"inicio": {"lento": "sobrio", "rapido": "sobrio"}}})
+    igual(respuesta.status_code, 200, "guardar los animos de la musica responde 200")
+    musica = ((datos.get("preset") or {}).get("datos") or {}).get("musica") or {}
+    igual(((musica.get("animos_arco") or {}).get("inicio") or {}).get("rapido"), "sobrio",
+          "y el estilo guarda que el arranque rapido pide sobrio")
+    igual(((musica.get("animos_arco") or {}).get("cierre") or {}).get("lento"),
+          "melancolico", "con el resto de la tabla como siempre")
+    respuesta, _ = cliente.put(f"/api/presets-light/{pid_preset}", {
+        "animos_arco": {"inicio": {"lento": "alegre"}}})
+    igual(respuesta.status_code, 400, "un animo que no existe da 400")
+    respuesta, datos = cliente.get("/api/presets-light")
+    ok(datos.get("musica_por_defecto") and "sobrio" in (datos.get("animos_musica") or []),
+       "la galeria trae la tabla de siempre y los animos para la pantalla")
+
     # rehacer una parte de un preset SIN taller se dice, no se inventa uno
     respuesta, datos = cliente.post(
         f"/api/presets-light/{pid_preset}/regenerar",

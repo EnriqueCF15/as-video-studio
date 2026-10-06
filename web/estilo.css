@@ -1276,6 +1276,13 @@ video { width: 100%; border-radius: 9px; border: 1px solid var(--linea); backgro
 .form-audio-pie { border-top: 1px solid var(--linea); padding-top: 8px; margin-top: 4px; }
 .trozos { display: grid; gap: 4px; padding: 6px 8px; border: 1px dashed var(--linea);
   border-radius: 8px; }
+/* Los ánimos de la música de un Estilo: una fila por parte del vídeo. */
+.animos-parte {
+  display: grid; grid-template-columns: 80px 1fr 1fr; gap: 8px; align-items: end;
+  border-top: 1px solid var(--linea); padding-top: 6px;
+}
+.animos-parte > b { align-self: center; }
+.animos-parte .campo { margin-bottom: 4px; }
 /* La música de un vídeo: un tramo por bloque, con su canción elegible. */
 .musica-light .tramo-musica { border-top: 1px solid var(--linea); padding: 8px 0 4px; }
 

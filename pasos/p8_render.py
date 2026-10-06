@@ -105,6 +105,10 @@ PARAMS_POR_DEFECTO = {
     # tu carpeta}. Las lee la banda sonora al montarse; lo que no esta aqui lo
     # elige ella sola por el animo del tramo.
     "musica_fijada": {},
+    # QUE ANIMO PIDE CADA PARTE DEL VIDEO (fork): {inicio|medio|cierre:
+    # {lento|rapido: animo}}. Viene del Estilo (bloque `musica`); vacio es la
+    # tabla de siempre (`sonido.ANIMOS_ARCO`).
+    "animos_arco": {},
 }
 
 CALIDADES = {

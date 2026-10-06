@@ -881,7 +881,48 @@ BANDAS = {"graves": (20.0, 250.0), "medios": (250.0, 4000.0),
           "agudos": (4000.0, 16000.0)}
 
 
-def arco_del_video(escenas, duracion_s=0.0):
+#: QUE ANIMO PIDE CADA PARTE DEL VIDEO, segun su ritmo. Es lo de siempre; un
+#: Estilo lo puede cambiar (bloque `musica` del preset -> `render.animos_arco`):
+#: un canal de finanzas tranquilo no quiere «tension» en el arranque aunque el
+#: montaje vaya rapido (fork, 06-10).
+ANIMOS_ARCO = {
+    "inicio": {"lento": "misterioso", "rapido": "tension"},
+    "medio": {"lento": "sobrio", "rapido": "tension"},
+    "cierre": {"lento": "melancolico", "rapido": "epico"},
+}
+
+
+def animos_arco(personalizados=None):
+    """La tabla de animos con lo que cambie el Estilo encima. -> dict"""
+    salida = {parte: dict(ritmos) for parte, ritmos in ANIMOS_ARCO.items()}
+    for parte, ritmos in (personalizados or {}).items():
+        if parte not in salida or not isinstance(ritmos, dict):
+            continue
+        for ritmo, animo in ritmos.items():
+            if ritmo in salida[parte] and animo in ANIMOS:
+                salida[parte][ritmo] = animo
+    return salida
+
+
+def validar_animos_arco(datos):
+    """Comprueba la tabla que llega de la pantalla. -> dict completo o ValueError"""
+    if not isinstance(datos, dict):
+        raise ValueError("es un objeto {inicio, medio, cierre}, cada uno {lento, rapido}")
+    for parte, ritmos in datos.items():
+        if parte not in ANIMOS_ARCO:
+            raise ValueError(f"parte {parte!r}: son inicio, medio y cierre")
+        if not isinstance(ritmos, dict):
+            raise ValueError(f"{parte}: es un objeto {{lento, rapido}}")
+        for ritmo, animo in ritmos.items():
+            if ritmo not in ("lento", "rapido"):
+                raise ValueError(f"{parte}.{ritmo}: el ritmo es lento o rapido")
+            if animo not in ANIMOS:
+                raise ValueError(f"{parte}.{ritmo}: animo {animo!r} desconocido; "
+                                 "son " + ", ".join(sorted(ANIMOS)))
+    return animos_arco(datos)
+
+
+def arco_del_video(escenas, duracion_s=0.0, animos=None):
     """En que tramos se parte el video y que animo pide cada uno, POR EL RITMO.
 
     QUE SE MIDE
@@ -925,19 +966,21 @@ def arco_del_video(escenas, duracion_s=0.0):
     # con tres tramos la mediana ES uno de ellos, asi que ese nunca podia salir
     # rapido y su explicacion decia «por debajo» de si mismo
     media = len(escenas) / max(0.001, total)
+    mapa = animos_arco(animos)
     for tramo in tramos:
         rapido = tramo["densidad"] > media
         primero, ultimo = tramo["i"] == 0, tramo["i"] == cuantos - 1
+        ritmo = "rapido" if rapido else "lento"
         if primero:
-            tramo["animo"] = "tension" if rapido else "misterioso"
+            tramo["animo"] = mapa["inicio"][ritmo]
             tramo["por_que"] = ("abre y el montaje ya va rapido: engancha"
                                 if rapido else "abre despacio: intriga")
         elif ultimo:
-            tramo["animo"] = "epico" if rapido else "melancolico"
+            tramo["animo"] = mapa["cierre"][ritmo]
             tramo["por_que"] = ("cierra acelerando: remate"
                                 if rapido else "cierra bajando: poso")
         else:
-            tramo["animo"] = "tension" if rapido else "sobrio"
+            tramo["animo"] = mapa["medio"][ritmo]
             tramo["por_que"] = (f"{tramo['planos']} planos, "
                                 + ("por encima" if rapido else "por debajo")
                                 + " del ritmo medio")
@@ -1212,7 +1255,8 @@ def _candidatos_de(tramo, fijada=None):
     return [], False
 
 
-def montar_banda(escenas, duracion_s, avisar=None, tramos=None, fijadas=None):
+def montar_banda(escenas, duracion_s, avisar=None, tramos=None, fijadas=None,
+                 animos=None):
     """La banda sonora entera, decidida sola. Devuelve la ficha para params.
 
     NO deja fichero: deja escrito QUE trozos de que canciones van en cada
@@ -1232,7 +1276,8 @@ def montar_banda(escenas, duracion_s, avisar=None, tramos=None, fijadas=None):
     """
     avisar = avisar or (lambda *a, **k: None)
     fijadas = {str(k): str(v) for k, v in (fijadas or {}).items() if v}
-    arco = tramos or arco_del_video(escenas, duracion_s)
+    # `animos`: la tabla del Estilo (`render.animos_arco`); sin ella, la de siempre
+    arco = tramos or arco_del_video(escenas, duracion_s, animos)
     if not arco:
         raise RuntimeError("no hay planos con tiempos: no se puede leer el ritmo")
     if not hay_musica():

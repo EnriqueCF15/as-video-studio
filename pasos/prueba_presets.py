@@ -83,14 +83,25 @@ def _fotogramas(cuantos=3, nombre="f"):
 def prueba_catalogo():
     print("\n  CATALOGO DE TIPOS")
     ids = [t["id"] for t in presets.tipos()]
-    igual(ids, ["guion", "estilo", "voz", "rotulos", "canal"],
+    igual(ids, ["guion", "estilo", "voz", "rotulos", "musica", "canal"],
           "los tipos salen en su orden, con el canal el ultimo")
     for ficha in presets.tipos():
         ok(bool(ficha["nombre"]) and bool(ficha["que_fija"]),
            f"el tipo {ficha['id']} dice como se llama y que fija")
-        ok(all(p in ("brief", "guion", "assets", "voz", "callouts")
+        ok(all(p in ("brief", "guion", "assets", "voz", "callouts", "render")
                for p in ficha["pasos"]),
            f"el tipo {ficha['id']} solo toca pasos que existen")
+
+    # LA MUSICA DEL CANAL (fork): los animos de cada parte van al render, y se
+    # leen de vuelta de alli al congelar un estilo
+    animos = {"inicio": {"lento": "misterioso", "rapido": "misterioso"}}
+    igual(presets.cambios_para({"tipo": "musica", "datos": {"animos_arco": animos}}),
+          {"render": {"animos_arco": animos}}, "el bloque musica se aplica al render")
+    igual(presets.datos_de_params({"render": {"animos_arco": animos}}).get("musica"),
+          {"animos_arco": animos}, "y se lee de vuelta de los params del render")
+    ok("arranque misterioso/misterioso" in presets.resumen_de(
+        {"tipo": "musica", "datos": {"animos_arco": animos}}),
+       "y su resumen dice que pide el arranque")
     revienta(lambda: presets.guardar("loquesea", "x", {"a": 1}),
              "tipo de preset desconocido", "un tipo inventado se rechaza")
 

@@ -164,14 +164,25 @@ TIPOS = {
                    "emociones", "hueco_minimo", "proveedor", "estilos"),
         "pasos": ("voz",),
     },
+    # LA MUSICA DEL CANAL (fork, 06-10): que animo pide cada parte del video
+    # (arranque, cuerpo y cierre) segun su ritmo. Va a los params del render,
+    # que es de donde la lee la banda sonora (`sonido.arco_del_video`). Las
+    # canciones no: esas son de la carpeta del canal, no de un estilo.
+    "musica": {
+        "nombre": "Música",
+        "que_fija": ("que animo de musica pide el arranque, el cuerpo y el "
+                     "cierre del video, segun su ritmo"),
+        "claves": ("animos_arco",),
+        "pasos": ("render",),
+    },
     "canal": {
         "nombre": "Canal",
-        "que_fija": "de golpe el guion, el estilo grafico y la voz",
+        "que_fija": "de golpe el guion, el estilo grafico, la voz y la musica",
         # las claves de un canal son los OTROS tipos: dentro de cada una va el
         # bloque de datos de ese tipo, tal cual. Y ademas 'origen', que no es un
         # tipo: ver ORIGEN mas abajo.
-        "claves": ("guion", "estilo", "voz", "rotulos", "origen"),
-        "pasos": ("brief", "guion", "assets", "voz", "callouts"),
+        "claves": ("guion", "estilo", "voz", "rotulos", "musica", "origen"),
+        "pasos": ("brief", "guion", "assets", "voz", "callouts", "render"),
     },
 }
 
@@ -196,7 +207,7 @@ CLAVES_ORIGEN = ("estilo_prompt", "estilo_imagenes", "tono_prompt",
 
 # Orden en el que se ensenan y en el que se aplican. El guion va primero porque
 # el resto se lee en el: la voz hereda el idioma que fija el guion.
-ORDEN = ("guion", "estilo", "voz", "rotulos")
+ORDEN = ("guion", "estilo", "voz", "rotulos", "musica")
 
 
 def tipos():
@@ -430,6 +441,13 @@ def resumen_de(ficha):
             str(datos.get("velocidad") or "normal"),
             ", ".join(emociones) if emociones else "sin color",
         ] if x)
+    if tipo == "musica":
+        animos = datos.get("animos_arco") or {}
+        nombres = {"inicio": "arranque", "medio": "cuerpo", "cierre": "cierre"}
+        return " · ".join(
+            f"{nombres[p]} {(animos.get(p) or {}).get('lento', '?')}"
+            f"/{(animos.get(p) or {}).get('rapido', '?')}"
+            for p in ("inicio", "medio", "cierre")) or "animos de siempre"
     if tipo == "rotulos":
         fijados = len((datos.get("paleta") or {}).get("fijados") or {})
         return " · ".join(x for x in [
@@ -1051,6 +1069,11 @@ def cambios_para(ficha, params_actuales=None):
                           if c != "voz_nombre"}
         return cambios
 
+    if tipo == "musica":
+        if datos.get("animos_arco"):
+            cambios["render"] = {"animos_arco": copy.deepcopy(datos["animos_arco"])}
+        return cambios
+
     raise ErrorPreset(f"no se sabe aplicar un preset de tipo {tipo}")
 
 
@@ -1122,5 +1145,10 @@ def datos_de_params(params_por_paso, incluir=ORDEN):
                   if callouts.get(c) not in (None, "")}
         if bloque:
             datos["rotulos"] = bloque
+
+    if "musica" in incluir:
+        render = params.get("render") or {}
+        if render.get("animos_arco"):
+            datos["musica"] = {"animos_arco": copy.deepcopy(render["animos_arco"])}
 
     return datos

@@ -3276,18 +3276,55 @@ function filaAudioPropio(familia, entrada, audio) {
   return caja;
 }
 
-/* Lo que quiere decir cada ánimo, para elegirlo sin adivinar. Los cinco
-   primeros son los que el estudio pide solo (`sonido.arco_del_video`). */
+/* Lo que quiere decir cada ánimo, para elegirlo sin adivinar. Qué ánimo pide
+   cada parte del vídeo lo dice el bloque «Música» de cada Estilo. */
 const ANIMOS_EXPLICADOS = {
-  sobrio: 'tranquilo, de fondo (el cuerpo del vídeo)',
-  tension: 'con pulso, algo de urgencia (arranque o tramos rápidos)',
-  misterioso: 'intriga, ambiente (arranque pausado)',
-  melancolico: 'reflexivo, suave (cierre pausado)',
-  epico: 'crece y remata (cierre rápido)',
-  esperanzador: 'optimista (solo si la eliges a mano)',
-  corporativo: 'limpio, de empresa (solo si la eliges a mano)',
-  oscuro: 'grave, sombrío (solo si la eliges a mano)',
+  sobrio: 'tranquilo, de fondo',
+  tension: 'con pulso, algo de urgencia',
+  misterioso: 'intriga, ambiente',
+  melancolico: 'reflexivo, suave',
+  epico: 'crece y remata',
+  esperanzador: 'optimista, luminoso',
+  corporativo: 'limpio, de empresa',
+  oscuro: 'grave, sombrío',
 };
+
+/* LOS ÁNIMOS DE LA MÚSICA DE UN ESTILO. El estudio parte el vídeo en tramos y
+   mira el ritmo de cada uno: según sea el arranque, el cuerpo o el cierre, y
+   vaya despacio o rápido, pide un ánimo a tu carpeta de música. Aquí se elige
+   ese ánimo. Se guarda solo y vale para los vídeos NUEVOS con este estilo. */
+const PARTES_MUSICA = [
+  { id: 'inicio', nombre: 'Arranque' },
+  { id: 'medio', nombre: 'Cuerpo' },
+  { id: 'cierre', nombre: 'Cierre' },
+];
+
+function animosDeMusicaLight(ficha) {
+  const g = APP.light.datos || {};
+  const defecto = g.musica_por_defecto || {};
+  const guardado = ((ficha.datos || {}).musica || {}).animos_arco || {};
+  const tabla = {};
+  PARTES_MUSICA.forEach(p => {
+    tabla[p.id] = { ...(defecto[p.id] || {}), ...(guardado[p.id] || {}) };
+  });
+  const opciones = (g.animos_musica || []).map(a => ({
+    valor: a, nombre: ANIMOS_EXPLICADOS[a] ? `${a} — ${ANIMOS_EXPLICADOS[a]}` : a }));
+  const guardar = (parte, ritmo, valor) => {
+    tabla[parte][ritmo] = valor;
+    guardarPresetLight(ficha.id, { animos_arco: tabla });
+  };
+  const caja = h('div', { clase: 'animos-musica' },
+    h('div', { clase: 'pista' },
+      'Según el ritmo de cada parte, el estudio pide este ánimo a tu carpeta de música. '
+      + 'Se guarda solo y vale para los vídeos nuevos con este estilo.'));
+  PARTES_MUSICA.forEach(p => {
+    caja.appendChild(h('div', { clase: 'animos-parte' },
+      h('b', {}, p.nombre),
+      campoSelect('si va despacio', tabla[p.id].lento, opciones, v => guardar(p.id, 'lento', v)),
+      campoSelect('si va rápido', tabla[p.id].rapido, opciones, v => guardar(p.id, 'rapido', v))));
+  });
+  return caja;
+}
 
 /* EL TÍTULO Y EL AUTOR, PROPUESTOS DESDE EL NOMBRE DEL FICHERO. La Biblioteca
    de audio de YouTube los baja como «Título - Autor.mp3», con la «/» de los
@@ -10173,6 +10210,10 @@ function vistaPresetLight() {
   caja.appendChild(bloqueLight('⏱️ Ritmo', 'cada cuánto corta el vídeo',
     sliderRitmo((ficha.origen_ritmo || ritmoPorDefecto()),
       v => guardarPresetLight(ficha.id, { ritmo: v }))));
+
+  // 🎵 la música: qué ánimo pide cada parte del vídeo (fork). Tampoco rehace nada
+  caja.appendChild(bloqueLight('🎵 Música', 'qué ánimo pide cada parte del vídeo',
+    animosDeMusicaLight(ficha)));
 
   // 🎙️ la voz, con su escucha
   const voz = h('div', {});
