@@ -56,7 +56,7 @@ FAMILIAS = (
                                "/api/efectos", "/api/audio-propio")),
     ("Render y montaje", ("/api/proyectos/{pid}/montaje",
                           "/api/proyectos/{pid}/capturas",
-                          "/api/proyectos/{pid}/render")),
+                          "/api/proyectos/{pid}/render", "/api/cola-render")),
     ("Presets del canal", ("/api/presets-canal", "/api/presets")),
     ("Modo light: estilos y vídeo", ("/api/presets-light", "/api/estimacion")),
     ("Ajustes del CLI y estadísticas", ("/api/ajustes", "/api/estadisticas",

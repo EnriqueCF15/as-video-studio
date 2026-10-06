@@ -101,6 +101,8 @@ def arrancar(puerto, carpeta):
     """Lanza el servidor y espera a que /api/salud conteste."""
     entorno = dict(os.environ)
     entorno["ESTUDIO_SIMULAR"] = "1"
+    # sin burbujas de Windows: la prueba lanza tandas y no hay nadie mirando
+    entorno["ESTUDIO_SIN_AVISOS"] = "1"
     entorno["PYTHONIOENCODING"] = "utf-8"
     # los presets del canal tambien van a la carpeta temporal: sin esto la
     # prueba escribia sus presets de mentira en el presets.json del canal real
@@ -3471,6 +3473,63 @@ def probar_taller_oculto(cliente):
           "pero sigue abriendose por su id: es donde corre la generacion")
 
 
+def probar_la_cola_de_la_noche(cliente):
+    """La cola de la noche: poner, quitar, arrancar y saltar lo que no se puede.
+
+    No monta ningun MP4 de verdad (eso es un render de minutos): arranca con un
+    video recien creado, al que le falta todo, y comprueba que la cola lo SALTA
+    con su motivo en vez de quedarse colgada o lanzar algo que gaste.
+    """
+    seccion("LA COLA DE LA NOCHE")
+    respuesta, cola = cliente.get("/api/cola-render")
+    igual(respuesta.status_code, 200, "la cola se lee")
+    igual((cola.get("videos"), cola.get("corriendo")), ([], False),
+          "y empieza vacia y parada")
+    respuesta, _ = cliente.post("/api/cola-render/empezar")
+    igual(respuesta.status_code, 409, "empezar sin nada en espera da 409")
+    respuesta, _ = cliente.post("/api/cola-render", {})
+    igual(respuesta.status_code, 400, "poner sin 'pid' da 400")
+    respuesta, _ = cliente.post("/api/cola-render", {"pid": "no_existe_xyz"})
+    igual(respuesta.status_code, 404, "poner un video que no existe da 404")
+
+    respuesta, datos = cliente.post("/api/proyectos", {"nombre": "Cola de noche"})
+    pid = (datos.get("proyecto") or {}).get("id")
+    respuesta, cola = cliente.post("/api/cola-render", {"pid": pid})
+    igual(respuesta.status_code, 201, "poner un video en la cola da 201")
+    igual([(v["pid"], v["estado"]) for v in cola.get("videos") or []],
+          [(pid, "en_cola")], "y queda en espera, con su id")
+    igual(cola.get("en_cola"), 1, "y la cuenta de los que esperan sube")
+    respuesta, _ = cliente.post("/api/cola-render", {"pid": pid})
+    igual(respuesta.status_code, 409, "ponerlo dos veces da 409")
+    respuesta, _ = cliente.delete("/api/cola-render/otro_que_no")
+    igual(respuesta.status_code, 404, "quitar uno que no esta da 404")
+    respuesta, cola = cliente.delete(f"/api/cola-render/{pid}")
+    igual((respuesta.status_code, cola.get("videos")), (200, []), "quitarlo lo saca")
+
+    cliente.post("/api/cola-render", {"pid": pid})
+    respuesta, cola = cliente.post("/api/cola-render/empezar")
+    igual(respuesta.status_code, 202, "empezar con uno en espera da 202")
+    limite = time.time() + 60
+    while time.time() < limite:
+        respuesta, cola = cliente.get("/api/cola-render")
+        if not cola.get("corriendo"):
+            break
+        time.sleep(0.5)
+    igual(cola.get("corriendo"), False, "y la cola acaba sola")
+    video = (cola.get("videos") or [{}])[0]
+    igual(video.get("estado"), "error",
+          "un video al que le falta todo NO se monta: queda «no se pudo»")
+    ok(bool(video.get("detalle")), "y dice por que")
+    respuesta, cola = cliente.post("/api/cola-render", {"pid": pid})
+    igual(respuesta.status_code, 201, "uno terminado se puede volver a poner")
+    respuesta, cola = cliente.post("/api/cola-render/parar")
+    igual((respuesta.status_code, cola.get("corriendo")), (200, False),
+          "parar con la cola parada no hace nada")
+    respuesta, cola = cliente.post("/api/cola-render/limpiar")
+    igual(len(cola.get("videos") or []), 1, "limpiar deja los que esperan")
+    cliente.delete(f"/api/cola-render/{pid}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Prueba del servicio HTTP")
     parser.add_argument("--conservar", action="store_true",
@@ -3533,6 +3592,7 @@ def main():
         probar_que_no_falta_ningun_nombre_en_la_pantalla()
         probar_que_no_falta_ningun_nombre_en_el_servidor()
         probar_el_reloj_de_un_trabajo()
+        probar_la_cola_de_la_noche(cliente)
     finally:
         parar(proceso)
         if not argumentos.conservar:

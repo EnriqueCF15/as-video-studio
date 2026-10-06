@@ -713,6 +713,52 @@ def _concatenar(clips, destino, audio, desfase, trabajo, musica=None,
     return destino
 
 
+# --------------------------------------------- la memoria antes de un render
+
+#: Por debajo de esto, los navegadores del render se pelean por la RAM con lo
+#: que tengas abierto y el portatil empieza a tirar de disco (fork, Fase 4).
+RAM_MINIMA_GB = 4.0
+
+
+def memoria_libre_gb():
+    """La RAM libre ahora mismo, en GB, o None si no se puede saber."""
+    try:
+        if os.name == "nt":
+            import ctypes                                     # noqa: PLC0415
+
+            class _Estado(ctypes.Structure):
+                _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
+                            ("ullTotalPhys", ctypes.c_ulonglong),
+                            ("ullAvailPhys", ctypes.c_ulonglong),
+                            ("ullTotalPageFile", ctypes.c_ulonglong),
+                            ("ullAvailPageFile", ctypes.c_ulonglong),
+                            ("ullTotalVirtual", ctypes.c_ulonglong),
+                            ("ullAvailVirtual", ctypes.c_ulonglong),
+                            ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+            estado = _Estado()
+            estado.dwLength = ctypes.sizeof(_Estado)
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(estado)):
+                return estado.ullAvailPhys / 1024 ** 3
+            return None
+        with open("/proc/meminfo", "r", encoding="utf-8") as fh:
+            for linea in fh:
+                if linea.startswith("MemAvailable:"):
+                    return int(linea.split()[1]) / 1024 ** 2
+    except Exception:                                         # noqa: BLE001
+        return None
+    return None
+
+
+def aviso_de_memoria(libre=None):
+    """Lo que hay que decir antes de un render si queda poca RAM, o ''."""
+    libre = memoria_libre_gb() if libre is None else libre
+    if libre is None or libre >= RAM_MINIMA_GB:
+        return ""
+    return (f"Quedan {libre:.1f} GB de memoria libre y el render necesita unos "
+            f"{RAM_MINIMA_GB:.0f}: cierra los juegos, Chrome y las aplicaciones pesadas antes de "
+            f"montar, o irá muy lento")
+
+
 # ------------------------------------------------- escuchar la mezcla (fork)
 
 def escuchar_mezcla(proyecto, params, destino):

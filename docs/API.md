@@ -172,6 +172,12 @@ Reglas que valen para toda la API y no se repiten en cada fila:
 
 | | Ruta | Qué hace |
 |---|---|---|
+| `GET` | `/api/cola-render` | Los videos que esperan a montarse de noche, y si la cola esta corriendo. |
+| `POST` | `/api/cola-render` | Pone un video al final de la cola. Si ya estaba terminado, vuelve a ella. |
+| `POST` | `/api/cola-render/empezar` | Arranca la cola: monta los videos en espera, uno detras de otro. |
+| `POST` | `/api/cola-render/limpiar` | Quita de la lista los videos ya terminados (bien o con problemas). |
+| `POST` | `/api/cola-render/parar` | Que la cola no empiece el siguiente. El que se esta montando, termina. |
+| `DELETE` | `/api/cola-render/{pid}` | Saca un video de la cola (el que se esta montando no: cancelalo antes). |
 | `GET` | `/api/proyectos/{pid}/capturas` | Capturas del proyecto, filtrables por paso y escena. |
 | `POST` | `/api/proyectos/{pid}/capturas` | Guarda una captura anotada de los pasos callouts o render. |
 | `POST` | `/api/proyectos/{pid}/capturas/aplicar` | Traduce las capturas a instruccion y rehace SOLO las escenas tocadas. |
@@ -268,4 +274,4 @@ Reglas que valen para toda la API y no se repiten en cada fila:
 
 ---
 
-**154 endpoints.** Escrito por `generar_api.py` desde `app.py`.
+**160 endpoints.** Escrito por `generar_api.py` desde `app.py`.

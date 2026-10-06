@@ -411,6 +411,8 @@ const API = {
     + (pares && Object.keys(pares).length ? `?${consulta(pares)}` : ''),
   valoracion: () => `${BASE}/api/estadisticas/valoracion`,
   apartar: pid => `${BASE}/api/proyectos/${encodeURIComponent(pid)}`,
+  colaRender: pid => `${BASE}/api/cola-render`
+    + (pid ? `/${encodeURIComponent(pid)}` : ''),
   duplicar: pid => `${BASE}/api/proyectos/${encodeURIComponent(pid)}/duplicar`,
   papelera: () => `${BASE}/api/proyectos/papelera`,
   papeleraFicha: carpeta => `${BASE}/api/proyectos/papelera/${encodeURIComponent(carpeta)}`,
@@ -5359,6 +5361,8 @@ async function cargarGaleriaLight(forzar) {
         .filter(p => p.video_light)
         .sort((a, b) => String(b.actualizado || '').localeCompare(String(a.actualizado || '')));
     } catch (e) { APP.light.datos.videos = []; }
+    try { APP.light.datos.cola = await pedir(API.colaRender()); }
+    catch (e) { APP.light.datos.cola = null; }
     // el ritmo de fábrica lo dice el servidor, no esta pantalla
     if (APP.light.encargo && !APP.light.encargo.ritmo) {
       APP.light.encargo.ritmo = ritmoPorDefecto();
@@ -5810,6 +5814,8 @@ function vistaGaleriaLight() {
      generar no tenía desde dónde retomarse: seguía corriendo en el servidor y
      no había ningún camino hasta él. */
   const videos = videosLight();
+  const cola = panelColaNoche();
+  if (cola) caja.appendChild(cola);
   if (videos.length) {
     caja.appendChild(h('div', { clase: 'light-cab' },
       h('h2', {}, 'Tus vídeos'),
@@ -5826,6 +5832,7 @@ function vistaGaleriaLight() {
          HTML valido y el clic acabaria abriendo el video en vez de renombrarlo
          — la misma razon por la que la tarjeta de un estilo es un div con un
          boton grande dentro y no un boton entero. */
+      botonColaNoche(video),
       h('button', {
         clase: 'mini fantasma renombrar', title: 'Cambiar el nombre',
         'aria-label': `Cambiar el nombre de ${video.nombre || video.id}`,
@@ -5904,6 +5911,118 @@ function tarjetaNuevoEstilo(cuantos) {
 /* Los vídeos hechos con este modo, del más reciente al más antiguo. Los sirve
    `GET /api/proyectos` con su marca (`video_light`): son proyectos normales y
    se ven también en el modo editor, que es lo que son. */
+/* LA COLA DE LA NOCHE (fork, Fase 4). Montar un vídeo largo son horas: se
+   dejan varios en fila, se pulsa «Empezar» antes de dormir y se montan de uno
+   en uno, con el portátil despierto y una burbuja de Windows al acabar. Solo
+   MONTA: un vídeo al que le falten imágenes o voz se salta y dice por qué,
+   porque de noche no se gasta sin preguntar (ver `_lanzar_cadena`). */
+const ESTADOS_COLA = {
+  en_cola: ['', 'en espera'], montando: ['obsoleto', 'montando…'],
+  listo: ['ok', 'montado'], error: ['error', 'no se pudo'],
+};
+
+function colaNoche() { return (APP.light.datos || {}).cola || null; }
+
+function enColaNoche(pid) {
+  const cola = colaNoche();
+  return ((cola && cola.videos) || []).find(v => v.pid === pid) || null;
+}
+
+function botonColaNoche(video) {
+  const puesto = enColaNoche(video.id);
+  const esperando = puesto && (puesto.estado === 'en_cola' || puesto.estado === 'montando');
+  return h('button', {
+    clase: `mini fantasma renombrar${esperando ? ' activo' : ''}`,
+    title: esperando ? 'Está en la cola de la noche (pulsa para quitarlo)'
+      : 'Dejarlo en la cola de la noche: se monta el MP4 sin que estés delante',
+    'aria-label': esperando ? `Quitar ${video.nombre || video.id} de la cola de la noche`
+      : `Poner ${video.nombre || video.id} en la cola de la noche`,
+    disabled: puesto && puesto.estado === 'montando',
+    onclick: () => (esperando ? quitarDeColaNoche(video.id) : ponerEnColaNoche(video.id)),
+  }, '🌙');
+}
+
+async function accionColaNoche(promesa, hecho) {
+  try {
+    const cola = await promesa;
+    if (APP.light.datos) APP.light.datos.cola = cola;
+    if (hecho) toast(hecho);
+  } catch (e) { toast(e.message, true); }
+  pintarLight();
+}
+
+function ponerEnColaNoche(pid) {
+  return accionColaNoche(pedir(API.colaRender(), { method: 'POST', cuerpo: { pid } }),
+    'en la cola de la noche');
+}
+
+function quitarDeColaNoche(pid) {
+  return accionColaNoche(pedir(API.colaRender(pid), { method: 'DELETE' }),
+    'fuera de la cola');
+}
+
+function botonColaNocheVideo() {
+  const pid = (APP.light.video || {}).pid;
+  const puesto = pid ? enColaNoche(pid) : null;
+  const esperando = puesto && puesto.estado === 'en_cola';
+  return conAyuda(esperando
+    ? 'Está en la cola de la noche. Para arrancarla, vuelve al inicio: la cola está '
+      + 'encima de «Tus vídeos». Pulsa aquí para sacarlo.'
+    : 'En vez de montarlo ahora, déjalo en la cola de la noche: se monta luego, uno '
+      + 'detrás de otro con los demás que pongas, sin que estés delante. La cola se '
+      + 'arranca desde el inicio, encima de «Tus vídeos».',
+  h('button', {
+    clase: 'mini',
+    onclick: () => (esperando ? quitarDeColaNoche(pid) : ponerEnColaNoche(pid)),
+  }, esperando ? '🌙 En la cola' : '🌙 Para la noche'));
+}
+
+function panelColaNoche() {
+  const cola = colaNoche();
+  const videos = (cola && cola.videos) || [];
+  if (!videos.length) return null;
+  const esperan = videos.filter(v => v.estado === 'en_cola').length;
+  const terminados = videos.filter(v => v.estado === 'listo' || v.estado === 'error').length;
+  const caja = h('div', { clase: 'cola-noche' },
+    h('div', { clase: 'fila' },
+      h('b', {}, '🌙 La cola de la noche'),
+      h('span', { clase: 'meta crece' }, cola.corriendo
+        ? (cola.parar_al_acabar ? ' — se para al terminar el que está montando'
+          : ` — montando; ${esperan} más en espera`)
+        : (esperan ? ` — ${esperan} en espera` : ' — sin nada en espera')),
+      cola.corriendo
+        ? (cola.parar_al_acabar ? null : h('button', {
+          clase: 'mini', title: 'El que se está montando termina; el siguiente ya no empieza',
+          onclick: () => accionColaNoche(
+            pedir(`${API.colaRender()}/parar`, { method: 'POST' }), 'se parará al terminar este'),
+        }, 'Parar después de este'))
+        : (esperan ? h('button', {
+          clase: 'primario mini',
+          title: 'Monta los vídeos en espera, uno detrás de otro, y avisa al acabar',
+          onclick: () => accionColaNoche(
+            pedir(`${API.colaRender()}/empezar`, { method: 'POST' }),
+            'cola en marcha: ya puedes dejar el portátil (enchufado y con la tapa abierta)'),
+        }, 'Empezar') : null),
+      terminados && !cola.corriendo ? h('button', {
+        clase: 'mini fantasma',
+        onclick: () => accionColaNoche(pedir(`${API.colaRender()}/limpiar`, { method: 'POST' })),
+      }, 'Quitar los terminados') : null));
+  videos.forEach(v => {
+    const [clase, texto] = ESTADOS_COLA[v.estado] || ['', v.estado];
+    caja.appendChild(h('div', { clase: 'fila' },
+      h('span', { clase: `pastilla ${clase}`.trim() }, texto),
+      h('span', { clase: 'crece' }, v.nombre || v.pid,
+        v.detalle ? h('span', { clase: 'meta' }, ` · ${v.detalle}`) : null),
+      v.estado === 'montando' ? null : h('button', {
+        clase: 'mini fantasma', title: 'Quitarlo de la lista',
+        onclick: () => quitarDeColaNoche(v.pid),
+      }, 'Quitar')));
+  });
+  caja.appendChild(h('div', { clase: 'meta' }, CONSEJO_RENDER
+    + ' Solo se monta lo que no cuesta: si a un vídeo le faltan imágenes o voz, se salta.'));
+  return caja;
+}
+
 function videosLight() {
   return ((APP.light.datos || {}).videos || []).slice();
 }
@@ -6989,6 +7108,8 @@ async function lanzarTandaLight(tanda, modo) {
       cuerpo: { tanda, modo: modo || 'pendientes' },
     });
     v.plan = datos.plan || null;
+    // POCA MEMORIA (Fase 4): el render sigue, pero se avisa bien a la vista
+    ((datos.plan || {}).avisos || []).forEach(a => toast(a, true));
     const tid = datos.trabajo_id || (datos.trabajo || {}).id;
     if (!tid) throw new Error('el servidor no ha devuelto ningún trabajo');
     // DE QUE TRABAJO ES ESE PREVISTO. La misma ranura la ocupan tambien las
@@ -7173,6 +7294,8 @@ function textoDelPlan(tanda) {
       ? `≈ ${Number(coste.usd_por_generar).toFixed(2)} $ · hasta ${Number(coste.usd_total).toFixed(2)} $ si hay que rehacerlas`
       : `≈ ${Number(coste.usd_total).toFixed(2)} $`);
   }
+  // poca memoria antes del render (Fase 4): se dice, no se impide
+  (plan.avisos || []).forEach(a => partes.push(`⚠ ${a}`));
   return partes.join(' · ');
 }
 
@@ -8784,7 +8907,9 @@ function vistaVideoLight() {
           + 'montarlo daria el mismo fichero.'
         : unirAyuda('Encadena los planos que ya has visto, con sus transiciones, '
           + 'la voz y la musica, y saca el MP4. No genera ninguna imagen: no '
-          + 'cuesta dinero, cuesta tiempo de maquina.', textoDelPlan('render'))),
+          + 'cuesta dinero, cuesta tiempo de maquina. Los planos que no han '
+          + 'cambiado no se vuelven a dibujar. ' + CONSEJO_RENDER,
+          textoDelPlan('render'))),
       h('button', {
         clase: notasSinAplicar ? 'mini' : 'primario',
         disabled: !!trabajoVideoLight() || notasSinAplicar
@@ -8792,6 +8917,10 @@ function vistaVideoLight() {
         onclick: () => lanzarTandaLight('render',
           (hayMp4Light() && !videoObsoletoLight()) ? 'todo' : 'pendientes'),
       }, hayMp4Light() ? 'Regenerar Vídeo' : 'Generar Vídeo')),
+    /* O DEJARLO PARA LA NOCHE (fork, Fase 4): a la cola, que monta uno detrás
+       de otro sin nadie delante. La cola se ve y se arranca en el inicio. */
+    notasSinAplicar || trabajoVideoLight() || quedaTandaLight('render') === false
+      ? null : botonColaNocheVideo(),
     quedaTandaLight('render') === false ? null : pastillaObsoletoLight(),
     h('span', { clase: 'crece' }),
     barraTandaLight('render'),
@@ -11855,6 +11984,13 @@ function tarjetaFreeSoundInicio() {
   ];
 }
 
+/* Lo que hay que preparar antes de montar un vídeo largo. Sale en la guía y
+   en la ayuda del botón del MP4: el render de 25 minutos dura horas. */
+const CONSEJO_RENDER = 'Antes de montar un vídeo largo (el MP4 tarda bastante): portátil '
+  + 'enchufado y con la tapa abierta, modo rendimiento (Armoury Crate o Fn+F5) y cerrados '
+  + 'los juegos y sus lanzadores (Steam, Battle.net), Chrome y las aplicaciones pesadas. '
+  + 'Mientras monta, el Estudio no deja que el portátil se suspenda y avisa al terminar.';
+
 function tarjetaFinalInicio() {
   const ficha = estadoConfig().ficha || {};
   const cli = estadoConfig().cli;
@@ -11867,23 +12003,28 @@ function tarjetaFinalInicio() {
     h('span', {}, nombre));
   // la voz vale con CUALQUIERA de los dos: Google Cloud o Cartesia
   const google = ficha.google || {};
-  const voz = !!(google.adc || google.cuenta_servicio) || !!(ficha.cartesia && ficha.cartesia.puesta);
-  const faltan = [!claude, !(ficha.openai && ficha.openai.length), !voz]
-    .filter(Boolean).length;
+  const conGoogle = !!(google.adc || google.cuenta_servicio);
+  const voz = conGoogle || !!(ficha.cartesia && ficha.cartesia.puesta);
+  // y las imagenes tambien (fork): Gemini en Vertex con la misma sesion de
+  // Google, u OpenAI con su clave
+  const imagenes = conGoogle || !!(ficha.openai && ficha.openai.length);
+  const faltan = [!claude, !imagenes, !voz].filter(Boolean).length;
   return [
     fila('Claude — guion, catálogo, rótulos y el asistente', claude),
-    fila('OpenAI — imágenes', !!(ficha.openai && ficha.openai.length)),
+    fila('Imágenes — Gemini en Google Cloud u OpenAI', imagenes),
     fila('Voz — Google Cloud o Cartesia', voz),
     fila('Jamendo — música', !!(ficha.jamendo && ficha.jamendo.puesta), true),
     fila('FreeSound — efectos', !!(ficha.freesound && ficha.freesound.puesta), true),
     faltan
       ? h('div', { clase: 'caja-aviso' },
         `Falta${faltan > 1 ? 'n' : ''} ${faltan} de las tres que hacen falta para un vídeo `
-        + '(Claude, OpenAI y la voz). Sin ellas no sale el vídeo entero: se '
+        + '(Claude, las imágenes y la voz). Sin ellas no sale el vídeo entero: se '
         + 'ponen desde Configuración, el engranaje de arriba a la derecha.')
       : h('div', { clase: 'caja-info' },
         'Está todo. Lo siguiente es crear un estilo (cómo se dibuja y cómo se '
         + 'cuenta) y, con él, el primer vídeo.'),
+    // EL RENDER ES LARGO (Fase 4): lo que hay que preparar en el portátil
+    h('div', { clase: 'caja-info' }, CONSEJO_RENDER),
     bloquePruebaClaves(),
     h('div', { clase: 'meta' },
       'Y si algo no cuadra en cualquier momento, la burbuja de abajo a la derecha '

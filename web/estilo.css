@@ -1635,6 +1635,17 @@ input[type=range].ritmo {
   border-radius: 10px;
 }
 .sueltos > .fila { margin-top: 8px; gap: 8px; align-items: baseline; }
+
+/* LA COLA DE LA NOCHE, encima de «Tus vídeos» (fork, Fase 4). La misma caja que
+   los intentos a medias, con el borde del acento: no avisa de nada malo. */
+.cola-noche {
+  margin: 4px 0 16px; padding: 11px 13px;
+  background: var(--hueco); border: 1px solid var(--acento);
+  border-radius: 10px; display: flex; flex-direction: column; gap: 7px;
+}
+.cola-noche > .fila { gap: 8px; align-items: baseline; }
+.cola-noche .crece { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.video-light .renombrar.activo { border-color: var(--acento); background: var(--hueco); }
 .sueltos .crece { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* ---- las muestras en fila, dentro del bloque de estilo gráfico
