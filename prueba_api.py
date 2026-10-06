@@ -937,6 +937,26 @@ def probar_cartelas_y_transiciones(cliente, pid, raiz_proyecto=None):
                                 {"papeles": ["no_existe"]})
     igual(respuesta.status_code, 400, "un papel de efecto inventado da 400")
 
+    # --- TU CARPETA DE AUDIO Y LAS CANCIONES FIJADAS (fork, Fase 3)
+    respuesta, datos = cliente.get("/api/audio-propio")
+    igual(respuesta.status_code, 200, "tu carpeta de audio responde 200")
+    igual(sorted((datos.get("familias") or {})), ["efectos", "musica"],
+          "con su musica y sus efectos")
+    ok(any(o.get("id") == "youtube_audio_library" for o in datos.get("origenes") or []),
+       "y de donde puede salir cada fichero")
+    respuesta, _ = cliente.put("/api/audio-propio/musica/no-esta.mp3", {"fuente": "otra"})
+    igual(respuesta.status_code, 400, "la ficha de un fichero que no esta da 400")
+    respuesta, _ = cliente.put("/api/audio-propio/videos/x.mp3", {})
+    igual(respuesta.status_code, 400, "una familia que no existe da 400")
+    respuesta, _ = cliente.get("/api/audio-propio/musica/no-esta.mp3/partes")
+    igual(respuesta.status_code, 404, "los trozos de un fichero que no esta dan 404")
+    respuesta, datos = cliente.get(f"/api/proyectos/{pid}/sonido")
+    ok("fijadas" in datos and "propias" in datos,
+       "el sonido trae las canciones fijadas y las de tu carpeta")
+    respuesta, _ = cliente.post(f"/api/proyectos/{pid}/sonido/banda",
+                                {"fijadas": {"uno": "x.mp3"}})
+    igual(respuesta.status_code, 400, "fijar una cancion a un tramo que no es un numero da 400")
+
     # --- EL VETO DE UN EFECTO (PENDIENTE 19). Se veta lo que se acaba de oir,
     # donde se oye: la pantalla trae cada efecto con su muestra y su ✕, y el
     # veto es del CANAL, no de este video.

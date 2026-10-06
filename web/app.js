@@ -387,6 +387,8 @@ const API = {
   ajustesCLI: () => `${BASE}/api/ajustes-cli`,
   claves: () => `${BASE}/api/claves`,
   ajustes: () => `${BASE}/api/ajustes`,
+  audioPropio: (familia, archivo) => `${BASE}/api/audio-propio`
+    + (familia ? `/${encodeURIComponent(familia)}/${encodeURIComponent(archivo)}` : ''),
   cuentasCLI: refrescar => `${BASE}/api/claves/cli${refrescar ? '?refrescar=1' : ''}`,
   entrarCLI: cid => `${BASE}/api/claves/cli/${encodeURIComponent(cid)}/entrar`,
   codigoCLI: cid => `${BASE}/api/claves/cli/${encodeURIComponent(cid)}/codigo`,
@@ -2263,8 +2265,27 @@ function repintarClaves() {
   if (INICIO.abierta) pintarInicio();
 }
 
+/* EL CAJÓN SE REPINTA ENTERO, Y LA POSICIÓN NO SE PIERDE. Vaciar el cuerpo lo
+   devolvía arriba del todo: rellenando una ficha de audio, cada opción elegida
+   te mandaba al principio de Configuración y había que volver a bajar. */
 function pintarConfig() {
-  const caja = vaciar($('#cuerpo-config'));
+  const cuerpo = $('#cuerpo-config');
+  const arriba = cuerpo ? cuerpo.scrollTop : 0;
+  try {
+    pintarConfigDentro(vaciar(cuerpo));
+  } finally {
+    if (cuerpo) cuerpo.scrollTop = arriba;
+  }
+  // la ficha recién abierta, a la vista (solo al abrirla, no en cada repintado)
+  const vista = estadoConfig();
+  if (vista.audioRecienAbierto) {
+    const abierta = cuerpo && cuerpo.querySelector('.audio-propio.abierta');
+    vista.audioRecienAbierto = false;
+    if (abierta) abierta.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }
+}
+
+function pintarConfigDentro(caja) {
   const vista = estadoConfig();
   if (vista.error) {
     caja.appendChild(h('div', { clase: 'vacio' },
@@ -2284,6 +2305,7 @@ function pintarConfig() {
   caja.appendChild(seccionCartesia(ficha));
   caja.appendChild(seccionCLI());
   caja.appendChild(seccionOtrasClaves(ficha));
+  caja.appendChild(seccionAudioPropio());
   caja.appendChild(h('div', { clase: 'fila' },
     h('button', {
       clase: 'mini fantasma',
@@ -2302,6 +2324,20 @@ async function cargarAjustes() {
     vista.ajustes = await pedir(API.ajustes());
   } catch (e) {
     vista.ajustes = null;
+  }
+  repintarClaves();
+  cargarAudioPropio();
+}
+
+/* TU CARPETA DE AUDIO (fork, Fase 3): lo que has soltado a mano en
+   banco/audio/propio, con su ficha o sin ella. Aparte de los ajustes porque
+   calcula la huella de cada fichero, y el cajón tiene que abrirse ya. */
+async function cargarAudioPropio() {
+  const vista = estadoConfig();
+  try {
+    vista.audio = await pedir(API.audioPropio());
+  } catch (e) {
+    vista.audio = { error: e.message };
   }
   repintarClaves();
 }
@@ -2991,6 +3027,344 @@ function seccionOtrasClaves(ficha) {
         onclick: () => guardarClaves({ [id]: { clave: '' } }),
       }, 'Quitar') : null)));
   });
+  return caja;
+}
+
+/* TU MÚSICA Y TUS EFECTOS (fork, Fase 3).
+ *
+ * Tres decisiones y una carpeta. Las decisiones son ajustes del estudio (como
+ * la calidad de imagen): solo licencias que dejan monetizar, en qué orden se
+ * buscan las fuentes, y si tienes suscripción de Uppbeat. La carpeta es
+ * `banco/audio/propio/{musica,efectos}`: sueltas ahí lo que bajas a mano (la
+ * Biblioteca de audio de YouTube, Uppbeat, Pixabay, Mixkit) y aquí le pones la
+ * ficha. Un fichero sin ficha NO se usa: no se sabe qué licencia tiene, y
+ * adivinarla es como acaba llegando un reclamo. */
+const ORDEN_AUDIO = [
+  { valor: 'propia_primero', nombre: 'Primero tu carpeta; si no hay nada, Freesound y Jamendo' },
+  { valor: 'solo_propia', nombre: 'Solo tu carpeta (nada de fuera)' },
+  { valor: 'en_linea_primero', nombre: 'Primero Freesound y Jamendo; tu carpeta de reserva' },
+];
+
+/* La licencia que se propone al elegir de dónde sale. Es una propuesta: se
+   puede cambiar, y en la Biblioteca de YouTube algunas pistas piden crédito. */
+const LICENCIA_POR_ORIGEN = {
+  youtube_audio_library: 'YouTube Audio Library',
+  uppbeat: 'Uppbeat',
+  pixabay: 'Pixabay Content License',
+  mixkit: 'Mixkit License',
+};
+
+function seccionAudioPropio() {
+  const vista = estadoConfig();
+  const datos = vista.ajustes;
+  const audio = vista.audio;
+  const caja = h('section', { clase: 'bloque-config' },
+    h('h3', {}, 'Tu música y tus efectos'),
+    h('div', { clase: 'pista' },
+      'Qué audio se usa en los vídeos y con qué licencia. Lo de tu carpeta va primero; '
+      + 'Jamendo y Freesound (claves de arriba) solo si los dejas.'));
+  if (datos) {
+    const a = datos.ajustes;
+    caja.appendChild(h('label', { clase: 'plano' },
+      h('input', {
+        type: 'checkbox', checked: !!a.audio_licencias_seguras,
+        // los ajustes se guardan con la misma llamada que los de imagen
+        onchange: ev => guardarAjusteImagen({ audio_licencias_seguras: ev.target.checked }),
+      }),
+      h('b', {}, 'Solo licencias que dejan monetizar (CC0 y CC BY) en Jamendo y Freesound')));
+    caja.appendChild(h('div', { clase: a.audio_licencias_seguras ? 'pista' : 'caja-aviso' },
+      a.audio_licencias_seguras
+        ? 'Fuera lo no comercial (NC), lo que no admite obras derivadas (ND) y el «compartir '
+          + 'igual» (SA). Lo CC BY sale en el creditos.txt que se deja junto a cada MP4.'
+        : 'APAGADO: pueden entrar pistas no comerciales. Bajo tu responsabilidad: un vídeo '
+          + 'monetizado con ellas puede recibir reclamaciones.'));
+    caja.appendChild(campoSelect('De dónde sale el audio', a.audio_prioridad || 'propia_primero',
+      ORDEN_AUDIO, valor => guardarAjusteImagen({ audio_prioridad: valor })));
+
+    // Uppbeat: preparado para el día que haya suscripción
+    caja.appendChild(h('label', { clase: 'plano' },
+      h('input', {
+        type: 'checkbox', checked: !!a.uppbeat_suscripcion,
+        onchange: ev => guardarAjusteImagen({ uppbeat_suscripcion: ev.target.checked }),
+      }),
+      h('b', {}, 'Tengo suscripción de Uppbeat')));
+    if (a.uppbeat_suscripcion) {
+      caja.appendChild(campoTexto('Tu canal de YouTube en la lista blanca de Uppbeat',
+        a.uppbeat_canal || '', v => { a.uppbeat_canal = v; },
+        { pista: 'https://www.youtube.com/@tucanal' }));
+      caja.appendChild(h('div', { clase: 'fila' },
+        h('button', {
+          clase: 'mini', onclick: () => guardarAjusteImagen({ uppbeat_canal: a.uppbeat_canal || '' }),
+        }, 'Guardar el canal')));
+      caja.appendChild(h('div', { clase: 'pista' },
+        'Con suscripción, sus pistas no piden crédito en la descripción. Ojo: lo publicado '
+        + 'DURANTE la suscripción sigue protegido si la cancelas; lo nuevo, no.'));
+    } else {
+      caja.appendChild(h('div', { clase: 'pista' },
+        'Sin suscripción (plan gratis), cada pista de Uppbeat pide su código de crédito en la '
+        + 'descripción: ponlo en su ficha y saldrá en el creditos.txt.'));
+    }
+  }
+
+  if (!audio) {
+    caja.appendChild(h('div', { clase: 'cargando' }, 'mirando tu carpeta de audio…'));
+    return caja;
+  }
+  if (audio.error) {
+    caja.appendChild(h('div', { clase: 'vacio' }, `no se ha podido leer tu carpeta: ${audio.error}`));
+    return caja;
+  }
+  [['musica', 'Tu música'], ['efectos', 'Tus efectos']].forEach(([familia, titulo]) => {
+    const datosFam = (audio.familias || {})[familia] || {};
+    const ficheros = datosFam.ficheros || [];
+    const listos = ficheros.filter(f => f.completa).length;
+    caja.appendChild(h('div', { clase: 'fila' },
+      h('b', {}, titulo),
+      h('span', { clase: 'crece' }),
+      pastillaEstado(listos ? 'ok' : 'vacio',
+        ficheros.length ? `${listos} de ${ficheros.length} con ficha` : 'vacía')));
+    caja.appendChild(h('div', { clase: 'pista' },
+      `Suelta aquí los ficheros (${(audio.extensiones || []).join(' ')}): `,
+      h('code', {}, datosFam.carpeta || '')));
+    ficheros.forEach(f => caja.appendChild(filaAudioPropio(familia, f, audio)));
+  });
+  caja.appendChild(h('div', { clase: 'fila' },
+    h('button', { clase: 'mini fantasma', onclick: () => cargarAudioPropio() },
+      'Volver a mirar la carpeta')));
+  return caja;
+}
+
+function filaAudioPropio(familia, entrada, audio) {
+  const vista = estadoConfig();
+  const clave = `${familia}/${entrada.archivo}`;
+  const abierta = vista.audioAbierto === clave;
+  const ficha = entrada.ficha || {};
+  const titulo = ficha.titulo || propuestaDeNombre(entrada.archivo).titulo || entrada.archivo;
+  const caja = h('div', { clase: 'audio-propio' + (abierta ? ' abierta' : '')
+    + (entrada.completa ? ' lista' : '') });
+  const abrirOCerrar = () => {
+    vista.audioAbierto = abierta ? null : clave;
+    vista.audioRecienAbierto = !abierta;
+    vista.borradorAudio = abierta ? null : { familia, archivo: entrada.archivo,
+      datos: { ...propuestaDeNombre(entrada.archivo), ...ficha,
+        fragmentos: [...(ficha.fragmentos || [])] } };
+    repintarClaves();
+    // los trozos que usaría solo, para enseñarlos mientras no marques ninguno
+    if (!abierta && familia === 'musica') {
+      pedir(`${API.audioPropio('musica', entrada.archivo)}/partes`).then(d => {
+        const borrador = vista.borradorAudio;
+        if (!borrador || borrador.archivo !== entrada.archivo) return;
+        borrador.automaticas = d.automaticas || [];
+        borrador.minimo = d.minimo_s || 8;
+        if (borrador.pintarTrozos) borrador.pintarTrozos();
+      }).catch(() => { /* sin la vista previa se puede marcar igual */ });
+    }
+  };
+  // la cabecera de la tarjeta: qué canción es, cómo está y el botón
+  caja.appendChild(h('div', { clase: 'audio-propio-cab' },
+    h('div', { clase: 'audio-propio-nombre' },
+      h('b', {}, titulo),
+      h('div', { clase: 'meta' }, entrada.archivo)),
+    pastillaEstado(entrada.completa ? 'ok' : 'parcial',
+      entrada.completa ? 'lista' : 'sin ficha'),
+    h('button', {
+      clase: abierta ? 'mini fantasma' : (entrada.completa ? 'mini fantasma' : 'mini'),
+      onclick: abrirOCerrar,
+    }, abierta ? 'Cerrar' : (entrada.completa ? 'Editar ficha' : 'Poner ficha'))));
+  if (!abierta || !vista.borradorAudio) return caja;
+
+  /* LA FICHA ABIERTA. Nada de aquí dentro repinta el cajón: elegir una opción
+     solo enseña o esconde los campos que dependen de ella. Repintar rehacía el
+     reproductor (la canción volvía al segundo cero) y movía la pantalla. */
+  const b = vista.borradorAudio.datos;
+  const form = h('div', { clase: 'form-audio' });
+  const paso = (numero, texto) => h('div', { clase: 'paso-ficha' },
+    h('span', { clase: 'numero' }, String(numero)), h('span', {}, texto));
+  form.appendChild(h('div', { clase: 'form-audio-cab' },
+    h('b', {}, `Ficha de «${titulo}»`),
+    h('div', { clase: 'pista' }, 'Rellena de arriba abajo y pulsa «Guardar ficha» al final.')));
+
+  const reproductor = registrarReproductor(h('audio', {
+    controls: true, preload: 'metadata', src: API.audioPropio(familia, entrada.archivo),
+  }));
+  let n = 1;
+  form.appendChild(paso(n++, familia === 'musica'
+    ? 'Escúchala y, si quieres, marca sus trozos buenos' : 'Escúchalo'));
+  form.appendChild(reproductor);
+  if (familia === 'musica') form.appendChild(trozosDeCancion(b, reproductor, vista.borradorAudio));
+
+  form.appendChild(paso(n++, 'De dónde sale y su licencia'));
+  const campoLicencia = campoTexto('Licencia', b.licencia || '', v => { b.licencia = v; },
+    { ayuda: 'Tal y como la da la web: «YouTube Audio Library», «CC BY 4.0»…' });
+  form.appendChild(campoSelect('De dónde sale', b.fuente || '',
+    [{ valor: '', nombre: '— elige —' },
+      ...(audio.origenes || []).map(o => ({ valor: o.id, nombre: o.nombre }))],
+    valor => {
+      b.fuente = valor;
+      // la licencia que da esa web, si aún no has escrito otra
+      const entradaLicencia = campoLicencia.querySelector('input');
+      if (!b.licencia && LICENCIA_POR_ORIGEN[valor]) {
+        b.licencia = LICENCIA_POR_ORIGEN[valor];
+        if (entradaLicencia) entradaLicencia.value = b.licencia;
+      }
+      mostrarSegunOrigen();
+    }));
+  form.appendChild(campoLicencia);
+
+  form.appendChild(paso(n++, 'Título y autor (ya vienen del nombre del archivo: revísalos)'));
+  form.appendChild(campoTexto('Título', b.titulo || '', v => { b.titulo = v; }));
+  form.appendChild(campoTexto('Autor o artista', b.artista || '', v => { b.artista = v; }));
+
+  if (familia === 'musica') {
+    form.appendChild(paso(n++, 'Ánimo: en qué parte del vídeo encaja'));
+    form.appendChild(campoSelect('Ánimo', b.animo || '',
+      [{ valor: '', nombre: '— elige —' }, ...(audio.animos || []).map(a => ({
+        valor: a, nombre: ANIMOS_EXPLICADOS[a] ? `${a} — ${ANIMOS_EXPLICADOS[a]}` : a }))],
+      v => { b.animo = v; }));
+    form.appendChild(campoTexto('BPM (opcional, puedes dejarlo vacío)',
+      b.bpm === undefined || b.bpm === null ? '' : b.bpm,
+      v => { b.bpm = v; }, { tipo: 'number', min: 0, max: 300, ancho: '90px' }));
+  } else {
+    form.appendChild(paso(n++, 'Papel: en qué momento suena'));
+    form.appendChild(campoSelect('Papel', b.papel || '',
+      [{ valor: '', nombre: '— elige —' },
+        ...(audio.papeles || []).map(p => ({ valor: p.id, nombre: `${p.nombre} — ${p.descripcion}` }))],
+      v => { b.papel = v; }));
+  }
+
+  form.appendChild(paso(n++, 'Crédito en la descripción'));
+  const codigoUppbeat = campoTexto('Código de crédito de Uppbeat (plan gratis)',
+    b.codigo_credito || '', v => { b.codigo_credito = v; },
+    { ayuda: 'El que te da Uppbeat al bajar la pista.' });
+  const casillaCredito = h('label', { clase: 'plano' },
+    h('input', {
+      type: 'checkbox', checked: !!b.atribucion_requerida,
+      onchange: ev => { b.atribucion_requerida = ev.target.checked; mostrarSegunOrigen(); },
+    }),
+    h('b', {}, 'Pide atribución (en YouTube decía «Se requiere atribución»)'));
+  const textoCredito = campoTexto('Texto del crédito', b.texto_credito || '',
+    v => { b.texto_credito = v; },
+    { filas: 3, ayuda: 'El que da la propia web; se copia tal cual al creditos.txt.' });
+  form.appendChild(codigoUppbeat);
+  form.appendChild(casillaCredito);
+  form.appendChild(textoCredito);
+  const mostrarSegunOrigen = () => {
+    const uppbeat = b.fuente === 'uppbeat';
+    codigoUppbeat.hidden = !uppbeat;
+    casillaCredito.hidden = uppbeat;
+    textoCredito.hidden = uppbeat || !b.atribucion_requerida;
+  };
+  mostrarSegunOrigen();
+
+  form.appendChild(h('div', { clase: 'fila form-audio-pie' },
+    h('button', {
+      clase: 'primario',
+      onclick: async () => {
+        try {
+          await pedir(API.audioPropio(familia, entrada.archivo), { method: 'PUT', cuerpo: b });
+          vista.audioAbierto = null;
+          vista.borradorAudio = null;
+          toast(`ficha guardada: «${b.titulo || titulo}»`);
+          cargarAudioPropio();
+        } catch (e) {
+          toast(e.message, true);
+        }
+      },
+    }, 'Guardar ficha'),
+    h('button', { clase: 'mini fantasma', onclick: abrirOCerrar }, 'Cancelar')));
+  caja.appendChild(form);
+  return caja;
+}
+
+/* Lo que quiere decir cada ánimo, para elegirlo sin adivinar. Los cinco
+   primeros son los que el estudio pide solo (`sonido.arco_del_video`). */
+const ANIMOS_EXPLICADOS = {
+  sobrio: 'tranquilo, de fondo (el cuerpo del vídeo)',
+  tension: 'con pulso, algo de urgencia (arranque o tramos rápidos)',
+  misterioso: 'intriga, ambiente (arranque pausado)',
+  melancolico: 'reflexivo, suave (cierre pausado)',
+  epico: 'crece y remata (cierre rápido)',
+  esperanzador: 'optimista (solo si la eliges a mano)',
+  corporativo: 'limpio, de empresa (solo si la eliges a mano)',
+  oscuro: 'grave, sombrío (solo si la eliges a mano)',
+};
+
+/* EL TÍTULO Y EL AUTOR, PROPUESTOS DESDE EL NOMBRE DEL FICHERO. La Biblioteca
+   de audio de YouTube los baja como «Título - Autor.mp3», con la «/» de los
+   autores dobles cambiada por «_» («The Grey Room _ Density & Time»). Es una
+   propuesta: si la ficha ya tiene los suyos, mandan los de la ficha. */
+function propuestaDeNombre(archivo) {
+  const base = String(archivo || '').replace(/\.[^.]+$/, '').trim();
+  const corte = base.indexOf(' - ');
+  const limpio = s => s.replace(/\s_\s/g, ' / ').replace(/_$/, '').replace(/\s+/g, ' ').trim();
+  if (corte < 0) return { titulo: limpio(base) };
+  return { titulo: limpio(base.slice(0, corte)), artista: limpio(base.slice(corte + 3)) };
+}
+
+/* LOS TROZOS BUENOS DE UNA CANCIÓN. Se escucha y se marca «empieza aquí» y
+   «termina aquí»; el estudio solo usará esos trozos, empalmados con fundidos.
+   Se repinta SOLO la lista y no el formulario entero: repintar el formulario
+   rehace el reproductor, y marcar un trozo te devolvería al segundo cero. */
+function trozosDeCancion(b, audio, borrador) {
+  if (!Array.isArray(b.fragmentos)) b.fragmentos = [];
+  let inicio = null;
+  const lista = h('div', {});
+  const estado = h('span', { clase: 'meta' });
+  const pintar = () => {
+    vaciar(lista);
+    b.fragmentos.sort((x, y) => x.desde - y.desde);
+    if (!b.fragmentos.length) {
+      const auto = (borrador.automaticas || [])
+        .map(p => `${mmss(p.desde)}–${mmss(p.hasta)}`).join(', ');
+      lista.appendChild(h('div', { clase: 'pista' },
+        'Sin trozos marcados: usará los automáticos'
+        + (auto ? ` (${auto})` : '')
+        + ' — sin silencios, sin el final que cae ni los picos que tapan la voz.'));
+    }
+    b.fragmentos.forEach((f, i) => lista.appendChild(h('div', { clase: 'fila' },
+      h('span', {}, `${mmss(f.desde)} – ${mmss(f.hasta)}`),
+      h('span', { clase: 'meta' }, ` · ${Math.round(f.hasta - f.desde)} s`),
+      h('span', { clase: 'crece' }),
+      h('button', {
+        clase: 'mini fantasma', title: 'Escuchar este trozo',
+        onclick: () => { audio.currentTime = f.desde; audio.play(); },
+      }, '▶'),
+      h('button', {
+        clase: 'mini fantasma peligro', title: 'Quitar este trozo',
+        onclick: () => { b.fragmentos.splice(i, 1); pintar(); },
+      }, '✕'))));
+    estado.textContent = inicio === null ? ''
+      : `empieza en ${mmss(inicio)}: ahora pulsa «Termina aquí»`;
+  };
+  borrador.pintarTrozos = pintar;
+  const caja = h('div', { clase: 'trozos' },
+    h('b', {}, 'Trozos buenos'),
+    h('div', { clase: 'pista' },
+      'Escucha y marca los momentos que te gustan (cada trozo, 8 s como mínimo). '
+      + 'Solo se usarán esos, empalmados con fundidos suaves.'),
+    h('div', { clase: 'fila' },
+      h('button', {
+        clase: 'mini', onclick: () => { inicio = audio.currentTime; pintar(); },
+      }, 'Empieza aquí'),
+      h('button', {
+        clase: 'mini',
+        onclick: () => {
+          if (inicio === null) { toast('primero «Empieza aquí»', true); return; }
+          const fin = audio.currentTime;
+          const minimo = borrador.minimo || 8;
+          if (fin - inicio < minimo) {
+            toast(`ese trozo dura ${Math.round(fin - inicio)} s: tiene que durar al menos ${minimo}`, true);
+            return;
+          }
+          b.fragmentos.push({ desde: Math.round(inicio * 10) / 10,
+            hasta: Math.round(fin * 10) / 10 });
+          inicio = null;
+          pintar();
+        },
+      }, 'Termina aquí'),
+      estado),
+    lista);
+  pintar();
   return caja;
 }
 
@@ -5764,6 +6138,8 @@ async function cargarVideoLight(pid) {
     // el coste es de ESTE vídeo: arrastrar el del anterior seria enseñar la
     // cifra de otro proyecto mientras llega la buena
     v.coste = null;
+    // y la música (las canciones de cada tramo), por lo mismo
+    v.musica = null;
     // y las escenas del previsualizador, por lo mismo: son las de otro vídeo
     pararPrevia();
     PREVIA.ficha = null;
@@ -8397,13 +8773,172 @@ function vistaVideoLight() {
       'Baja el MP4 tal y como esta ahora mismo.',
       h('a', {
         clase: 'boton mini', href: urlMp4Light(), download: '',
-      }, 'Descargar')) : null);
+      }, 'Descargar')) : null,
+    // los creditos de la musica y los efectos, para pegar en la descripcion
+    (hayMp4Light() && ((videoAbierto().fichas.render || {}).salidas || {}).creditos)
+      ? conAyuda(
+        'Los créditos de la música y los efectos que suenan, listos para pegar en la '
+        + 'descripción del vídeo. Debajo, para tu registro, todo lo que suena con su licencia.',
+        h('a', {
+          clase: 'boton mini fantasma', href: urlDeVideoLight('render', 'creditos.txt'),
+          download: 'creditos.txt',
+        }, 'Créditos')) : null);
   BARRA_INFERIOR.nodo = pie;
 
   /* EL REPASO VA DEBAJO DEL VÍDEO Y SOLO CUANDO HAY VÍDEO. Antes de eso no hay
      nada que comentar, y una caja de texto vacía debajo de una barra de
      progreso invita a escribir sobre algo que todavía no existe. */
   if (hayMp4Light() && !trabajoVideoLight()) caja.appendChild(panelRepaso());
+  /* LA MÚSICA, con los planos ya cortados: el arco de tramos sale del ritmo
+     del montaje, así que antes de eso no hay tramos que enseñar. */
+  if (versionDe(videoAbierto().fichas.assets || {}) && !trabajoVideoLight()) {
+    caja.appendChild(panelMusicaLight());
+  }
+  return caja;
+}
+
+/* ==========================================================================
+   LA MÚSICA DE ESTE VÍDEO (fork, Fase 3)
+
+   Por defecto la elige el estudio solo: un tramo cada ~2,5 minutos, cada uno
+   con el ánimo que pide el ritmo del montaje, y lo llena con los TROZOS BUENOS
+   de las mejores canciones de tu carpeta para ese ánimo (los marcados en su
+   ficha o, si no hay, los automáticos). Aquí se puede fijar a mano la canción
+   de un tramo; las demás las sigue eligiendo él. Elegir es gratis —no llama a
+   nadie— y deja el MP4 obsoleto: «Regenerar Vídeo» la monta. */
+function estadoMusicaLight() {
+  const v = videoAbierto();
+  if (!v.musica) {
+    v.musica = { cargado: false, cargando: false, sonido: null, arco: [],
+      fijadas: {}, trabajando: false, error: '' };
+  }
+  return v.musica;
+}
+
+async function cargarMusicaLight(forzar) {
+  const v = videoAbierto();
+  const m = estadoMusicaLight();
+  if (!v.pid || m.cargando || (m.cargado && !forzar)) return;
+  m.cargando = true;
+  try {
+    const [sonido, arco] = await Promise.all([
+      pedir(API.sonido(v.pid)), pedir(API.sonidoArco(v.pid))]);
+    m.sonido = sonido;
+    m.arco = arco.tramos || [];
+    m.fijadas = { ...(sonido.fijadas || {}) };
+    m.error = '';
+  } catch (e) {
+    m.error = e.message;
+  }
+  m.cargado = true;
+  m.cargando = false;
+  repintarVideo();
+}
+
+async function esperarFinDeTrabajo(tid) {
+  for (let vuelta = 0; vuelta < 400; vuelta++) {
+    await new Promise(r => setTimeout(r, 1500));
+    const t = await pedir(`${BASE}/api/trabajos/${encodeURIComponent(tid)}`);
+    if (['listo', 'error', 'cancelado'].includes(t.estado)) return t;
+  }
+  return { estado: 'error', error: 'está tardando demasiado; mira la bitácora' };
+}
+
+async function elegirMusicaLight() {
+  const v = videoAbierto();
+  const m = estadoMusicaLight();
+  m.trabajando = true;
+  repintarVideo();
+  try {
+    const r = await pedir(API.sonidoBanda(v.pid),
+      { method: 'POST', cuerpo: { fijadas: m.fijadas || {} } });
+    const fin = await esperarFinDeTrabajo(r.trabajo_id);
+    if (fin.estado === 'listo') toast('música elegida: «Regenerar Vídeo» la monta en el MP4');
+    else toast(fin.error || fin.mensaje || 'no se ha podido elegir la música', true);
+  } catch (e) {
+    toast(e.message, true);
+  }
+  m.trabajando = false;
+  await cargarMusicaLight(true);
+  // el MP4 se ha quedado viejo: que la barra de abajo lo diga
+  try { await refrescarFichasLight(); } catch (e) { /* se vera al recargar */ }
+  repintarVideo();
+}
+
+async function activarMusicaLight(activo) {
+  const v = videoAbierto();
+  try {
+    await pedir(API.sonido(v.pid), { method: 'PUT', cuerpo: { activo } });
+    await refrescarFichasLight();
+  } catch (e) {
+    toast(e.message, true);
+  }
+  await cargarMusicaLight(true);
+}
+
+function panelMusicaLight() {
+  const m = estadoMusicaLight();
+  if (!m.cargado && !m.cargando) cargarMusicaLight();
+  const caja = h('div', { clase: 'repaso musica-light' });
+  caja.appendChild(h('div', { clase: 'repaso-cab' },
+    h('h3', {}, 'La música'),
+    h('span', { clase: 'meta' }, 'qué suena en cada tramo del vídeo')));
+  if (!m.sonido) {
+    caja.appendChild(h('div', { clase: 'cargando' }, m.error || 'leyendo la música…'));
+    return caja;
+  }
+  const s = m.sonido;
+  caja.appendChild(h('label', { clase: 'plano' },
+    h('input', {
+      type: 'checkbox', checked: !!s.activo,
+      onchange: ev => activarMusicaLight(ev.target.checked),
+    }),
+    h('b', {}, 'Con música y efectos')));
+  if (!s.activo) {
+    caja.appendChild(h('div', { clase: 'pista' }, 'Apagada: el vídeo lleva solo la voz.'));
+    return caja;
+  }
+  if (!s.hay_musica) {
+    caja.appendChild(h('div', { clase: 'caja-aviso' },
+      'No hay música de donde sacar: añade canciones a tu carpeta y ponles ficha en '
+      + '⚙ Configuración → «Tu música y tus efectos».'));
+    return caja;
+  }
+  const puestos = (s.musica || {}).tramos || [];
+  const tramos = puestos.length ? puestos : m.arco;
+  const opciones = [{ valor: '', nombre: 'Automática (la elige por el ánimo del tramo)' },
+    ...(s.propias || []).map(p => ({
+      valor: p.archivo,
+      nombre: `${p.titulo || p.archivo} · ${p.animo || '?'}`
+        + (p.trozos ? ` · ${p.trozos} trozo${p.trozos === 1 ? '' : 's'}` : ''),
+    }))];
+  tramos.forEach((t, i) => {
+    const piezas = t.piezas || (t.titulo ? [t] : []);
+    const canciones = [...new Set(piezas.map(p => p.titulo).filter(Boolean))];
+    caja.appendChild(h('div', { clase: 'tramo-musica' },
+      h('div', { clase: 'fila' },
+        h('b', {}, `Tramo ${i + 1}`),
+        h('span', { clase: 'meta' },
+          ` · ${mmss(t.desde)}–${mmss(t.hasta)}` + (t.animo ? ` · ${t.animo}` : ''))),
+      h('div', { clase: 'meta' }, canciones.length
+        ? `Suena: ${canciones.join(' + ')}`
+        : 'Aún sin elegir: se elige sola al montar el vídeo'),
+      campoSelect('Canción', m.fijadas[String(i)] || '', opciones, valor => {
+        if (valor) m.fijadas[String(i)] = valor;
+        else delete m.fijadas[String(i)];
+        repintarVideo();
+      })));
+  });
+  const cambiado = JSON.stringify(m.fijadas || {}) !== JSON.stringify(s.fijadas || {});
+  caja.appendChild(h('div', { clase: 'fila' },
+    h('button', {
+      clase: (cambiado || !puestos.length) ? 'primario' : 'mini',
+      disabled: m.trabajando,
+      onclick: () => elegirMusicaLight(),
+    }, m.trabajando ? 'Eligiendo…'
+      : (puestos.length ? 'Volver a elegir la música' : 'Elegir la música ahora')),
+    h('span', { clase: 'meta' },
+      'Gratis: no llama a nadie. Después, «Regenerar Vídeo» la monta en el MP4.')));
   return caja;
 }
 /* ==========================================================================

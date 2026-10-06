@@ -874,9 +874,13 @@ def probar_banda_sonora(proyecto, estado, params, plan):
     """Música y efectos DENTRO del MP4, con ficheros fabricados aquí."""
     print("\n  PASO 8 · banda sonora")
     escenas = plan["escenas"]
-    # el banco es el del canal: se siembra con nombres 'prueba_' y se limpia
+    # el banco es el del canal: se siembra con nombres 'prueba_' y se limpia.
+    # CON LICENCIA (fork, Fase 3): el render escribe creditos.txt y avisa de lo
+    # que no sea CC0 ni CC BY; un audio de mentira sin licencia daria ese aviso.
+    cc0 = "http://creativecommons.org/publicdomain/zero/1.0/"
     tema = {"fuente": "prueba", "id": "musica", "titulo": "Tema de prueba",
-            "artista": "Nadie", "duracion": 8.0, "descarga": "", "escucha": ""}
+            "artista": "Nadie", "duracion": 8.0, "descarga": "", "escucha": "",
+            "licencia": cc0}
     efectos = {}
     puestos = []
     try:
@@ -885,7 +889,7 @@ def probar_banda_sonora(proyecto, estado, params, plan):
         for indice, papel in enumerate(sonido.PAPELES):
             fichas = []
             for numero in range(2):
-                ficha = {"fuente": "prueba", "id": f"{papel}{numero}"}
+                ficha = {"fuente": "prueba", "id": f"{papel}{numero}", "licencia": cc0}
                 nombre = sonido._nombre_de(ficha)
                 _audio_falso(sonido.banco("efectos", nombre), 0.25,
                              500 + 220 * indice + 60 * numero)
@@ -900,6 +904,13 @@ def probar_banda_sonora(proyecto, estado, params, plan):
         salidas = resultado["salidas"]
         igual(salidas.get("avisos"), [], "no debería haber avisos de sonido")
         igual(salidas.get("musica"), "Tema de prueba", "la música entra en el MP4")
+        igual(salidas.get("creditos"), "creditos.txt",
+              "con música y efectos, el render deja creditos.txt")
+        ruta_creditos = os.path.join(proyecto.ruta_trabajo("render", crear=False),
+                                     "creditos.txt")
+        ok(os.path.exists(ruta_creditos)
+           and "Tema de prueba" in io.open(ruta_creditos, encoding="utf-8").read(),
+           "junto al MP4, con lo que suena en su registro")
         ok(salidas.get("efectos", 0) > 0,
            f"y suenan efectos: {salidas.get('efectos')}")
 
@@ -938,7 +949,7 @@ def probar_banda_sonora(proyecto, estado, params, plan):
         print("\n  PASO 8 · la cama de varios temas")
         cama_tramos = []
         for indice, hz in enumerate((90, 160, 240)):
-            ficha = {"fuente": "prueba", "id": f"cama{indice}"}
+            ficha = {"fuente": "prueba", "id": f"cama{indice}", "licencia": cc0}
             ruta = sonido.banco("musica", sonido._nombre_de(ficha))
             _audio_falso(ruta, 6.0, hz)          # más cortos que su tramo: se repiten
             puestos.append(ruta)

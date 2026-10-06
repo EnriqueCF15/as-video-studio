@@ -65,9 +65,24 @@ TOKENS_ENTRADA_POR_IMAGEN = 5114
 #: vídeo al CREARLO (param `motor_imagen` de assets) y no se lee al generar.
 PROVEEDORES_IMAGEN = ("vertex_gemini", "openai")
 
+#: De donde sale el audio (fork, Fase 3), en orden. «propia» es la carpeta
+#: `banco/audio/propio/` (Biblioteca de audio de YouTube, Uppbeat, Pixabay...);
+#: «en linea» es Jamendo para la musica y Freesound para los efectos.
+PRIORIDADES_AUDIO = ("propia_primero", "solo_propia", "en_linea_primero")
+
 POR_DEFECTO = {
     "calidad_imagen": "low",
     "proveedor_imagen": "vertex_gemini",
+    # MUSICA Y EFECTOS QUE SE PUEDEN MONETIZAR. Con esto puesto, de Jamendo y
+    # Freesound solo entran CC0 y CC BY: nada no comercial (NC), sin derivadas
+    # (ND) ni «compartir igual» (SA). Quitarlo es bajo tu responsabilidad.
+    "audio_licencias_seguras": True,
+    "audio_prioridad": "propia_primero",
+    # Uppbeat: con suscripcion, sus pistas no piden credito en la descripcion
+    # (el canal va en su lista blanca); con el plan gratis, cada pista pide su
+    # codigo de credito.
+    "uppbeat_suscripcion": False,
+    "uppbeat_canal": "",
     # Si ya se ha pasado por la guia de inicio (las tarjetas que piden las
     # claves al entrar por primera vez). Vive aqui y no en el navegador
     # porque es de la instalacion, no de la pantalla: desde el movil no hay
@@ -87,7 +102,12 @@ def leer():
         salida["calidad_imagen"] = POR_DEFECTO["calidad_imagen"]
     if salida.get("proveedor_imagen") not in PROVEEDORES_IMAGEN:
         salida["proveedor_imagen"] = POR_DEFECTO["proveedor_imagen"]
-    salida["onboarding_visto"] = bool(salida.get("onboarding_visto"))
+    if salida.get("audio_prioridad") not in PRIORIDADES_AUDIO:
+        salida["audio_prioridad"] = POR_DEFECTO["audio_prioridad"]
+    for clave in ("onboarding_visto", "audio_licencias_seguras",
+                  "uppbeat_suscripcion"):
+        salida[clave] = bool(salida.get(clave))
+    salida["uppbeat_canal"] = str(salida.get("uppbeat_canal") or "")[:200]
     return salida
 
 
@@ -106,8 +126,17 @@ def guardar(cambios):
         if clave == "calidad_imagen" and valor not in CALIDADES:
             raise ValueError(
                 f"calidad {valor!r}: solo {', '.join(CALIDADES)}")
-        if clave == "onboarding_visto" and not isinstance(valor, bool):
-            raise ValueError("onboarding_visto es verdadero o falso")
+        if clave in ("onboarding_visto", "audio_licencias_seguras",
+                     "uppbeat_suscripcion") and not isinstance(valor, bool):
+            raise ValueError(f"{clave} es verdadero o falso")
+        if clave == "audio_prioridad" and valor not in PRIORIDADES_AUDIO:
+            raise ValueError(f"prioridad de audio {valor!r}: solo "
+                             f"{', '.join(PRIORIDADES_AUDIO)}")
+        if clave == "uppbeat_canal":
+            if not isinstance(valor, str) or len(valor) > 200:
+                raise ValueError("uppbeat_canal es un texto corto (el enlace "
+                                 "o el nombre del canal)")
+            valor = valor.strip()
         if clave == "proveedor_imagen" and valor not in PROVEEDORES_IMAGEN:
             raise ValueError(f"proveedor de imagen {valor!r}: solo "
                              f"{', '.join(PROVEEDORES_IMAGEN)}")

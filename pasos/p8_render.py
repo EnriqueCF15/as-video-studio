@@ -101,6 +101,10 @@ PARAMS_POR_DEFECTO = {
     # Lo que iguala unos efectos con otros va aparte y siempre puesto
     # (`sonido.igualar_por_papel`); esto decide cuanto suenan TODOS.
     "efectos_db": 0.0,
+    # LAS CANCIONES ELEGIDAS A MANO (fork, Fase 3): {indice de tramo: fichero de
+    # tu carpeta}. Las lee la banda sonora al montarse; lo que no esta aqui lo
+    # elige ella sola por el animo del tramo.
+    "musica_fijada": {},
 }
 
 CALIDADES = {
@@ -1314,7 +1318,7 @@ def ejecutar(proyecto, params, avisar=None, unidades=None, solo_montar=False):
     # (`sonido.construir_cama`), y si se construye solo para lo que dura el
     # habla, ese fundido cae ANTES del negro y la cola se queda muda de golpe.
     largo_con_cola = largo + (COLA_NEGRO_S if escenas else 0.0)
-    pista_efectos, sonidos = None, 0
+    pista_efectos, sonidos, lista_eventos = None, 0, []
     if p.get("sonido", True):
         avisar(0.93, "montando la banda de efectos")
         lista_eventos = sonido.eventos(escenas, cortes, p,
@@ -1385,7 +1389,18 @@ def ejecutar(proyecto, params, avisar=None, unidades=None, solo_montar=False):
         avisos.append(f"el tema «{ficha_musica.get('titulo') or ficha_musica['id']}» "
                       f"no está en el banco: el vídeo va sin música. Vuelve a "
                       f"elegirlo en «Música y efectos».")
+    # CREDITOS.TXT junto al MP4 (fork, Fase 3): lo que hay que pegar en la
+    # descripcion por la musica y los efectos que DE VERDAD suenan. Solo si suena
+    # algo: un video solo con voz no debe nada a nadie.
+    creditos = None
+    if pista_musica or lista_eventos:
+        hechos = sonido.creditos(p if pista_musica else dict(p, musica={}),
+                                 lista_eventos, idioma=plan.get("idioma") or "en")
+        medios.escribir_texto(os.path.join(trabajo, "creditos.txt"), hechos["texto"])
+        creditos = "creditos.txt"
+        avisos.extend(hechos["avisos"])
     salidas = {"mp4": "video.mp4",
+               "creditos": creditos,
                "duracion": round(duracion, 3),
                "clips": {e["id"]: f"clips/{e['id']}.mp4" for e in escenas},
                "fps": fps, "resolucion": [ancho, alto],
