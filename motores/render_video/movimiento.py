@@ -58,6 +58,50 @@ def ventana(centro, escala):
     return [round(x, 5), round(y, 5), round(ancho, 5), round(alto, 5)]
 
 
+#: EL MOVIMIENTO CRECE CON EL PLANO (fork, Fase 5). El zoom era el mismo 5 %
+#: en cualquier plano (`segmentar.CIERRE`), pensado para planos de 2,5 a 6 s:
+#: en uno de 8 s ese recorrido es tan lento que la imagen parece quieta, que es
+#: justo lo que no se puede permitir un video largo, hecho a proposito de planos
+#: largos para pagar menos imagenes. Por encima de PLANO_LARGO_S se mantiene la
+#: VELOCIDAD del zoom de siempre (un 5 % en 3,5 s) hasta ZOOM_MAXIMO, y si el
+#: centro no lo fija un ancla la camara ademas se desliza hacia un lado lo que
+#: deje libre el encuadre: un paneo suave, alternando el lado plano a plano.
+#: Los planos cortos, las cartelas y los que siguen a otro no cambian.
+PLANO_LARGO_S = 5.0
+VELOCIDAD_ZOOM = 0.0526 / 3.5
+ZOOM_MAXIMO = 0.12
+#: Que parte del margen libre recorre el paneo (el resto queda de aire).
+DESLIZ = 0.6
+
+
+def recorrido(escena, de, a, centro, origen_centro):
+    """El zoom y el paneo de un plano segun lo que dura. -> (de, a, c_ini, c_fin)"""
+    try:
+        duracion = float(escena.get("t_out") or 0) - float(escena.get("t_in") or 0)
+    except (TypeError, ValueError):
+        duracion = 0.0
+    if (duracion <= PLANO_LARGO_S or de == a or escena.get("cartela")
+            or escena.get("sigue_a")):
+        return de, a, centro, centro
+    corto, largo = min(de, a), max(de, a)
+    tramo = min(ZOOM_MAXIMO, max(largo - corto, VELOCIDAD_ZOOM * duracion))
+    if a > de:
+        a = round(de + tramo, 4)
+    else:
+        de = round(a + tramo, 4)
+    if origen_centro != "por_defecto":
+        return de, a, centro, centro        # un ancla manda donde mira la camara
+    cifras = "".join(c for c in str(escena.get("id") or "") if c.isdigit())
+    lado = 1 if int(cifras or 0) % 2 == 0 else -1
+    margen = (1.0 - 1.0 / max(de, a)) / 2.0
+    movido = [round(min(max(centro[0] + lado * DESLIZ * margen, 0.0), 1.0), 4),
+              centro[1]]
+    # el paneo va hacia el extremo mas cerrado del zoom: es donde hay margen
+    if a > de:
+        return de, a, centro, movido
+    return de, a, movido, centro
+
+
 def hyperframe(origen, destino, escala=2):
     """Amplia el plano. LANCZOS basta porque el arte es plano y de linea dura:
     no hay textura fina que reconstruir, solo bordes que mantener limpios."""
@@ -79,7 +123,7 @@ def calcular(plan, dir_escenas, dir_hyper, blockout_dir, escala=2):
 
         de = float(zoom.get("de", 1.0))
         a = float(zoom.get("a", 1.0))
-
+        de, a, centro_ini, centro_fin = recorrido(escena, de, a, centro, fuente)
         entrada = {
             "id": sid,
             "t_in": escena.get("t_in"),
@@ -89,8 +133,8 @@ def calcular(plan, dir_escenas, dir_hyper, blockout_dir, escala=2):
             "origen_centro": fuente,
             "escala_ini": de,
             "escala_fin": a,
-            "ventana_ini": ventana(centro, de),
-            "ventana_fin": ventana(centro, a),
+            "ventana_ini": ventana(centro_ini, de),
+            "ventana_fin": ventana(centro_fin, a),
             "componente": escena.get("componente"),
         }
 

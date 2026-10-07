@@ -699,6 +699,82 @@ def prueba_real(base):
         igual(json.load(fh)["titulo"], salidas["titulo"], "v1 sigue intacta")
 
 
+def prueba_estructura():
+    """La estructura del video (fork, Fase 5): relato, lista o cronologica,
+    y paradas que crecen con la duracion sin tocar el relato corto."""
+    print("\n[5b] estructura del video y paradas por duracion")
+    igual(p3_guion._normalizar({}, estricto=False)["estructura"], "relato",
+          "sin decir nada, la estructura es el relato de siempre")
+    try:
+        p3_guion._normalizar({"estructura": "poema"})
+        comprobar(False, "una estructura inventada se rechaza")
+    except ValueError:
+        comprobar(True, "una estructura inventada se rechaza")
+    igual(p3_guion._normalizar({"estructura": "poema"}, estricto=False)["estructura"],
+          "relato", "y sin ser estricto cae en el relato")
+    igual(p3_guion.paradas_para(120), (4, 6), "dos minutos: las cuatro o seis de siempre")
+    igual(p3_guion.paradas_para(1500), (10, 14), "25 minutos: entre 10 y 14 paradas")
+    transcript = [{"t_in": 0, "t_out": 4, "texto": "material"}]
+
+    def instruccion(segundos, estructura=None):
+        brief = {"instrucciones": "x", "duracion_objetivo_s": segundos,
+                 "presupuesto_palabras": 100, "margen": {"minimo": 90, "maximo": 110}}
+        opciones = p3_guion._normalizar(
+            {} if estructura is None else {"estructura": estructura}, estricto=False)
+        opciones["_semilla"] = "video_de_prueba"
+        return p3_guion._instruccion(transcript, {}, brief, None, opciones, [], "es")
+
+    corto = instruccion(120)
+    comprobar("--cuatro o seis, no doce--" in corto and "PARA ABRIR" not in corto,
+              "el relato corto sale con el texto de siempre, sin apertura impuesta")
+    comprobar("ocho o diez COMO MUCHO" in corto, "y su regla 11 tambien es la de siempre")
+    largo = instruccion(1500)
+    comprobar("entre 10 y 14 para sus unos 25 minutos" in largo,
+              "el relato de 25 minutos pide entre 10 y 14 paradas")
+    comprobar("REENGANCHES" in largo and "PARA ABRIR" in largo,
+              "y lleva los reenganches y el tipo de apertura")
+    comprobar("cuatro o seis" not in largo and "cinco temas explicados" not in largo,
+              "y no se contradice con las cifras del video corto")
+    comprobar("En este, de unos 25 minutos" in largo, "y la regla 11 da su cuenta de secciones")
+    lista = instruccion(1500, "lista")
+    comprobar("UNA LISTA NUMERADA" in lista and "ENTRE 10 Y 14 PUNTOS" in lista,
+              "la lista pide sus puntos segun la duracion")
+    cronologica = instruccion(1500, "cronologica")
+    comprobar("EN ORDEN DE TIEMPO" in cronologica and "ENTRE 10 Y 14 ETAPAS" in cronologica,
+              "la cronologica pide sus etapas segun la duracion")
+    igual(p3_guion.gancho_para("video_a"), p3_guion.gancho_para("video_a"),
+          "el tipo de apertura de un video es siempre el mismo")
+    comprobar(len({p3_guion.gancho_para(f"video_{n}") for n in range(12)}) > 1,
+              "y cambia de un video a otro")
+
+
+def prueba_movimiento():
+    """Los planos largos se mueven mas (fork, Fase 5): misma velocidad de zoom,
+    con tope, y un paneo si el centro no lo fija un ancla."""
+    print("\n[5c] movimiento de camara en planos largos")
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))), "motores", "render_video"))
+    import movimiento
+    corto = movimiento.recorrido({"id": "S002", "t_in": 0, "t_out": 4}, 1.0, 1.0526,
+                                 [0.5, 0.5], "por_defecto")
+    igual(corto, (1.0, 1.0526, [0.5, 0.5], [0.5, 0.5]), "un plano corto no cambia")
+    largo = movimiento.recorrido({"id": "S002", "t_in": 0, "t_out": 8}, 1.0, 1.0526,
+                                 [0.5, 0.5], "por_defecto")
+    igual(largo[1], 1.12, "un plano de 8 s se acerca un 12 % (el tope)")
+    comprobar(largo[3] != [0.5, 0.5], "y se desliza hacia un lado")
+    otro = movimiento.recorrido({"id": "S003", "t_in": 0, "t_out": 8}, 1.0526, 1.0,
+                                [0.5, 0.5], "por_defecto")
+    comprobar(otro[0] == 1.12 and (otro[2][0] - 0.5) * (largo[3][0] - 0.5) < 0,
+              "el siguiente se aleja y se desliza al otro lado")
+    ancla = movimiento.recorrido({"id": "S004", "t_in": 0, "t_out": 8}, 1.0, 1.0526,
+                                 [0.3, 0.4], "ancla:buque")
+    igual(ancla[2:], ([0.3, 0.4], [0.3, 0.4]), "con un ancla la camara no se desliza")
+    cartela = movimiento.recorrido({"id": "S005", "t_in": 0, "t_out": 8,
+                                    "cartela": {"texto": "x"}}, 1.0, 1.0526,
+                                   [0.5, 0.5], "por_defecto")
+    igual(cartela[:2], (1.0, 1.0526), "una cartela no cambia su zoom")
+
+
 def principal():
     base = tempfile.mkdtemp(prefix="prueba_p3_")
     # el historico de tiempos de verdad no se toca: aqui los pasos corren
@@ -712,6 +788,8 @@ def principal():
         prueba_aire()
         prueba_copias()
         prueba_instruccion()
+        prueba_estructura()
+        prueba_movimiento()
         prueba_fallos_cli()
         prueba_reintento()
         # La redaccion REAL es opt-in, con el mismo flag que prueba_pasos_voz:

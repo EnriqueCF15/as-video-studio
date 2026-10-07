@@ -1695,6 +1695,7 @@ def ejecutar(proyecto, params, avisar=None, unidades=None, solo_montar=False):
             tarea["anterior"] = None
 
     if tareas:
+        inicio_dibujo = time.time()
         lotes = _repartir_lotes(tareas, _cuantos_lotes(p, len(tareas)))
         if len(lotes) <= 1:
             # UN SOLO PLANO (o el modo en fila): no hace falta sacar un proceso
@@ -1713,6 +1714,17 @@ def ejecutar(proyecto, params, avisar=None, unidades=None, solo_montar=False):
         if faltan:
             raise RuntimeError(f"no se renderizaron {len(faltan)} plano(s): "
                                f"{', '.join(faltan[:6])}")
+        # LO QUE CUESTA DIBUJAR, POR FOTOGRAMA (fork, Fase 5): de aqui sale el
+        # «montar el MP4 ~1 h» que se ensena antes de encargar un video largo.
+        # Solo con una tanda que merezca la pena medir: dos planos rehechos no
+        # dicen nada de lo que tarda un video entero.
+        dibujados = sum(int(t["frames"]) for t in tareas)
+        if dibujados >= 300:
+            estadisticas.anotar("render_dibujo", time.time() - inicio_dibujo,
+                                tamano=dibujados,
+                                detalle={"lotes": len(lotes), "fps": fps,
+                                         "fotogramas": fotogramas},
+                                proyecto=getattr(proyecto, "id", None))
 
     if not p["conservar_frames"]:
         shutil.rmtree(dir_frames, ignore_errors=True)

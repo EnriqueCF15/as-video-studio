@@ -102,6 +102,13 @@ def prueba_catalogo():
     ok("arranque misterioso/misterioso" in presets.resumen_de(
         {"tipo": "musica", "datos": {"animos_arco": animos}}),
        "y su resumen dice que pide el arranque")
+    # LA ESTRUCTURA DEL VIDEO (fork, Fase 5) viaja en el bloque guion, al paso guion
+    cambios = presets.cambios_para({"tipo": "guion", "datos": {"estructura": "lista"}})
+    igual((cambios.get("guion") or {}).get("estructura"), "lista",
+          "la estructura del estilo se aplica al paso guion")
+    igual((presets.datos_de_params({"guion": {"estructura": "cronologica"}})
+           .get("guion") or {}).get("estructura"), "cronologica",
+          "y se lee de vuelta al congelar el estilo")
     igual(presets.resumen_de({"tipo": "musica", "datos": {}}), "animos de siempre",
           "sin tabla, el resumen dice que son los animos de siempre")
     ok("?" not in presets.resumen_de({"tipo": "musica", "datos": {"animos_arco": animos}}),

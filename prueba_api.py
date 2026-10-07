@@ -2927,6 +2927,22 @@ def probar_modo_light(cliente):
     ok(datos.get("musica_por_defecto") and "sobrio" in (datos.get("animos_musica") or []),
        "la galeria trae la tabla de siempre y los animos para la pantalla")
 
+    # LA ESTRUCTURA Y LA DURACION HABITUAL DEL ESTILO (fork, Fase 5)
+    respuesta, datos = cliente.put(f"/api/presets-light/{pid_preset}", {
+        "estructura": "cronologica", "duracion_objetivo_s": 1320})
+    igual(respuesta.status_code, 200, "guardar estructura y duracion responde 200")
+    guion = ((datos.get("preset") or {}).get("datos") or {}).get("guion") or {}
+    igual((guion.get("estructura"), guion.get("duracion_objetivo_s")), ("cronologica", 1320),
+          "y el estilo las guarda en su bloque de guion")
+    respuesta, _ = cliente.put(f"/api/presets-light/{pid_preset}", {"estructura": "poema"})
+    igual(respuesta.status_code, 400, "una estructura que no existe da 400")
+    respuesta, _ = cliente.put(f"/api/presets-light/{pid_preset}",
+                               {"duracion_objetivo_s": 999999})
+    igual(respuesta.status_code, 400, "una duracion fuera de rango da 400")
+    respuesta, datos = cliente.get("/api/presets-light")
+    ok("cronologica" in (datos.get("estructuras") or {}),
+       "la galeria trae las estructuras para la pantalla")
+
     # rehacer una parte de un preset SIN taller se dice, no se inventa uno
     respuesta, datos = cliente.post(
         f"/api/presets-light/{pid_preset}/regenerar",
@@ -3201,14 +3217,19 @@ def probar_estimacion(cliente):
     igual(datos["cadencia"]["origen"] in ("medido", "estimado"), True,
           "diciendo si la cadencia está medida o estimada")
 
-    # TODOS LOS PLANOS PAGAN IMAGEN. Antes habia planos que no --los que
-    # ensenaban metraje real de un mapa-- y se descontaban de la cuenta. Ya no
-    # existen, asi que el precio es el numero de planos por lo que cuesta uno:
-    # si esto deja de cumplirse, hay algo descontando en silencio.
-    igual(datos["coste"]["imagenes"], datos["planos"]["total"],
-          "se paga una imagen por plano, sin descuentos escondidos")
-    igual(datos["planos"]["con_imagen"], datos["planos"]["total"],
-          "y la ficha de planos dice lo mismo")
+    # LAS IMAGENES QUE SE PAGAN (fork, Fase 5): con videos tuyos medidos con ese
+    # ritmo, los planos salen de su media REAL, las cartelas de fondo negro no
+    # se pagan y las hojas de referencia si. Sin medir, una por plano mas las
+    # hojas: nada se descuenta sin haberlo medido.
+    planos, coste = datos["planos"], datos["coste"]
+    igual(coste["imagenes"], planos["con_imagen"],
+          "el coste y la ficha de planos cuentan las mismas imagenes")
+    ok(planos.get("origen"), f"y dicen de donde sale la cuenta: {planos.get('origen')}")
+    if planos.get("origen") == "tabla del ritmo":
+        igual(coste["imagenes"], planos["total"] + planos.get("hojas", 0),
+              "sin videos medidos: una imagen por plano mas las hojas")
+    ok((datos.get("render") or {}).get("segundos", 0) > 0,
+       "y cuanto tarda en montarse el MP4 en esta maquina")
 
     respuesta, _ = cliente.post("/api/estimacion", {"duracion_objetivo_s": "hola"})
     igual(respuesta.status_code, 400, "una duración que no es un número da 400")

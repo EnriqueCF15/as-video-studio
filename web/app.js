@@ -3291,6 +3291,37 @@ const ANIMOS_EXPLICADOS = {
   oscuro: 'grave, sombrío',
 };
 
+/* CÓMO SE ORDENA CADA VÍDEO DE ESTE ESTILO (fork, Fase 5): un relato con
+   pocas paradas, una lista numerada o etapas en orden de tiempo. Cambia cómo se
+   le pide el guion al redactor la próxima vez; no rehace nada ni cuesta nada.
+   La lista de estructuras la da el servidor (`p3_guion.ESTRUCTURAS`). */
+function estructuraDeGuionLight(ficha) {
+  const tabla = (APP.light.datos || {}).estructuras || {};
+  const actual = ((ficha.datos || {}).guion || {}).estructura || 'relato';
+  const opciones = Object.entries(tabla).map(([valor, nombre]) => ({ valor, nombre }));
+  /* Y LA DURACIÓN HABITUAL: con la que empieza el encargo de cada vídeo nuevo.
+     En minutos, que es como se piensa un vídeo; se guarda en segundos. */
+  const minutos = h('input', {
+    type: 'number', min: 1, max: 120, step: 1,
+    value: Math.round(duracionDelEstilo(ficha) / 60),
+  });
+  minutos.addEventListener('change', () => {
+    const m = Math.max(1, Math.min(120, Math.round(Number(minutos.value) || 0)));
+    minutos.value = m;
+    guardarPresetLight(ficha.id, { duracion_objetivo_s: m * 60 });
+  });
+  return h('div', {},
+    campoSelect('Cómo se ordena', actual, opciones,
+      v => guardarPresetLight(ficha.id, { estructura: v }),
+      'Vale para los vídeos nuevos con este estilo. En los de más de 15 minutos, '
+      + 'el número de partes crece con la duración.'),
+    h('div', { clase: 'campo' },
+      h('label', {}, 'Duración habitual'),
+      h('div', { clase: 'fila' }, minutos, h('span', { clase: 'meta' }, 'minutos')),
+      h('div', { clase: 'pista' },
+        'Con esta empieza el encargo de cada vídeo nuevo; luego la cambias si quieres.')));
+}
+
 /* LOS ÁNIMOS DE LA MÚSICA DE UN ESTILO. El estudio parte el vídeo en tramos y
    mira el ritmo de cada uno: según sea el arranque, el cuerpo o el cierre, y
    vaya despacio o rápido, pide un ánimo a tu carpeta de música. Aquí se elige
@@ -6172,8 +6203,17 @@ async function duplicarEstiloLight(ficha) {
    un botón que no lleva a ninguna parte se prueba una vez y no se vuelve a
    pulsar nunca. La elección SÍ se guarda, así que el día que exista el paso ya
    está tomada. */
+/* LA DURACIÓN HABITUAL DE UN ESTILO (fork, Fase 5): con ella empieza el
+   encargo de un vídeo nuevo. 240 s si el estilo no dice nada. */
+function duracionDelEstilo(ficha) {
+  return Number((((ficha || {}).datos || {}).guion || {}).duracion_objetivo_s) || 240;
+}
+
 function elegirEstiloLight(ficha) {
   localStorage.setItem('estudio.light.estilo', ficha.id);
+  // un encargo a medias cuya duración no has tocado coge la del estilo nuevo
+  const e = APP.light.video.encargo;
+  if (e && !e.duracionTocada) e.duracion_objetivo_s = duracionDelEstilo(ficha);
   // se empieza en el ENCARGO: elegir un estilo es el principio de un vídeo
   // nuevo. Si había uno a medias, la propia pantalla lo ofrece.
   APP.light.video.vista = 'encargo';
@@ -6254,7 +6294,8 @@ function encargoVideoLight() {
   if (!v.encargo) {
     v.encargo = {
       nombre: '',
-      duracion_objetivo_s: 240,
+      // la duración habitual del estilo elegido (fork, Fase 5)
+      duracion_objetivo_s: duracionDelEstilo(estiloElegido()),
       // horizontal 16:9 o vertical 9:16. Se decide AQUI, con la duracion, y
       // todo lo de abajo lo respeta: las imagenes se piden en ese tamano y
       // el video sale en esa resolucion (`pasos/comun.FORMATOS`).
@@ -6687,6 +6728,7 @@ function duracionLight(e, estilo) {
   });
   const mover = valor => {
     e.duracion_objetivo_s = Math.max(30, Math.round(Number(valor) || 0));
+    e.duracionTocada = true;
     numero.value = e.duracion_objetivo_s;
     barra.value = Math.min(1800, Math.max(60, e.duracion_objetivo_s));
     refrescarEstimacionLight(e, linea, estilo);
@@ -6782,7 +6824,13 @@ function textoDeCoste(ficha) {
       ? ` + voz con ElevenLabs ≈ ${miles(c.creditos_voz)} créditos`
       : ' + voz con ElevenLabs (créditos: se miden al grabar)';
   }
-  return `${pl.total} planos · ${c.imagenes} imágenes · ≈ ${Number(c.usd_total || 0).toFixed(2)} $${voz}`;
+  // CUANTO TARDA EL MP4 y DE DONDE SALEN LOS PLANOS (fork, Fase 5): un vídeo
+  // largo son horas de máquina, y eso también se decide antes de encargarlo
+  const render = ficha.render && ficha.render.segundos
+    ? ` · montar el MP4 ≈ ${duracionCorta(ficha.render.segundos)} en este portátil` : '';
+  const origen = pl.origen && pl.origen !== 'tabla del ritmo' ? ` (${pl.origen})` : '';
+  return `${pl.total} planos${origen} · ${c.imagenes} imágenes · `
+    + `≈ ${Number(c.usd_total || 0).toFixed(2)} $${voz}${render}`;
 }
 
 /* EL MATERIAL. Una lista de cajas: cada una es un enlace o un texto, y el
@@ -10479,6 +10527,10 @@ function vistaPresetLight() {
   tono.appendChild(cajaDeRehacer(ficha, 'tono'));
   caja.appendChild(bloqueLight('🗣️ Tono del guion',
     'cómo se cuenta, nunca de qué', tono));
+
+  // 📐 cómo se ordena cada vídeo (fork, Fase 5): no rehace nada ni cuesta nada
+  caja.appendChild(bloqueLight('📐 Estructura', 'cómo se ordena y cuánto dura cada vídeo',
+    estructuraDeGuionLight(ficha)));
 
   // ⏱️ el ritmo: se cambia y ya, no rehace nada
   caja.appendChild(bloqueLight('⏱️ Ritmo', 'cada cuánto corta el vídeo',

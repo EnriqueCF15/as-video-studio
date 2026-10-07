@@ -119,7 +119,10 @@ TIPOS = {
                    "duracion_objetivo_s",
                    "palabras_por_bloque",
                    "anotaciones_voz", "emocion_en_voz",
-                   "modelo", "esfuerzo"),
+                   "modelo", "esfuerzo",
+                   # como se ordena el video: relato, lista o cronologica
+                   # (fork, Fase 5; `p3_guion.ESTRUCTURAS`)
+                   "estructura"),
         "pasos": ("brief", "guion"),
     },
     "estilo": {
@@ -417,6 +420,8 @@ def resumen_de(ficha):
             trozos.append(f"{segundos // 60}m {segundos % 60:02d}s")
         if datos.get("instrucciones"):
             trozos.append("con instrucciones")
+        if datos.get("estructura") and datos["estructura"] != "relato":
+            trozos.append(str(datos["estructura"]))
         return " · ".join(trozos)
     if tipo == "estilo":
         cuantas = len(datos.get("referencias") or [])
@@ -1020,7 +1025,7 @@ def cambios_para(ficha, params_actuales=None):
         # la ficha y no hace nada -- se escribe una vez y se olvida sola.
         de_guion = {c: copy.deepcopy(datos[c])
                     for c in ("anotaciones_voz", "emocion_en_voz",
-                              "modelo", "esfuerzo")
+                              "modelo", "esfuerzo", "estructura")
                     if c in datos}
         if de_brief:
             cambios["brief"] = de_brief
@@ -1120,7 +1125,7 @@ def datos_de_params(params_por_paso, incluir=ORDEN):
                   or _idioma_de_guion(brief))
         if codigo:
             bloque["idioma_salida"] = codigo
-        for clave in ("anotaciones_voz", "emocion_en_voz", "modelo",
+        for clave in ("anotaciones_voz", "emocion_en_voz", "modelo", "estructura",
                       "esfuerzo"):
             if guion.get(clave) not in (None, ""):
                 bloque[clave] = copy.deepcopy(guion[clave])

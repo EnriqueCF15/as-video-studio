@@ -2039,6 +2039,78 @@ def regrabar_seccion(pid: str, seccion_id: str, cuerpo: dict = Body(default=None
 # justamente el caso del modo light.
 # ==========================================================================
 
+#: Lo medido en los planes de verdad, por fichero y fecha (ver `_planos_medidos`).
+_PLANOS_MEDIDOS = {}
+
+
+def _planos_medidos():
+    """Lo que de verdad sale de cada ritmo en TUS videos. -> {ritmo: ficha}
+
+    LA TABLA DE RITMOS ES DEL PRIMER DIA (fork, Fase 5). `media_s` se midio en
+    los videos del autor; en los de Enrique el ritmo «medio» sale a 4,7 s por
+    plano y no a 2,8, asi que la estimacion de un video prometia un 70 % mas de
+    planos --y de dolares-- de los que salian. Aqui se lee el plan de cada video
+    terminado y se cuenta: segundos por plano, que parte lleva imagen (las
+    cartelas de fondo negro no se pagan) y cuantas hojas de referencia
+    (personajes, sitios) se dibujaron aparte. Los talleres de los estilos no
+    cuentan: sus planes son muestras sueltas, no videos.
+    """
+    light = _light()
+    cartelas = PASOS_MODULOS.cartelas
+    suma = {}
+    for ficha in Proyecto.listar(raiz_proyectos()):
+        if ficha.get(CONFIG_TALLER):
+            continue
+        raiz = ficha.get("raiz") or ""
+        activa = (leer_json(os.path.join(raiz, "pasos", "assets", "activa.json"), {})
+                  or {}).get("activa")
+        if not activa:
+            continue
+        ruta_plan = os.path.join(raiz, "pasos", "assets", f"v{activa}", "plan.json")
+        try:
+            sello = os.path.getmtime(ruta_plan)
+        except OSError:
+            continue
+        guardado = _PLANOS_MEDIDOS.get(ruta_plan)
+        if not guardado or guardado[0] != sello:
+            plan = leer_json(ruta_plan, {}) or {}
+            estado = leer_json(os.path.join(raiz, "estado.json"), {}) or {}
+            assets = (((estado.get("pasos") or {}).get("assets") or {})
+                      .get("params") or {})
+            escenas = plan.get("escenas") or []
+            medida = None
+            if len(escenas) >= 3 and float(plan.get("duracion_total") or 0) > 0:
+                medida = {
+                    "ritmo": light.ritmo_parecido(assets.get("min_s"),
+                                                  assets.get("max_s"))["id"],
+                    "segundos": float(plan["duracion_total"]),
+                    "planos": len(escenas),
+                    "con_imagen": sum(1 for e in escenas if not cartelas.sin_imagen(e)),
+                    "hojas": len(plan.get("assets") or []),
+                }
+            guardado = (sello, medida)
+            _PLANOS_MEDIDOS[ruta_plan] = guardado
+        medida = guardado[1]
+        if not medida:
+            continue
+        cuenta = suma.setdefault(medida["ritmo"], {"segundos": 0.0, "planos": 0,
+                                                   "con_imagen": 0, "hojas": [],
+                                                   "videos": 0})
+        for clave in ("segundos", "planos", "con_imagen"):
+            cuenta[clave] += medida[clave]
+        cuenta["hojas"].append(medida["hojas"])
+        cuenta["videos"] += 1
+    salida = {}
+    for ritmo, cuenta in suma.items():
+        hojas = sorted(cuenta["hojas"])
+        salida[ritmo] = {
+            "media_s": round(cuenta["segundos"] / max(1, cuenta["planos"]), 2),
+            "parte_con_imagen": round(cuenta["con_imagen"] / max(1, cuenta["planos"]), 3),
+            "hojas": hojas[len(hojas) // 2] if hojas else 0,
+            "videos": cuenta["videos"]}
+    return salida
+
+
 @app.post("/api/estimacion")
 def estimar_video(cuerpo: dict = Body(default=None)):
     """Lo que va a salir de esa duracion: palabras, planos y dolares."""
@@ -2084,13 +2156,34 @@ def estimar_video(cuerpo: dict = Body(default=None)):
         ficha_ritmo = light.ritmo_de(datos.get("ritmo"))
     else:
         ficha_ritmo = light.ritmo_parecido(datos.get("min_s"), datos.get("max_s"))
-    media = max(0.5, float(ficha_ritmo["media_s"]))
+    # Y SI YA HAY VIDEOS TUYOS CON ESE RITMO, MANDA LO MEDIDO (fork, Fase 5):
+    # los segundos por plano, la parte que lleva imagen y las hojas aparte.
+    medidos = _planos_medidos()
+    medido = medidos.get(ficha_ritmo["id"])
+    if medido:
+        media = max(0.5, float(medido["media_s"]))
+        parte_con_imagen = float(medido["parte_con_imagen"])
+        hojas = int(medido["hojas"])
+        origen_planos = (f"medido en {medido['videos']} vídeo"
+                         f"{'' if medido['videos'] == 1 else 's'} tuyo"
+                         f"{'' if medido['videos'] == 1 else 's'}")
+    else:
+        media = max(0.5, float(ficha_ritmo["media_s"]))
+        parte_con_imagen, origen_planos = 1.0, "tabla del ritmo"
+        # las hojas de referencia no dependen del ritmo: las de tus otros videos
+        todas = sorted(m["hojas"] for m in medidos.values())
+        hojas = todas[len(todas) // 2] if todas else 0
     planos = max(1, int(round(segundos / media)))
 
     calidad = str(datos.get("calidad") or "low").lower()
     usd_imagen = light.usd_por_imagen(calidad)
 
-    imagenes = max(1, planos)
+    imagenes = max(1, int(round(planos * parte_con_imagen)) + hojas)
+
+    # CUANTO TARDA EL MP4 EN ESTE PORTATIL (fork, Fase 5): los fotogramas del
+    # video por lo que tarda dibujar uno, medido (`render_dibujo`).
+    fps_render = int(PASOS_MODULOS.p8_render.PARAMS_POR_DEFECTO["fps"])
+    dibujo = ESTADISTICAS.estimar("render_dibujo", int(segundos * fps_render))
 
     caracteres = int(round(horquilla["presupuesto_palabras"] * 6.1))
     tarifas = COSTE.tarifas()
@@ -2132,7 +2225,11 @@ def estimar_video(cuerpo: dict = Body(default=None)):
                      "tolerancia": horquilla["tolerancia"]},
         "planos": {"total": planos, "media_s": round(media, 2),
                    "ritmo": ficha_ritmo["id"],
-                   "con_imagen": imagenes},
+                   "con_imagen": imagenes, "hojas": hojas,
+                   "origen": origen_planos},
+        "render": {"segundos": round(float(dibujo["segundos"])),
+                   "medido": bool(dibujo.get("medida")),
+                   "origen": dibujo.get("origen")},
         "coste": {"imagenes": imagenes, "calidad": calidad,
                   "usd_por_imagen": usd_imagen,
                   "usd_imagenes": usd_imagenes, "usd_tts": usd_tts,
@@ -7952,6 +8049,8 @@ def listar_presets_light():
             # los animos de la musica: la tabla de siempre y los que hay, para
             # el bloque «Música» de la ficha del estilo (fork)
             "musica_por_defecto": sonido.ANIMOS_ARCO,
+            # como puede ordenarse un video (fork, Fase 5): para el bloque Guion
+            "estructuras": PASOS_MODULOS.p3_guion.ESTRUCTURAS,
             "animos_musica": sorted(sonido.ANIMOS),
             "idiomas": [{"valor": c, "nombre": presets.NOMBRES_IDIOMA.get(c, c)}
                         for c in light.IDIOMAS],
@@ -8511,6 +8610,40 @@ def editar_preset_light(preset_id: str, cuerpo: dict = Body(default=None)):
         try:
             _taller_de(ficha).estado.actualizar_params(
                 "guion", {"cta": contenido["guion"]["cta"]})
+        except ErrorApi:
+            pass                    # sin taller el preset sigue siendo correcto
+
+    # LA DURACION HABITUAL DEL ESTILO (fork, Fase 5): con la que empieza el
+    # encargo de cada video nuevo. Un canal de videos de veinte minutos no tiene
+    # por que arrastrar el deslizador desde cuatro cada vez. Va al brief del
+    # taller por lo mismo que la guia de tono.
+    if datos.get("duracion_objetivo_s") is not None:
+        p2 = PASOS_MODULOS.p2_brief
+        try:
+            segundos = int(round(float(datos["duracion_objetivo_s"])))
+        except (TypeError, ValueError):
+            raise ErrorApi(400, "duracion_objetivo_s tiene que ser un numero de segundos")
+        if not p2.DURACION_MINIMA_S <= segundos <= p2.DURACION_MAXIMA_S:
+            raise ErrorApi(400, f"la duracion va de {p2.DURACION_MINIMA_S} a "
+                                f"{p2.DURACION_MAXIMA_S} segundos")
+        contenido.setdefault("guion", {})["duracion_objetivo_s"] = segundos
+        try:
+            _taller_de(ficha).estado.actualizar_params(
+                "brief", {"duracion_objetivo_s": segundos})
+        except ErrorApi:
+            pass                    # sin taller el preset sigue siendo correcto
+
+    # LA ESTRUCTURA DEL VIDEO (fork, Fase 5): relato, lista o cronologica. Al
+    # bloque `guion` del preset y AL TALLER, por lo mismo que la guia de tono.
+    # No cuesta nada: cambia como se le pide el guion al redactor la proxima vez.
+    if datos.get("estructura") is not None:
+        estructura = str(datos["estructura"] or "").strip().lower()
+        if estructura not in PASOS_MODULOS.p3_guion.ESTRUCTURAS:
+            raise ErrorApi(400, f"estructura desconocida: {estructura!r}. Son: "
+                                + ", ".join(PASOS_MODULOS.p3_guion.ESTRUCTURAS))
+        contenido.setdefault("guion", {})["estructura"] = estructura
+        try:
+            _taller_de(ficha).estado.actualizar_params("guion", {"estructura": estructura})
         except ErrorApi:
             pass                    # sin taller el preset sigue siendo correcto
 

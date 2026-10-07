@@ -183,7 +183,203 @@ PARAMS_POR_DEFECTO = {
     # texto que redacta el modelo depende de ellos, y son del VIDEO: se escriben
     # una vez en el estilo y cada video nace con ellas puestas.
     **cta.PARAMS_POR_DEFECTO,
+    # COMO SE ORDENA EL VIDEO (fork, Fase 5): «relato» (lo de siempre),
+    # «lista» (un gancho, puntos numerados y un cierre) o «cronologica» (etapas
+    # en orden de tiempo). Es del ESTILO --un canal de finanzas cuenta distinto
+    # que uno de historia antigua-- y viaja en su bloque «guion».
+    "estructura": "relato",
 }
+
+#: LAS ESTRUCTURAS QUE SABE ESCRIBIR (fork, Fase 5), con lo que se ensena.
+ESTRUCTURAS = {
+    "relato": "Relato: un hilo con pocas paradas encadenadas",
+    "lista": "Lista numerada: gancho, puntos en orden y cierre",
+    "cronologica": "Cronológica: etapas en orden de tiempo",
+}
+
+#: HASTA ESTA DURACION, el relato se pide con el texto DE SIEMPRE, palabra por
+#: palabra: es el que sale en los videos cortos que ya funcionan, y cambiarlo
+#: para alargar no tiene por que tocarlos. Por encima, las mismas reglas con
+#: las cifras de un video largo (`paradas_para`).
+LARGO_DESDE_S = 900
+
+#: COMO EMPIEZA UN VIDEO, por turnos (fork, Fase 5). Un canal cuyos videos
+#: abren todos con la misma formula suena a plantilla, que es justo lo que la
+#: politica de contenido repetitivo de YouTube castiga. Se elige por video (con
+#: su id, asi que el mismo video abre igual cada vez que se reescribe) y solo
+#: si el brief no dice como abrir.
+GANCHOS = (
+    "una pregunta concreta que el espectador se esta haciendo sin saberlo",
+    "un dato del material que contradice lo que casi todo el mundo cree",
+    "una escena concreta contada en presente, con un detalle que se pueda ver",
+    "una consecuencia sorprendente, antes de contar que la causo",
+)
+
+
+def paradas_para(duracion_s):
+    """Cuantas paradas pide un video de esa duracion. -> (minimo, maximo)
+
+    Una cada dos minutos y medio por abajo y una cada minuto y ochenta por
+    arriba, y nunca menos de las cuatro o seis de siempre: 10 a 14 en un video
+    de 25 minutos, 6 a 8 en uno de 15.
+    """
+    minutos = max(0.0, float(duracion_s or 0)) / 60.0
+    return max(4, int(round(minutos / 2.5))), max(6, int(round(minutos / 1.8)))
+
+
+def gancho_para(semilla):
+    """El tipo de apertura que le toca a este video. -> frase"""
+    import hashlib                                              # noqa: PLC0415
+    numero = int(hashlib.sha1(str(semilla or "").encode("utf-8")).hexdigest(), 16)
+    return GANCHOS[numero % len(GANCHOS)]
+
+
+def _seccion_estructura(estructura, duracion_s, semilla=""):
+    """La seccion «COMO SE ESTRUCTURA ESTE VIDEO» del prompt. -> [lineas]
+
+    El relato corto sale EXACTAMENTE como salia (ver LARGO_DESDE_S). El largo,
+    la lista y la cronologica escalan sus paradas con la duracion y le dicen al
+    redactor como abrir (`gancho_para`).
+    """
+    a, b = paradas_para(duracion_s)
+    minutos = max(1, int(round(float(duracion_s or 0) / 60.0)))
+    largo = float(duracion_s or 0) > LARGO_DESDE_S
+    apertura = ("PARA ABRIR (si el brief no dice como): empieza con "
+                f"{gancho_para(semilla)}. Cada video del canal abre de una forma "
+                "distinta; no copies la formula de apertura de otros videos.")
+    if estructura == "lista":
+        return [
+            "",
+            "== COMO SE ESTRUCTURA ESTE VIDEO ==",
+            "Este video es UNA LISTA NUMERADA bien contada: un gancho, los "
+            "puntos en orden y un cierre. Una lista funciona si cada punto se "
+            "entiende solo Y el orden tiene un porque.",
+            "",
+            "  - EL GANCHO, EN LOS PRIMEROS 30-45 SEGUNDOS: dice que se va a "
+            "contar y por que le importa al que mira, y promete algo concreto "
+            "que el ultimo punto cumple. No enumera los puntos por adelantado.",
+            f"  - ENTRE {a} Y {b} PUNTOS para unos {minutos} minutos. Cada punto "
+            "se lleva varios bloques seguidos: que es, por que importa y un "
+            "ejemplo concreto del material. Un punto de un bloque no es un "
+            "punto, es un dato suelto.",
+            "  - EL ORDEN TIENE UN PORQUE: de menos a mas importante, de lo "
+            "facil a lo dificil, o pasos que se apoyan unos en otros. Que se "
+            "note en lo que se cuenta, no en la palabra «numero».",
+            "  - CADA PUNTO ABRE CON UNA TRANSICION CLARA que lo nombra o lo "
+            "numera, y cierra con una frase que lo remata. Varia esas "
+            "transiciones: la misma formula diez veces suena a plantilla.",
+            "  - NO SE RELLENA. El material trae mas de lo que cabe, y ese es su "
+            "trabajo: que puedas ELEGIR. Un punto entra si el espectador se "
+            "lleva algo util de el; si solo es curioso, se queda fuera.",
+            "  - EL CIERRE resume en una frase lo que se lleva el espectador y "
+            "cumple la promesa del gancho.",
+            "",
+            apertura,
+            "",
+            "Decide los puntos y su orden ANTES de escribir. El guion que "
+            "entregues tiene que poder resumirse en esa lista.",
+            "",
+            "Y CADA PUNTO ES UNA SECCION DEL GUION: el bloque que lo abre lleva "
+            "\"abre_seccion\": true (regla 11), y el gancho y el cierre van "
+            "cada uno en la suya.",
+        ]
+    if estructura == "cronologica":
+        return [
+            "",
+            "== COMO SE ESTRUCTURA ESTE VIDEO ==",
+            "Este video cuenta una historia EN ORDEN DE TIEMPO: un gancho, las "
+            "etapas una tras otra y un cierre.",
+            "",
+            "  - EL GANCHO puede adelantar un momento clave y luego volver al "
+            "principio; si lo hace, que se note claramente al volver para no "
+            "perder al espectador.",
+            f"  - ENTRE {a} Y {b} ETAPAS para unos {minutos} minutos. Cada una "
+            "se ancla con cuando, donde y quien, y se cuenta con calma: que "
+            "pasaba, que cambio y por que importa para lo que viene.",
+            "  - EL TIEMPO SE NOTA EN LAS TRANSICIONES: cada etapa abre situando "
+            "el salto («cien años despues», «ese mismo invierno»). Fechas las "
+            "justas para no perderse, no una en cada frase.",
+            "  - CAUSA Y CONSECUENCIA, NO SOLO SUCESION: cada etapa deja algo que "
+            "explica la siguiente. Si dos etapas se pueden cambiar de sitio sin "
+            "que nada falle, falta el hilo.",
+            "  - NO SE RELLENA. El material trae mas hechos de los que caben: uno "
+            "entra si empuja la etapa en la que esta.",
+            "  - EL CIERRE vuelve al gancho y dice que queda de todo aquello.",
+            "",
+            apertura,
+            "",
+            "Decide las etapas y su orden ANTES de escribir.",
+            "",
+            "Y CADA ETAPA ES UNA SECCION DEL GUION: el bloque que la abre lleva "
+            "\"abre_seccion\": true (regla 11), y el gancho y el cierre van "
+            "cada uno en la suya.",
+        ]
+    # EL RELATO. Corto: el texto de siempre. Largo: las mismas reglas con sus
+    # cifras, y una mas que un video de veinte minutos necesita y uno de dos no.
+    pocas = ("video --cuatro o seis, no doce-- y quedate ahi." if not largo else
+             f"video --entre {a} y {b} para sus unos {minutos} minutos, no el "
+             "doble-- y quedate ahi.")
+    lineas = [
+        "",
+        "== COMO SE ESTRUCTURA ESTE VIDEO ==",
+        "Un video no es una lista de datos buenos: es UN RELATO con unas pocas "
+        "paradas, y cada parada existe porque la anterior la pide.",
+        "",
+        "  - POCOS TEMAS Y BIEN CONTADOS. Elige unas pocas paradas para todo el "
+        + pocas + " Cada una se lleva "
+        "varios bloques seguidos y se explica con calma: el dato, que significa "
+        "y por que importa. Un tema que se despacha en un bloque y no vuelve no "
+        "era un tema, era un dato suelto.",
+        "  - EL ORDEN ES UN ARGUMENTO. Cada parada se apoya en la anterior: la "
+        "primera deja una pregunta que contesta la segunda. Si puedes cambiar "
+        "dos paradas de sitio y el video sigue funcionando igual, no hay "
+        "relato: hay lista.",
+        "  - NO SE RELLENA. El material trae mas hechos de los que caben, y ese "
+        "es su trabajo: que puedas ELEGIR. Un hecho entra si empuja la parada en "
+        "la que esta; si solo es curioso, se queda fuera. "
+        + ("Vale mas un video con cinco temas explicados que uno con doce "
+           "mencionados." if not largo else
+           "Vale mas cada parada bien explicada que el doble de paradas "
+           "mencionadas."),
+        "  - Y NO SE SALTA. Antes de cambiar de parada, cierrala con una frase "
+        "que remate lo que se acaba de contar. Cambiar de asunto a media idea es "
+        "lo que hace que un video se sienta desordenado aunque cada frase por "
+        "separado este bien.",
+    ]
+    if largo:
+        lineas += [
+            "  - UN VIDEO LARGO SE SOSTIENE CON REENGANCHES. Al abrir cada "
+            "parada, una frase situa al espectador: de donde venimos y que "
+            "pregunta sigue abierta. Y cada pocos minutos deja una promesa que "
+            "se cumple mas adelante. Situar no es repetir: un dato ya dado no "
+            "se vuelve a dar como nuevo.",
+            "",
+            apertura,
+        ]
+    return lineas + [
+        "",
+        "Decide esas paradas y su orden ANTES de escribir. El guion que "
+        "entregues tiene que poder resumirse en esa lista.",
+        "",
+        "Y ESAS PARADAS SON LAS SECCIONES DEL GUION: el bloque que abre cada "
+        "una lleva \"abre_seccion\": true (regla 11). Una parada larga puede "
+        "partirse en dos secciones; lo que no puede pasar es cambiar de parada "
+        "sin abrir seccion, porque ahi es donde el motor pone el silencio que "
+        "deja respirar el video.",
+    ]
+
+
+def _cuantas_secciones(estructura, duracion_s):
+    """La frase de la regla 11 que dice cuantas secciones salen."""
+    if estructura == "relato" and float(duracion_s or 0) <= LARGO_DESDE_S:
+        return ("En un video de dos minutos salen cuatro o cinco; en uno de "
+                "quince, ocho o diez COMO MUCHO.")
+    a, b = paradas_para(duracion_s)
+    extra = 0 if estructura == "relato" else 2      # el gancho y el cierre
+    minutos = max(1, int(round(float(duracion_s or 0) / 60.0)))
+    return (f"En este, de unos {minutos} minutos, salen entre {a + extra} y "
+            f"{b + extra + max(1, b // 4)} COMO MUCHO.")
+
 
 # La lista vive en cli_claude para que la UI, el backend y los cuatro sitios que
 # llaman al CLI no tengan cada uno su copia: ya estaban desincronizadas (la
@@ -285,6 +481,14 @@ def _normalizar(params, estricto=True):
     opciones["idioma"] = str(crudo or "").strip().lower()
 
     opciones["guion_propio"] = bool(opciones.get("guion_propio"))
+
+    estructura = str(opciones.get("estructura") or "relato").strip().lower()
+    if estructura not in ESTRUCTURAS:
+        if estricto:
+            raise ValueError(f"estructura desconocida: {estructura!r}. Son "
+                             + ", ".join(ESTRUCTURAS))
+        estructura = "relato"
+    opciones["estructura"] = estructura
 
     # LOS PARAMS CRUDOS otra vez, y por el mismo motivo: `cta._normalizar` mira
     # tambien los personajes para TRADUCIR lo de antes del 06-09-2026 (cuando
@@ -576,43 +780,10 @@ def _instruccion(transcript, metadatos, brief, anterior, opciones, correcciones,
     # Va como seccion propia y pegada a la instruccion de la iteracion porque no
     # es una comprobacion que se pasa al final: es lo primero que hay que
     # decidir, antes de escribir la primera frase.
+    duracion_s = float(brief.get("duracion_objetivo_s") or 0)
+    partes.extend(_seccion_estructura(opciones.get("estructura") or "relato",
+                                      duracion_s, opciones.get("_semilla", "")))
     partes.extend([
-        "",
-        "== COMO SE ESTRUCTURA ESTE VIDEO ==",
-        "Un video no es una lista de datos buenos: es UN RELATO con unas pocas "
-        "paradas, y cada parada existe porque la anterior la pide.",
-        "",
-        "  - POCOS TEMAS Y BIEN CONTADOS. Elige unas pocas paradas para todo el "
-        "video --cuatro o seis, no doce-- y quedate ahi. Cada una se lleva "
-        "varios bloques seguidos y se explica con calma: el dato, que significa "
-        "y por que importa. Un tema que se despacha en un bloque y no vuelve no "
-        "era un tema, era un dato suelto.",
-        "  - EL ORDEN ES UN ARGUMENTO. Cada parada se apoya en la anterior: la "
-        "primera deja una pregunta que contesta la segunda. Si puedes cambiar "
-        "dos paradas de sitio y el video sigue funcionando igual, no hay "
-        "relato: hay lista.",
-        "  - NO SE RELLENA. El material trae mas hechos de los que caben, y ese "
-        "es su trabajo: que puedas ELEGIR. Un hecho entra si empuja la parada en "
-        "la que esta; si solo es curioso, se queda fuera. Vale mas un video con "
-        "cinco temas explicados que uno con doce mencionados.",
-        "  - Y NO SE SALTA. Antes de cambiar de parada, cierrala con una frase "
-        "que remate lo que se acaba de contar. Cambiar de asunto a media idea es "
-        "lo que hace que un video se sienta desordenado aunque cada frase por "
-        "separado este bien.",
-        "",
-        "Decide esas paradas y su orden ANTES de escribir. El guion que "
-        "entregues tiene que poder resumirse en esa lista.",
-        # ATAR LAS PARADAS A LAS SECCIONES, o son dos reglas que se contradicen
-        # sin que ninguna este mal: esta pide cuatro o seis paradas y la 11
-        # admite hasta diez secciones. Es el mismo fallo que tenian la regla 3 y
-        # la 4 con las palabras y los bloques: una regla por unidad sin decir
-        # como se relaciona con la otra unidad es una intencion sin aritmetica.
-        "",
-        "Y ESAS PARADAS SON LAS SECCIONES DEL GUION: el bloque que abre cada "
-        "una lleva \"abre_seccion\": true (regla 11). Una parada larga puede "
-        "partirse en dos secciones; lo que no puede pasar es cambiar de parada "
-        "sin abrir seccion, porque ahi es donde el motor pone el silencio que "
-        "deja respirar el video.",
         "",
         "== INSTRUCCION DE ESTA ITERACION ==",
         opciones["prompt_general"] or
@@ -732,9 +903,9 @@ def _instruccion(transcript, metadatos, brief, anterior, opciones, correcciones,
         "seccion cuando se cambia de asunto, no cuando se cambia de frase. El "
         "primer bloque siempre la lleva. Piensa en "
         "capitulos de un documental: el gancho, la entrada, quien lo hizo, que "
-        "se llevaron, las consecuencias, el cierre. En un video de dos minutos "
-        "salen cuatro o cinco; en uno de quince, ocho o diez COMO MUCHO. "
-        "Pasarse es peor que quedarse corto. Y ESE CORTE SE OYE: el motor deja "
+        "se llevaron, las consecuencias, el cierre. "
+        + _cuantas_secciones(opciones.get("estructura") or "relato", duracion_s)
+        + " Pasarse es peor que quedarse corto. Y ESE CORTE SE OYE: el motor deja "
         "un silencio al final del bloque anterior, asi que ese bloque tiene que "
         "REMATAR el tema que cierra, no enlazar con el siguiente.",
         # LA REGLA DEL RELATO QUE AVANZA. Nacio de un video real: pasado el
@@ -1353,6 +1524,8 @@ def _redactar(proyecto, params, avisar):
     arranque = time.time()
     opciones = _normalizar(params)
     trabajo = comun.preparar_trabajo(proyecto, PASO)
+    # el tipo de apertura se elige POR VIDEO (`gancho_para`): con su id
+    opciones["_semilla"] = getattr(proyecto, "id", "") or ""
 
     avisar(0.02, "reuniendo el material")
     brief_doc = comun.leer_salida(proyecto, "brief", "brief.json")
