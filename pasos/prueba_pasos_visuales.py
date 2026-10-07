@@ -985,6 +985,22 @@ def probar_banda_sonora(proyecto, estado, params, plan):
         n2 = min(len(con_cama), len(sin))
         ok(float(np.abs(con_cama[:n2] - sin[:n2]).mean()) > 0.001,
            "y la cama llega al MP4, no se queda en un wav al lado")
+
+        # ESCUCHAR LA MEZCLA SIN MONTAR (fork, Fase 4): la misma banda sonora en
+        # un MP3, sin clips, para decidir la musica sin esperar a un render
+        print("\n  PASO 8 · escuchar la mezcla sin montar el video")
+        destino_mezcla = os.path.join(CARPETA, "_mezcla", "mezcla.mp3")
+        os.makedirs(os.path.dirname(destino_mezcla), exist_ok=True)
+        hecho = p8_render.escuchar_mezcla(proyecto, p, destino_mezcla)
+        ok(os.path.exists(destino_mezcla), "sale un MP3 con la mezcla")
+        ok(hecho.get("con_musica"), "con la musica dentro")
+        dura = medios.duracion_media(destino_mezcla)
+        ok(abs(dura - (largo + p8_render.COLA_NEGRO_S)) < 0.3,
+           f"y dura lo que el video con su cola ({dura:.2f}s)")
+        mezcla_pcm = _pista_de(destino_mezcla, trabajo, "mezcla.wav")
+        n3 = min(len(mezcla_pcm), len(sin))
+        ok(float(np.abs(mezcla_pcm[:n3] - sin[:n3]).mean()) > 0.001,
+           "y suena distinta que la voz sola: la musica esta en la mezcla")
     finally:
         for ruta in puestos:
             for resto in (ruta, os.path.splitext(ruta)[0] + ".48000.wav"):
@@ -1054,7 +1070,8 @@ def probar_render(proyecto, estado, params):
     # : el techo no era el navegador sino lo que hace Python
     # con cada fotograma, y con hilos eso no escala. La promesa de ese cambio es
     # que es una palanca de VELOCIDAD y nada mas -- mismo Edge, misma pagina,
-    # mismo codigo --, asi que el clip tiene que salir byte a byte igual.
+    # mismo codigo --, asi que el clip tiene que salir igual (ver mas abajo: a la
+    # vista, no byte a byte).
     # Se comparan los PIXELES y no el fichero: el muxer de MP4 estampa la hora
     # en las cabeceras, asi que dos clips identicos nunca dan el mismo byte.
     def _huella_video(ruta):
@@ -1073,15 +1090,102 @@ def probar_render(proyecto, estado, params):
     ok(all(h.startswith("MD5=") for h in huellas.values()),
        f"se pueden leer los clips de la version sellada: "
        f"{[h for h in huellas.values() if not h.startswith('MD5=')][:1]}")
+    ultimos = os.listdir(os.path.join(versionado, "ultimo"))
+    ok(ultimos and all(n.endswith(".jpg") for n in ultimos),
+       f"el render captura en JPEG (los ultimos fotogramas: {ultimos[:3]})")
+    un_clip = os.path.join(versionado, next(iter(salidas["clips"].values())))
+    formato = subprocess.run(
+        [medios.ffprobe(), "-v", "error", "-select_streams", "v:0", "-show_entries",
+         "stream=pix_fmt,color_range", "-of", "default=nw=1", un_clip],
+        capture_output=True, text=True, timeout=60, **medios.SIN_VENTANA).stdout
+    ok("pix_fmt=yuv420p" in formato and "color_range=pc" not in formato,
+       f"y el clip sale en rango de TV como con PNG, no en el completo del JPEG: {formato!r}")
+    # SIN HUELLAS, para que de verdad se vuelvan a dibujar en fila: con ellas el
+    # render las conservaria (ver p8_render.huella_de_clip) y esta comparacion
+    # mediria un clip contra si mismo
+    for nombre in os.listdir(os.path.join(versionado, "clips")):
+        if nombre.endswith(p8_render.EXT_HUELLA):
+            os.remove(os.path.join(versionado, "clips", nombre))
     en_fila = p8_render.ejecutar(proyecto, dict(params, lotes=1), avisador("p8"))
     trabajo_f = proyecto.ruta_trabajo("render", crear=False)
-    distintos = [sid for sid, ruta in en_fila["salidas"]["clips"].items()
-                 if _huella_video(os.path.join(trabajo_f, ruta))
-                 != huellas.get(sid)]
-    igual(distintos, [],
-          "el video sale identico se reparta en procesos o corra en fila: "
-          "repartir es una palanca de velocidad, no de imagen")
+
+    # IGUAL A LA VISTA, NO BYTE A BYTE (fork, Fase 4). Comparaba el MD5 de los
+    # pixeles y fallaba a ratos (2 de 5 pasadas el 06-10). Medido con 8 procesos
+    # dibujando EL MISMO plano a la vez (temp\comparar_paralelo.py): con el
+    # portatil a plena carga Edge rasteriza ~100 pixeles de 2 millones con 1-3
+    # niveles de diferencia sobre 255 -- invisible, y no se va ni con
+    # --disable-checker-imaging. Lo que esta prueba vigila de verdad es que
+    # repartir no meta OTRA imagen (otro plano, una transicion cocida sobre el
+    # fotograma viejo), y eso da menos de 30 dB; el ruido da bastante mas de 45.
+    def _parecido_db(uno, otro):
+        salida = subprocess.run(
+            [medios.ffmpeg(), "-i", uno, "-i", otro, "-lavfi", "[0:v][1:v]psnr",
+             "-f", "null", "-"],
+            capture_output=True, text=True, timeout=300, **medios.SIN_VENTANA)
+        medidas = re.findall(r"average:(inf|[0-9.]+)", salida.stderr or "")
+        return float(medidas[-1]) if medidas else 0.0
+
+    distintos = {}
+    for sid, ruta in en_fila["salidas"]["clips"].items():
+        parecido = _parecido_db(os.path.join(versionado, ruta), os.path.join(trabajo_f, ruta))
+        if parecido < 45.0:
+            distintos[sid] = round(parecido, 1)
+    igual(distintos, {},
+          "el video sale igual a la vista se reparta en procesos o corra en fila "
+          "(PSNR >= 45 dB por clip): repartir es una palanca de velocidad, no de imagen")
     estado.completar("render", en_fila["salidas"], en_fila["unidades"])
+
+    # LA HUELLA DE CADA CLIP (fork, Fase 4): un render entero sin cambiar nada
+    # no redibuja ningun plano; es lo que hace que cambiar la musica solo
+    # mezcle y que un render cortado se reanude
+    print("      un render sin cambios no redibuja ningun plano")
+    igual_otra = p8_render.ejecutar(proyecto, params, avisador("p8"))
+    origenes = {f.get("origen") for uid, f in igual_otra["unidades"].items()
+                if uid.startswith("escena:")}
+    igual(origenes, {"conservado"}, "con la misma huella, todos los clips se conservan")
+    ok(os.path.exists(os.path.join(proyecto.ruta_trabajo("render", crear=False),
+                                   "video.mp4")), "y el MP4 se vuelve a montar igual")
+    estado.completar("render", igual_otra["salidas"], igual_otra["unidades"])
+    escena0 = plan["escenas"][0]
+    base_h = dict(escena=escena0, mov={"ventana_ini": [0, 0, 1, 1]}, hyper="",
+                  capa="<svg/>", capa_fija="", corte={"tipo": "corte"}, fps=30,
+                  resolucion=(1920, 1080), calidad="media")
+    h0 = p8_render.huella_de_clip(**base_h)
+    igual(p8_render.huella_de_clip(**base_h), h0, "la huella es estable")
+    ok(p8_render.huella_de_clip(**dict(base_h, calidad="alta")) != h0,
+       "otra calidad es otra huella (se redibuja)")
+    ok(p8_render.huella_de_clip(**dict(base_h, capa="<svg>x</svg>")) != h0,
+       "otro subtitulo es otra huella")
+    ok(p8_render.huella_de_clip(**dict(base_h, escena=dict(escena0, t_out=float(escena0["t_out"]) + 1))) != h0,
+       "otro tramo de tiempo es otra huella")
+    ok(p8_render.huella_de_clip(**dict(base_h, fotogramas="png")) != h0,
+       "fotogramas en otro formato son otra huella")
+
+    # LOS FOTOGRAMAS VAN EN JPEG y el reparto lo limita la RAM (fork, Fase 4)
+    igual(p8_render.extension_fotogramas(), "jpg", "los fotogramas del render son JPEG")
+    antes = os.environ.get("ESTUDIO_FOTOGRAMAS")
+    os.environ["ESTUDIO_FOTOGRAMAS"] = "png"
+    try:
+        igual(p8_render.extension_fotogramas(), "png",
+              "y ESTUDIO_FOTOGRAMAS=png vuelve al camino de antes")
+    finally:
+        if antes is None:
+            os.environ.pop("ESTUDIO_FOTOGRAMAS", None)
+        else:
+            os.environ["ESTUDIO_FOTOGRAMAS"] = antes
+    igual([p8_render._tope_por_memoria(8, libre) for libre in (16, 8, 6, 4, 1)], [8, 8, 5, 2, 2],
+          "con poca RAM libre se renderizan menos planos a la vez, nunca menos de 2")
+    igual(p8_render._tope_por_memoria(1, 16), 1, "y uno en fila sigue en fila")
+
+    # UN VIDEO NO MEZCLA FRECUENCIAS (revision de la Fase 4): un montaje parcial
+    # sigue con los fps del montaje que ya hay; uno entero, con los de por defecto
+    montado = int(estado.salidas("render").get("fps") or 0)
+    igual(p8_render._fps_del_montaje(proyecto, {}, parcial=True), montado,
+          "rehacer un plano usa los fps del video ya montado, no el defecto nuevo")
+    igual(p8_render._fps_del_montaje(proyecto, {}, parcial=False),
+          p8_render.PARAMS_POR_DEFECTO["fps"], "un render entero usa los de por defecto")
+    igual(p8_render._fps_del_montaje(proyecto, {"fps": 30}, parcial=True), 30,
+          "y si los params los fijan, mandan los params")
 
     # rehacer un plano no rehace el video entero
     print("      re-render de un solo plano")

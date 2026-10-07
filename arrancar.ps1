@@ -18,7 +18,7 @@ param(
   [int]$Puerto = 8020,
   [string]$Datos = "E:\ASVideoStudio\datos",
   [string]$Python = "E:\ASVideoStudio\venv\Scripts\python.exe",
-  [int]$Lotes = 6,
+  [int]$Lotes = 8,
   [switch]$SinNavegador
 )
 
@@ -64,8 +64,8 @@ $env:ESTUDIO_RECETAS         = "$Datos\recetas.json"
 $env:ESTUDIO_ESTADISTICAS    = "$Datos\estadisticas.json"
 $env:ESTUDIO_COSTE_GLOBAL    = "$Datos\coste_global.jsonl"
 $env:ESTUDIO_BITACORA_GLOBAL = "$Datos\bitacora_global.jsonl"
-# 6 procesos de render: con 16 GB de RAM, mas satura la maquina (CLAUDE.md
-# tiene la tabla medida en 8 vCPU; aqui se vuelve a medir en la fase 4).
+# 8 procesos de render (medido el 06-10 en el portatil: 8 dan un 20-30 % mas que 6). Si
+# falta RAM, p8_render baja solo (`_tope_por_memoria`: ~0,5 GB por proceso).
 $env:ESTUDIO_LOTES           = "$Lotes"
 # Las fuentes de Windows: las mismas con las que el autor midio.
 $env:ESTUDIO_FUENTES         = "C:\Windows\Fonts"

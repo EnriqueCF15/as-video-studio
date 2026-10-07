@@ -640,6 +640,26 @@ def prueba_duplicar(proyecto, estado, base):
     shutil.rmtree(copia.raiz, ignore_errors=True)
 
 
+def prueba_avisos_windows():
+    """La burbuja de Windows: el XML sale bien formado aunque el texto lleve & y <."""
+    import base64
+    import re
+    import xml.dom.minidom
+    from nucleo import avisos_windows
+    largo = "ffmpeg: [a&b] <x> " * 40           # recortado a 300, con & y < por medio
+    script = base64.b64decode(
+        avisos_windows._orden_powershell("T & <a>", largo)).decode("utf-16-le")
+    hallado = re.search(r"LoadXml\('(.*?)'\)\n", script, re.S)
+    comprobar(hallado, "el script lleva el XML de la burbuja")
+    try:
+        xml.dom.minidom.parseString(hallado.group(1).replace("''", "'"))
+        bien = True
+    except Exception:  # noqa: BLE001
+        bien = False
+    comprobar(bien, "el XML de la burbuja es valido aunque el texto se recorte "
+                    "junto a un & o un < (se recorta ANTES de escapar)")
+
+
 def principal():
     base = tempfile.mkdtemp(prefix="estudio_prueba_")
     conservar = "--conservar" in sys.argv
@@ -660,6 +680,7 @@ def principal():
         bitacora = prueba_bitacora(proyecto, estado)
         prueba_trabajos(estado, bitacora)
         prueba_duplicar(proyecto, estado, base)
+        prueba_avisos_windows()
     finally:
         if conservar:
             print(f"\nproyecto temporal conservado en {base}")

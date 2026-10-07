@@ -490,7 +490,9 @@ def componer(navegador, desde, hasta, progreso, frag, destino):
         "componer(%s,%s,%s,%s)" % (json.dumps(_url(desde)), json.dumps(_url(hasta)),
                                    repr(round(float(progreso), 6)), json.dumps(frag)),
         esperar=True)
-    temporal = destino + ".tmp.png"
+    # con la MISMA extension: ffmpeg lee la secuencia por la extension, y un PNG
+    # dentro de un .jpg (o al reves) no lo abre (fork, Fase 4: fotogramas JPEG)
+    temporal = destino + ".tmp" + os.path.splitext(destino)[1]
     navegador.capturar(temporal)
     medios.reemplazar(temporal, destino)
     return destino

@@ -65,7 +65,8 @@ from nucleo.proyecto import (Proyecto, ahora, escribir_json,  # noqa: E402
                              identificador, leer_json, leer_jsonl, lock_de,
                              recolocar,
                              ruta_contenida)
-from nucleo.trabajos import GestorTrabajos  # noqa: E402
+from nucleo.trabajos import Cancelado, GestorTrabajos  # noqa: E402
+from nucleo import avisos_windows as AVISOS_WINDOWS  # noqa: E402
 
 # Los pasos cargan los motores de `motores/` al importarse. Si uno falla, el
 # servicio tiene que seguir sirviendo el resto en vez de no arrancar: el error se
@@ -5063,8 +5064,12 @@ def aplicar_repaso(pid: str, cuerpo: dict = Body(default=None)):
     # diapositivas, donde lo que se quiere es MIRAR lo arreglado; la del video
     # no lo manda, porque alli aplicar y montar son el mismo gesto.
     sin_montar = bool(datos.get("sin_montar"))
-    trabajo_id = ctx.gestor.lanzar("repaso", _correr_repaso, ctx, ajuste, modo,
-                                   sin_montar, paso="render")
+    # despierto y con burbuja al acabar, como las tandas (`_trabajo_largo`):
+    # aplicar las notas y remontar un video largo tambien son horas
+    trabajo_id = ctx.gestor.lanzar("repaso", _trabajo_largo, ctx, _correr_repaso,
+                                   (ajuste, modo, sin_montar),
+                                   "Cambios aplicados",
+                                   paso="render")
     _registrar_trabajo(trabajo_id, ctx.id)
     return {"trabajo_id": trabajo_id, "ajuste": ajuste,
             "trabajo": ctx.gestor.estado(trabajo_id),
@@ -5203,6 +5208,11 @@ def leer_sonido(pid: str):
                     "efectos": sonido.fuentes_de("efectos")},
         # lo que se elige a mano por tramo, y entre que (tu carpeta)
         "fijadas": render.get("musica_fijada") or {},
+        # si hay una «Escuchar la mezcla» en marcha: la pantalla la retoma
+        # (boton «Mezclando…») aunque se haya recargado (fork, Fase 4)
+        "mezcla_en_marcha": (_mezcla_en_marcha(ctx) or {}).get("id"),
+        # que animo pide cada parte del video (la tabla del Estilo)
+        "animos_arco": sonido.animos_arco(render.get("animos_arco")),
         "propias": [{c: f.get(c) for c in ("archivo", "titulo", "artista",
                                             "animo", "duracion")}
                     | {"trozos": len(f.get("fragmentos") or [])}
@@ -5308,10 +5318,12 @@ def _correr_banda(avisar, ctx, tramos):
         largo = (float(escenas[-1].get("t_out") or 0)
                  - float(escenas[0].get("t_in") or 0))
     avisar(0.05, "leyendo el ritmo del montaje")
-    # las canciones elegidas a mano en la pantalla del video (fork, Fase 3)
-    fijadas = (ctx.estado.params("render") or {}).get("musica_fijada") or {}
+    # las canciones elegidas a mano en la pantalla del video (fork, Fase 3) y
+    # la tabla de animos del Estilo
+    render = ctx.estado.params("render") or {}
+    fijadas = render.get("musica_fijada") or {}
     ficha = sonido.montar_banda(escenas, largo, avisar=avisar, tramos=tramos,
-                                fijadas=fijadas)
+                                fijadas=fijadas, animos=render.get("animos_arco"))
     ctx.estado.actualizar_params("render", {"musica": ficha})
     ctx.bitacora.anotar("banda_sonora", "render", {
         "tramos": len(ficha["tramos"]),
@@ -5321,6 +5333,52 @@ def _correr_banda(avisar, ctx, tramos):
         "avisos": ficha.get("avisos") or []})
     avisar(1.0, sonido.describir(ctx.estado.params("render") or {}))
     return {**ficha, "resumen": sonido.describir(ctx.estado.params("render") or {})}
+
+
+#: El trabajo de «Escuchar la mezcla»: por su nombre se sabe si ya hay uno.
+TRABAJO_MEZCLA = "escuchar_mezcla"
+RUTA_MEZCLA = "escucha/mezcla.mp3"
+
+
+def _mezcla_en_marcha(ctx):
+    return next((t for t in ctx.gestor.listar(activos=True)
+                 if t["nombre"] == TRABAJO_MEZCLA), None)
+
+
+@app.post("/api/proyectos/{pid}/sonido/escuchar", status_code=202)
+def escuchar_mezcla(pid: str):
+    """La voz con la música y los efectos elegidos, en un MP3, SIN montar el vídeo.
+
+    Es la misma mezcla que hace el render al muxear (`p8_render.escuchar_mezcla`),
+    pero sin clips: sirve para decidir la música antes de pagar el tiempo de un
+    render. No cambia ningún paso ni sale a la red. (fork, Fase 4)
+
+    EN SEGUNDO PLANO Y DE UNA EN UNA. Era una petición que no contestaba hasta
+    acabar: en un vídeo de veinte minutos, minutos sin señal, y dos clics
+    seguidos lanzaban dos mezclas que se pisaban. Ahora devuelve el trabajo, la
+    pantalla dice «Mezclando…» mientras corre, y una segunda petición con una
+    en marcha da 409.
+    """
+    ctx = contexto(pid)
+    with _cerrojo_de_cadena(f"{ctx.id}:mezcla"):
+        activo = _mezcla_en_marcha(ctx)
+        if activo is not None:
+            raise ErrorApi(409, "ya se está preparando la mezcla: espera a que termine",
+                           {"trabajo_id": activo["id"]})
+        trabajo_id = ctx.gestor.lanzar(TRABAJO_MEZCLA, _correr_mezcla, ctx)
+    _registrar_trabajo(trabajo_id, ctx.id)
+    return {"trabajo_id": trabajo_id, "ruta": RUTA_MEZCLA,
+            "trabajo": ctx.gestor.estado(trabajo_id)}
+
+
+def _correr_mezcla(avisar, ctx):
+    avisar(0.1, "mezclando la voz con la música y los efectos")
+    hecho = PASOS_MODULOS.p8_render.escuchar_mezcla(
+        ctx.proyecto, ctx.estado.params("render") or {},
+        ctx.proyecto.ruta(*RUTA_MEZCLA.split("/")))
+    ctx.bitacora.anotar("mezcla_escuchada", "render", {
+        "duracion": hecho["duracion"], "musica": hecho["musica"]})
+    return {**{k: v for k, v in hecho.items() if k != "mp3"}, "ruta": RUTA_MEZCLA}
 
 
 @app.get("/api/proyectos/{pid}/sonido/arco")
@@ -5339,7 +5397,8 @@ def leer_arco(pid: str):
     if not largo and escenas:
         largo = (float(escenas[-1].get("t_out") or 0)
                  - float(escenas[0].get("t_in") or 0))
-    return {"tramos": sonido.arco_del_video(escenas, largo),
+    animos = (ctx.estado.params("render") or {}).get("animos_arco")
+    return {"tramos": sonido.arco_del_video(escenas, largo, animos),
             "duracion": largo, "planos": len(escenas)}
 
 
@@ -7736,8 +7795,9 @@ def _correr_preset_light(avisar, ctx, encargo, solo, preset_id, retomar=False):
 def _congelar_preset(ctx, encargo, preset_id=None):
     """Guarda lo que ha producido el taller como preset de canal. -> ficha."""
     presets = _presets()
+    # `render` por el bloque `musica` del preset (los animos de cada parte)
     params = {paso: (ctx.estado.params(paso) or {})
-              for paso in ("brief", "guion", "assets", "voz", "callouts")}
+              for paso in ("brief", "guion", "assets", "voz", "callouts", "render")}
     datos = presets.datos_de_params(params)
     datos["origen"] = {c: encargo[c] for c in presets.CLAVES_ORIGEN
                        if encargo.get(c)}
@@ -7887,7 +7947,12 @@ def listar_presets_light():
     fichas = (_preset_o_400(lambda p: p.listar())["presets"] or {}).get("canal") or []
     for ficha in fichas:
         _curar_muestras(ficha)
+    sonido = _sonido()
     return {"presets": fichas,
+            # los animos de la musica: la tabla de siempre y los que hay, para
+            # el bloque «Música» de la ficha del estilo (fork)
+            "musica_por_defecto": sonido.ANIMOS_ARCO,
+            "animos_musica": sorted(sonido.ANIMOS),
             "idiomas": [{"valor": c, "nombre": presets.NOMBRES_IDIOMA.get(c, c)}
                         for c in light.IDIOMAS],
             "partes": {k: v["nombre"] for k, v in light.PARTES.items()},
@@ -8449,6 +8514,20 @@ def editar_preset_light(preset_id: str, cuerpo: dict = Body(default=None)):
         except ErrorApi:
             pass                    # sin taller el preset sigue siendo correcto
 
+    # LOS ANIMOS DE LA MUSICA (fork): que pide el arranque, el cuerpo y el
+    # cierre segun su ritmo. Al bloque `musica` del preset y AL TALLER, por lo
+    # mismo que la guia de tono: la proxima congelacion sale de alli.
+    if datos.get("animos_arco") is not None:
+        try:
+            animos = _sonido().validar_animos_arco(datos["animos_arco"])
+        except ValueError as fallo:
+            raise ErrorApi(400, f"animos de la musica: {fallo}")
+        contenido["musica"] = {"animos_arco": animos}
+        try:
+            _taller_de(ficha).estado.actualizar_params("render", {"animos_arco": animos})
+        except ErrorApi:
+            pass                    # sin taller el preset sigue siendo correcto
+
     idioma_anterior = presets.idioma_de(ficha)
     if idioma and idioma != idioma_anterior:
         contenido.setdefault("guion", {})["idioma_salida"] = idioma
@@ -8934,6 +9013,17 @@ def _plan_de_generacion(ctx, pestanas, modo="pendientes", datos=None):
                           ctx, pestana,
                           [{"id": t["id"]} for t in pendientes])})
         total += segundos
+    # POCA MEMORIA ANTES DE UN RENDER (fork, Fase 4): no impide nada, se dice
+    avisos = []
+    if any(t["paso"] == "render" and t["se_hace"] for f in fases for t in f["tareas"]):
+        aviso = PASOS_MODULOS.p8_render.aviso_de_memoria()
+        if aviso:
+            avisos.append(aviso)
+        montando = next((v for v in _leer_cola()["videos"]
+                         if v["estado"] == "montando" and v["pid"] != ctx.id), None)
+        if montando and _cola_corriendo():
+            avisos.append(f"La cola de la noche está montando «{montando['nombre']}»: "
+                          "si lanzas este a la vez, los dos irán más lentos")
     return {
         "pestanas": list(pestanas), "modo": modo,
         "fases": fases,
@@ -8941,6 +9031,7 @@ def _plan_de_generacion(ctx, pestanas, modo="pendientes", datos=None):
         "tareas": sum(len(f["pendientes"]) for f in fases),
         "coste": _coste_previsto(ctx, pestanas),
         "impedimentos": [i for f in fases for i in f["impedimentos"]],
+        "avisos": avisos,
     }
 
 
@@ -9130,8 +9221,69 @@ def generar_video(pid: str, cuerpo: dict = Body(default=None)):
     """
     if PASOS_MODULOS is None:
         raise ErrorApi(503, f"los pasos no se han podido cargar: {ERROR_PASOS}")
-    ctx = contexto(pid)
-    datos = _cuerpo(cuerpo)
+    return _lanzar_cadena(contexto(pid), _cuerpo(cuerpo))
+
+
+#: Una tanda que acaba antes de esto no avisa con la burbuja de Windows: la
+#: estabas mirando. Las largas --montar un video, las imagenes de uno de veinte
+#: minutos-- si, porque nadie mira la barra durante una hora (fork, Fase 4).
+AVISO_TRAS_S = 120.0
+
+#: Los pasos que la cola de la noche puede correr sin nadie delante: los que no
+#: gastan. Montar (`render`) y poner al dia los rotulos (`callouts`) son
+#: locales; todo lo demas puede pedir imagenes o voz, y eso se decide despierto.
+PASOS_SIN_GASTO = ("callouts", "render")
+
+
+def _gasto_de_noche(plan):
+    """Por que este plan no puede correr sin nadie delante, o ''. -> str"""
+    con_gasto = sorted({t["paso"] for f in plan["fases"] for t in f["tareas"]
+                        if t["se_hace"] and t["paso"] not in PASOS_SIN_GASTO})
+    if con_gasto or float(plan["coste"].get("usd_por_generar") or 0) > 0:
+        return ("antes de montarlo hay que rehacer cosas que pueden costar ("
+                + ", ".join(con_gasto or ["imágenes"]) + "): hazlo a mano desde su página")
+    return ""
+
+
+def _trabajo_largo(avisar, ctx, funcion, argumentos, titulo, avisar_al_acabar=True):
+    """Corre `funcion(avisar, ctx, *argumentos)` sin que el portatil se duerma.
+
+    Y si tardo mas de `AVISO_TRAS_S`, lo dice con la burbuja de Windows: bien
+    («titulo: nombre del video») o mal («Se ha parado»). Cancelar no avisa: lo
+    acabas de pedir tu.
+    """
+    inicio = time.time()
+    nombre = ctx.proyecto.config.get("nombre") or ctx.id
+    with AVISOS_WINDOWS.despierto():
+        try:
+            salida = funcion(avisar, ctx, *argumentos)
+        except Cancelado:
+            raise
+        except Exception as fallo:
+            if avisar_al_acabar and time.time() - inicio >= AVISO_TRAS_S:
+                AVISOS_WINDOWS.notificar(f"Se ha parado: {nombre}", str(fallo)[:200])
+            raise
+    if avisar_al_acabar and time.time() - inicio >= AVISO_TRAS_S:
+        resumen = salida.get("resumen") if isinstance(salida, dict) else ""
+        AVISOS_WINDOWS.notificar(f"{titulo}: {nombre}", resumen or "")
+    return salida
+
+
+def _correr_cadena_con_avisos(avisar, ctx, pestanas, modo, datos, plan,
+                              avisar_al_acabar=True):
+    """`_correr_cadena` sin que el portatil se duerma, y con aviso al acabar."""
+    titulo = "Vídeo montado" if "render" in pestanas else "Tanda terminada"
+    return _trabajo_largo(avisar, ctx, _correr_cadena, (pestanas, modo, datos, plan),
+                          titulo, avisar_al_acabar)
+
+
+def _lanzar_cadena(ctx, datos, solo_sin_gasto=False, avisar_al_acabar=True):
+    """Valida, planifica y lanza una tanda. -> la respuesta de POST /generar.
+
+    Es el cuerpo de `generar_video`, aparte para que la cola de la noche lance
+    exactamente lo mismo que el boton. Con `solo_sin_gasto` se niega (409) si el
+    plan trae algo que no sea montar: de noche no se gasta sin preguntar.
+    """
     for paso_id, valores in (datos.get("params") or {}).items():
         if paso_id not in PASOS_POR_ID:
             raise ErrorApi(400, f"'{paso_id}' no es un paso: no tiene params")
@@ -9170,6 +9322,10 @@ def generar_video(pid: str, cuerpo: dict = Body(default=None)):
         if plan["impedimentos"]:
             primero = plan["impedimentos"][0]
             raise ErrorApi(409, primero["que"], {"impedimentos": plan["impedimentos"]})
+        if solo_sin_gasto:
+            gasto = _gasto_de_noche(plan)
+            if gasto:
+                raise ErrorApi(409, gasto)
         recetas = _recetas()
         producidos = set()
         for ficha in plan["fases"]:
@@ -9187,8 +9343,10 @@ def generar_video(pid: str, cuerpo: dict = Body(default=None)):
                                    {"faltan": faltan, "tarea": tarea["id"]})
 
         trabajo_id = ctx.gestor.lanzar("generar:" + "+".join(elegidas),
-                                       _correr_cadena, ctx, elegidas, modo, datos,
-                                       plan, paso=plan["fases"][0]["tareas"][0]["paso"])
+                                       _correr_cadena_con_avisos, ctx, elegidas, modo,
+                                       datos, plan,
+                                       avisar_al_acabar=avisar_al_acabar,
+                                       paso=plan["fases"][0]["tareas"][0]["paso"])
     _registrar_trabajo(trabajo_id, ctx.id)
     ctx.bitacora.anotar("generacion_lanzada", None, {
         "pestanas": elegidas, "modo": modo, "tareas": plan["tareas"],
@@ -9197,6 +9355,224 @@ def generar_video(pid: str, cuerpo: dict = Body(default=None)):
     return {"trabajo_id": trabajo_id, "pestanas": elegidas, "modo": modo,
             "plan": plan, "trabajo": ctx.gestor.estado(trabajo_id),
             "eventos": f"/api/trabajos/{trabajo_id}/eventos"}
+
+
+# ------------------------------------------------------- la cola de la noche
+#
+# VARIOS VIDEOS MONTADOS UNO DETRAS DE OTRO, SIN NADIE DELANTE (fork, Fase 4).
+# Montar un video de veinte minutos son horas en el portatil, y dos a la vez se
+# pelean por la memoria. La cola los monta de uno en uno con la MISMA tanda del
+# boton «Hacer el MP4» (`_lanzar_cadena`), con el portatil despierto mientras
+# dura, y avisa con una sola burbuja de Windows al acabar.
+#
+# SOLO MONTA, NO GASTA. Si un video necesita imagenes o voz antes de montarse,
+# la cola lo salta y dice por que: eso se decide despierto (`PASOS_SIN_GASTO`).
+#
+# Vive en un fichero junto a los proyectos para que sobreviva a un reinicio del
+# Estudio. Lo que NO sobrevive es el hilo: un video que se estaba montando
+# cuando se reinicio vuelve a la cola, y al seguir se salta lo que ya estaba
+# dibujado (la huella de cada clip, p8_render).
+
+COLA_FICHERO = "_cola_render.json"
+ESTADOS_COLA = ("en_cola", "montando", "listo", "error")
+_COLA = {"hilo": None, "parar": False}
+_COLA_LOCK = threading.RLock()
+
+
+def _ruta_cola():
+    return os.path.join(raiz_proyectos(), COLA_FICHERO)
+
+
+def _cola_corriendo():
+    hilo = _COLA["hilo"]
+    return bool(hilo and hilo.is_alive())
+
+
+def _leer_cola():
+    datos = leer_json(_ruta_cola(), {})
+    videos = [v for v in (datos.get("videos") if isinstance(datos, dict) else None) or []
+              if isinstance(v, dict) and v.get("pid") and v.get("estado") in ESTADOS_COLA]
+    if not _cola_corriendo():
+        for video in videos:
+            if video["estado"] == "montando":
+                video["estado"] = "en_cola"
+                video["detalle"] = "se cortó al reiniciar el Estudio: seguirá por donde iba"
+    return {"videos": videos}
+
+
+def _guardar_cola(cola):
+    escribir_json(_ruta_cola(), {"videos": cola["videos"]})
+
+
+def _ficha_cola():
+    with _COLA_LOCK:
+        cola = _leer_cola()
+        return {"videos": cola["videos"], "corriendo": _cola_corriendo(),
+                "parar_al_acabar": bool(_COLA["parar"]) and _cola_corriendo(),
+                "en_cola": sum(1 for v in cola["videos"] if v["estado"] == "en_cola")}
+
+
+#: Lo que monta la cola: la tanda del boton «Generar Vídeo», sin rehacer nada al dia.
+TANDA_COLA = {"tanda": "render", "modo": "pendientes"}
+
+
+def _no_va_a_la_cola(ctx):
+    """Por que la cola se saltaria este video, o ''. -> str
+
+    LO MISMO QUE MIRARA AL MONTARLO, pero AHORA (fork, Fase 4, revision): sin
+    esto la cola aceptaba un video al que le faltaban imagenes y lo decia a la
+    manana siguiente, con la noche perdida para ese video.
+    """
+    if _trabajo_de_cadena(ctx) is not None:
+        return "se está generando ahora mismo: ponlo en la cola cuando acabe"
+    elegidas = _con_origen(ctx, _pestanas_pedidas(TANDA_COLA))
+    plan = _plan_de_generacion(ctx, elegidas, TANDA_COLA["modo"], TANDA_COLA)
+    if not plan["tareas"]:
+        return "ya está montado y al día: no hace falta ponerlo en la cola"
+    if plan["impedimentos"]:
+        return plan["impedimentos"][0]["que"]
+    return _gasto_de_noche(plan)
+
+
+def _montar_de_la_cola(pid):
+    """Monta un video de la cola y espera a que acabe. -> (estado, detalle)."""
+    try:
+        ctx = contexto(pid)
+        lanzado = _lanzar_cadena(ctx, dict(TANDA_COLA),
+                                 solo_sin_gasto=True, avisar_al_acabar=False)
+    except ErrorApi as fallo:
+        if fallo.codigo == 400 and fallo.mensaje.startswith("no queda nada"):
+            return "listo", "ya estaba montado"
+        return "error", fallo.mensaje
+    except Exception as fallo:                                  # noqa: BLE001
+        return "error", f"{type(fallo).__name__}: {fallo}"
+    ficha = ctx.gestor.esperar(lanzado["trabajo_id"])
+    minutos = max(1, int(round(float(ficha.get("segundos") or 0) / 60.0)))
+    if ficha["estado"] == "listo":
+        return "listo", f"montado en {minutos} min"
+    if ficha["estado"] == "cancelado":
+        return "error", "lo cancelaste"
+    return "error", str(ficha.get("error") or "se paró sin decir por qué")[:300]
+
+
+def _correr_cola():
+    hechos = []
+    with AVISOS_WINDOWS.despierto():
+        while True:
+            with _COLA_LOCK:
+                cola = _leer_cola()
+                siguiente = None if _COLA["parar"] else next(
+                    (v for v in cola["videos"] if v["estado"] == "en_cola"), None)
+                if siguiente is None:
+                    # LA COLA SE DA POR TERMINADA AQUI, DENTRO DEL CERROJO, y no al
+                    # salir: entre una cosa y otra cabia un «Empezar» que veia el
+                    # hilo vivo, no arrancaba otro, y el video recien puesto se
+                    # quedaba esperando (revision de la Fase 4).
+                    _COLA["hilo"] = None
+                    _COLA["parar"] = False
+                    break
+                siguiente.update(estado="montando", inicio=ahora(), detalle="")
+                _guardar_cola(cola)
+            estado, detalle = _montar_de_la_cola(siguiente["pid"])
+            with _COLA_LOCK:
+                cola = _leer_cola()
+                for video in cola["videos"]:
+                    if video["pid"] == siguiente["pid"] and video["estado"] == "montando":
+                        video.update(estado=estado, detalle=detalle, fin=ahora())
+                _guardar_cola(cola)
+            hechos.append(estado)
+    if hechos:
+        bien = hechos.count("listo")
+        mal = len(hechos) - bien
+        AVISOS_WINDOWS.notificar(
+            "La cola de la noche ha terminado",
+            f"{bien} vídeo(s) montado(s)" + (f", {mal} con problemas: míralos en "
+                                            f"Inicio" if mal else ""))
+
+
+@app.get("/api/cola-render")
+def ver_cola_render():
+    """Los videos que esperan a montarse de noche, y si la cola esta corriendo."""
+    return _ficha_cola()
+
+
+@app.post("/api/cola-render", status_code=201)
+def anadir_a_cola_render(cuerpo: dict = Body(default=None)):
+    """Pone un video al final de la cola. Si ya estaba terminado, vuelve a ella."""
+    pid = str(_cuerpo(cuerpo).get("pid") or "").strip()
+    if not pid:
+        raise ErrorApi(400, "falta 'pid': que video poner en la cola")
+    ctx = contexto(pid)
+    if ctx.proyecto.config.get(CONFIG_TALLER):
+        raise ErrorApi(400, "eso es el taller de un estilo, no un video")
+    motivo = _no_va_a_la_cola(ctx)
+    if motivo:
+        raise ErrorApi(409, f"no se puede dejar para la noche: {motivo}")
+    with _COLA_LOCK:
+        cola = _leer_cola()
+        actual = next((v for v in cola["videos"] if v["pid"] == ctx.id), None)
+        if actual and actual["estado"] in ("en_cola", "montando"):
+            raise ErrorApi(409, "ese video ya esta en la cola")
+        if actual:
+            cola["videos"].remove(actual)
+        cola["videos"].append({"pid": ctx.id,
+                               "nombre": ctx.proyecto.config.get("nombre") or ctx.id,
+                               "estado": "en_cola", "detalle": "", "anadido": ahora()})
+        _guardar_cola(cola)
+    return _ficha_cola()
+
+
+@app.delete("/api/cola-render/{pid}")
+def quitar_de_cola_render(pid: str):
+    """Saca un video de la cola (el que se esta montando no: cancelalo antes)."""
+    with _COLA_LOCK:
+        cola = _leer_cola()
+        actual = next((v for v in cola["videos"] if v["pid"] == pid), None)
+        if actual is None:
+            raise ErrorApi(404, "ese video no esta en la cola")
+        if actual["estado"] == "montando":
+            raise ErrorApi(409, "se esta montando ahora: cancelalo desde su pagina "
+                                "si quieres pararlo")
+        cola["videos"].remove(actual)
+        _guardar_cola(cola)
+    return _ficha_cola()
+
+
+@app.post("/api/cola-render/empezar", status_code=202)
+def empezar_cola_render():
+    """Arranca la cola: monta los videos en espera, uno detras de otro."""
+    with _COLA_LOCK:
+        if _cola_corriendo():
+            _COLA["parar"] = False
+            return _ficha_cola()
+        cola = _leer_cola()
+        if not any(v["estado"] == "en_cola" for v in cola["videos"]):
+            raise ErrorApi(409, "no hay ningun video esperando en la cola")
+        _COLA["parar"] = False
+        _COLA["hilo"] = threading.Thread(target=_correr_cola, name="cola-render",
+                                         daemon=True)
+        _COLA["hilo"].start()
+    return _ficha_cola()
+
+
+@app.post("/api/cola-render/parar")
+def parar_cola_render():
+    """Que la cola no empiece el siguiente. El que se esta montando, termina."""
+    with _COLA_LOCK:
+        if _cola_corriendo():
+            _COLA["parar"] = True
+    return _ficha_cola()
+
+
+@app.post("/api/cola-render/limpiar")
+def limpiar_cola_render():
+    """Quita de la lista los videos ya terminados (bien o con problemas)."""
+    with _COLA_LOCK:
+        cola = _leer_cola()
+        cola["videos"] = [v for v in cola["videos"]
+                          if v["estado"] in ("en_cola", "montando")]
+        _guardar_cola(cola)
+    return _ficha_cola()
 
 
 @app.post("/api/presets-light/{preset_id}/video", status_code=201)

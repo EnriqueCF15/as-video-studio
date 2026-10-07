@@ -163,6 +163,7 @@ Reglas que valen para toda la API y no se repiten en cada fila:
 | `GET` | `/api/proyectos/{pid}/sonido/arco` | El arco que sale del RITMO del montaje. Gratis, sin salir a la red. |
 | `POST` | `/api/proyectos/{pid}/sonido/banda` | Monta la banda sonora SOLA: un tema por tramo, elegido por el ritmo. |
 | `POST` | `/api/proyectos/{pid}/sonido/efectos` | Llena el banco de efectos del canal para los papeles que se pidan. |
+| `POST` | `/api/proyectos/{pid}/sonido/escuchar` | La voz con la música y los efectos elegidos, en un MP3, SIN montar el vídeo. |
 | `POST` | `/api/proyectos/{pid}/sonido/musica` | Temas de Jamendo que pegan con el tono. Devuelve candidatos, no elige. |
 | `POST` | `/api/proyectos/{pid}/sonido/vetados` | Prohíbe un efecto en TODO el canal, o levanta el veto con `quitar`. |
 | `GET` | `/api/proyectos/{pid}/transiciones` | Las transiciones que existen, con su GLSL, y cuales entran en este video. |
@@ -171,6 +172,12 @@ Reglas que valen para toda la API y no se repiten en cada fila:
 
 | | Ruta | Qué hace |
 |---|---|---|
+| `GET` | `/api/cola-render` | Los videos que esperan a montarse de noche, y si la cola esta corriendo. |
+| `POST` | `/api/cola-render` | Pone un video al final de la cola. Si ya estaba terminado, vuelve a ella. |
+| `POST` | `/api/cola-render/empezar` | Arranca la cola: monta los videos en espera, uno detras de otro. |
+| `POST` | `/api/cola-render/limpiar` | Quita de la lista los videos ya terminados (bien o con problemas). |
+| `POST` | `/api/cola-render/parar` | Que la cola no empiece el siguiente. El que se esta montando, termina. |
+| `DELETE` | `/api/cola-render/{pid}` | Saca un video de la cola (el que se esta montando no: cancelalo antes). |
 | `GET` | `/api/proyectos/{pid}/capturas` | Capturas del proyecto, filtrables por paso y escena. |
 | `POST` | `/api/proyectos/{pid}/capturas` | Guarda una captura anotada de los pasos callouts o render. |
 | `POST` | `/api/proyectos/{pid}/capturas/aplicar` | Traduce las capturas a instruccion y rehace SOLO las escenas tocadas. |
@@ -267,4 +274,4 @@ Reglas que valen para toda la API y no se repiten en cada fila:
 
 ---
 
-**153 endpoints.** Escrito por `generar_api.py` desde `app.py`.
+**160 endpoints.** Escrito por `generar_api.py` desde `app.py`.

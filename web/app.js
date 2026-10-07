@@ -411,6 +411,8 @@ const API = {
     + (pares && Object.keys(pares).length ? `?${consulta(pares)}` : ''),
   valoracion: () => `${BASE}/api/estadisticas/valoracion`,
   apartar: pid => `${BASE}/api/proyectos/${encodeURIComponent(pid)}`,
+  colaRender: pid => `${BASE}/api/cola-render`
+    + (pid ? `/${encodeURIComponent(pid)}` : ''),
   duplicar: pid => `${BASE}/api/proyectos/${encodeURIComponent(pid)}/duplicar`,
   papelera: () => `${BASE}/api/proyectos/papelera`,
   papeleraFicha: carpeta => `${BASE}/api/proyectos/papelera/${encodeURIComponent(carpeta)}`,
@@ -3276,18 +3278,55 @@ function filaAudioPropio(familia, entrada, audio) {
   return caja;
 }
 
-/* Lo que quiere decir cada ánimo, para elegirlo sin adivinar. Los cinco
-   primeros son los que el estudio pide solo (`sonido.arco_del_video`). */
+/* Lo que quiere decir cada ánimo, para elegirlo sin adivinar. Qué ánimo pide
+   cada parte del vídeo lo dice el bloque «Música» de cada Estilo. */
 const ANIMOS_EXPLICADOS = {
-  sobrio: 'tranquilo, de fondo (el cuerpo del vídeo)',
-  tension: 'con pulso, algo de urgencia (arranque o tramos rápidos)',
-  misterioso: 'intriga, ambiente (arranque pausado)',
-  melancolico: 'reflexivo, suave (cierre pausado)',
-  epico: 'crece y remata (cierre rápido)',
-  esperanzador: 'optimista (solo si la eliges a mano)',
-  corporativo: 'limpio, de empresa (solo si la eliges a mano)',
-  oscuro: 'grave, sombrío (solo si la eliges a mano)',
+  sobrio: 'tranquilo, de fondo',
+  tension: 'con pulso, algo de urgencia',
+  misterioso: 'intriga, ambiente',
+  melancolico: 'reflexivo, suave',
+  epico: 'crece y remata',
+  esperanzador: 'optimista, luminoso',
+  corporativo: 'limpio, de empresa',
+  oscuro: 'grave, sombrío',
 };
+
+/* LOS ÁNIMOS DE LA MÚSICA DE UN ESTILO. El estudio parte el vídeo en tramos y
+   mira el ritmo de cada uno: según sea el arranque, el cuerpo o el cierre, y
+   vaya despacio o rápido, pide un ánimo a tu carpeta de música. Aquí se elige
+   ese ánimo. Se guarda solo y vale para los vídeos NUEVOS con este estilo. */
+const PARTES_MUSICA = [
+  { id: 'inicio', nombre: 'Arranque' },
+  { id: 'medio', nombre: 'Cuerpo' },
+  { id: 'cierre', nombre: 'Cierre' },
+];
+
+function animosDeMusicaLight(ficha) {
+  const g = APP.light.datos || {};
+  const defecto = g.musica_por_defecto || {};
+  const guardado = ((ficha.datos || {}).musica || {}).animos_arco || {};
+  const tabla = {};
+  PARTES_MUSICA.forEach(p => {
+    tabla[p.id] = { ...(defecto[p.id] || {}), ...(guardado[p.id] || {}) };
+  });
+  const opciones = (g.animos_musica || []).map(a => ({
+    valor: a, nombre: ANIMOS_EXPLICADOS[a] ? `${a} — ${ANIMOS_EXPLICADOS[a]}` : a }));
+  const guardar = (parte, ritmo, valor) => {
+    tabla[parte][ritmo] = valor;
+    guardarPresetLight(ficha.id, { animos_arco: tabla });
+  };
+  const caja = h('div', { clase: 'animos-musica' },
+    h('div', { clase: 'pista' },
+      'Según el ritmo de cada parte, el estudio pide este ánimo a tu carpeta de música. '
+      + 'Se guarda solo y vale para los vídeos nuevos con este estilo.'));
+  PARTES_MUSICA.forEach(p => {
+    caja.appendChild(h('div', { clase: 'animos-parte' },
+      h('b', {}, p.nombre),
+      campoSelect('si va despacio', tabla[p.id].lento, opciones, v => guardar(p.id, 'lento', v)),
+      campoSelect('si va rápido', tabla[p.id].rapido, opciones, v => guardar(p.id, 'rapido', v))));
+  });
+  return caja;
+}
 
 /* EL TÍTULO Y EL AUTOR, PROPUESTOS DESDE EL NOMBRE DEL FICHERO. La Biblioteca
    de audio de YouTube los baja como «Título - Autor.mp3», con la «/» de los
@@ -5305,7 +5344,7 @@ function encargoParaServidor() {
 }
 
 async function cargarGaleriaLight(forzar) {
-  if (APP.light.datos && !forzar) { pintarLight(); return; }
+  if (APP.light.datos && !forzar) { pintarLight(); refrescarColaNoche(); return; }
   APP.light.cargando = true;
   APP.light.error = '';
   // El catálogo de recetas del canal, que es donde vive la tarea de las
@@ -5322,6 +5361,8 @@ async function cargarGaleriaLight(forzar) {
         .filter(p => p.video_light)
         .sort((a, b) => String(b.actualizado || '').localeCompare(String(a.actualizado || '')));
     } catch (e) { APP.light.datos.videos = []; }
+    try { APP.light.datos.cola = await pedir(API.colaRender()); }
+    catch (e) { APP.light.datos.cola = null; }
     // el ritmo de fábrica lo dice el servidor, no esta pantalla
     if (APP.light.encargo && !APP.light.encargo.ritmo) {
       APP.light.encargo.ritmo = ritmoPorDefecto();
@@ -5773,6 +5814,8 @@ function vistaGaleriaLight() {
      generar no tenía desde dónde retomarse: seguía corriendo en el servidor y
      no había ningún camino hasta él. */
   const videos = videosLight();
+  const cola = panelColaNoche();
+  if (cola) caja.appendChild(cola);
   if (videos.length) {
     caja.appendChild(h('div', { clase: 'light-cab' },
       h('h2', {}, 'Tus vídeos'),
@@ -5789,6 +5832,7 @@ function vistaGaleriaLight() {
          HTML valido y el clic acabaria abriendo el video en vez de renombrarlo
          — la misma razon por la que la tarjeta de un estilo es un div con un
          boton grande dentro y no un boton entero. */
+      botonColaNoche(video),
       h('button', {
         clase: 'mini fantasma renombrar', title: 'Cambiar el nombre',
         'aria-label': `Cambiar el nombre de ${video.nombre || video.id}`,
@@ -5867,6 +5911,168 @@ function tarjetaNuevoEstilo(cuantos) {
 /* Los vídeos hechos con este modo, del más reciente al más antiguo. Los sirve
    `GET /api/proyectos` con su marca (`video_light`): son proyectos normales y
    se ven también en el modo editor, que es lo que son. */
+/* LA COLA DE LA NOCHE (fork, Fase 4). Montar un vídeo largo son horas: se
+   dejan varios en fila, se pulsa «Empezar» antes de dormir y se montan de uno
+   en uno, con el portátil despierto y una burbuja de Windows al acabar. Solo
+   MONTA: un vídeo al que le falten imágenes o voz se salta y dice por qué,
+   porque de noche no se gasta sin preguntar (ver `_lanzar_cadena`). */
+const ESTADOS_COLA = {
+  en_cola: ['', 'en espera'], montando: ['obsoleto', 'montando…'],
+  listo: ['ok', 'montado'], error: ['error', 'no se pudo'],
+};
+
+function colaNoche() { return (APP.light.datos || {}).cola || null; }
+
+function enColaNoche(pid) {
+  const cola = colaNoche();
+  return ((cola && cola.videos) || []).find(v => v.pid === pid) || null;
+}
+
+function botonColaNoche(video) {
+  const puesto = enColaNoche(video.id);
+  const esperando = puesto && (puesto.estado === 'en_cola' || puesto.estado === 'montando');
+  return h('button', {
+    clase: `mini fantasma renombrar${esperando ? ' activo' : ''}`,
+    title: esperando ? 'Está en la cola de la noche (pulsa para quitarlo)'
+      : 'Dejarlo en la cola de la noche: se monta el MP4 sin que estés delante',
+    'aria-label': esperando ? `Quitar ${video.nombre || video.id} de la cola de la noche`
+      : `Poner ${video.nombre || video.id} en la cola de la noche`,
+    disabled: (puesto && puesto.estado === 'montando') || !!APP.light.colaOcupada,
+    onclick: () => (esperando ? quitarDeColaNoche(video.id) : ponerEnColaNoche(video.id)),
+  }, '🌙');
+}
+
+/* UNA ACCION DE LA COLA A LA VEZ, y con los botones apagados mientras va
+   (revision de la Fase 4): sin esto un doble clic en «Empezar» o en la luna
+   mandaba dos peticiones. `pedirla` es una función: la petición sale aquí,
+   después de apagar los botones. */
+async function accionColaNoche(pedirla, hecho) {
+  if (APP.light.colaOcupada) return;
+  APP.light.colaOcupada = true;
+  pintarLight();
+  try {
+    const cola = await pedirla();
+    if (APP.light.datos) APP.light.datos.cola = cola;
+    if (hecho) toast(hecho);
+  } catch (e) { toast(e.message, true); }
+  APP.light.colaOcupada = false;
+  vigilarColaNoche();
+  pintarLight();
+}
+
+function ponerEnColaNoche(pid) {
+  return accionColaNoche(() => pedir(API.colaRender(), { method: 'POST', cuerpo: { pid } }),
+    'en la cola de la noche');
+}
+
+function quitarDeColaNoche(pid) {
+  return accionColaNoche(() => pedir(API.colaRender(pid), { method: 'DELETE' }),
+    'fuera de la cola');
+}
+
+/* LA COLA SE MIRA SOLA MIENTRAS CORRE (revision de la Fase 4). Su estado solo
+   se pedía al cargar la galería: con la página abierta toda la noche, por la
+   mañana seguía diciendo «montando…» de algo que ya había acabado. Mientras
+   corre se pregunta cada diez segundos, y se deja de preguntar sola en cuanto
+   para. */
+const COLA_NOCHE_CADA_MS = 10000;
+const VIGIA_COLA = { temporizador: null };
+
+async function refrescarColaNoche() {
+  try {
+    const cola = await pedir(API.colaRender());
+    const antes = JSON.stringify(colaNoche());
+    if (APP.light.datos) APP.light.datos.cola = cola;
+    if (antes !== JSON.stringify(cola)) pintarLight();
+  } catch (e) { /* sin respuesta: se queda lo que había */ }
+  vigilarColaNoche();
+}
+
+function vigilarColaNoche() {
+  const corre = !!(colaNoche() || {}).corriendo;
+  if (corre && !VIGIA_COLA.temporizador) {
+    VIGIA_COLA.temporizador = setInterval(refrescarColaNoche, COLA_NOCHE_CADA_MS);
+  } else if (!corre && VIGIA_COLA.temporizador) {
+    clearInterval(VIGIA_COLA.temporizador);
+    VIGIA_COLA.temporizador = null;
+  }
+}
+
+function botonColaNocheVideo() {
+  const pid = (APP.light.video || {}).pid;
+  const puesto = pid ? enColaNoche(pid) : null;
+  const esperando = puesto && puesto.estado === 'en_cola';
+  return conAyuda(esperando
+    ? 'Está en la cola de la noche. Para arrancarla, vuelve al inicio: la cola está '
+      + 'encima de «Tus vídeos». Pulsa aquí para sacarlo.'
+    : 'En vez de montarlo ahora, déjalo en la cola de la noche: se monta luego, uno '
+      + 'detrás de otro con los demás que pongas, sin que estés delante. La cola se '
+      + 'arranca desde el inicio, encima de «Tus vídeos».',
+  h('button', {
+    clase: 'mini', disabled: !!APP.light.colaOcupada,
+    onclick: () => (esperando ? quitarDeColaNoche(pid) : ponerEnColaNoche(pid)),
+  }, esperando ? '🌙 En la cola' : '🌙 Para la noche'));
+}
+
+function panelColaNoche() {
+  const cola = colaNoche();
+  const videos = (cola && cola.videos) || [];
+  if (!videos.length) return null;
+  const esperan = videos.filter(v => v.estado === 'en_cola').length;
+  const terminados = videos.filter(v => v.estado === 'listo' || v.estado === 'error').length;
+  const ocupada = !!APP.light.colaOcupada;
+  vigilarColaNoche();
+  const caja = h('div', { clase: 'cola-noche' },
+    h('div', { clase: 'fila' },
+      h('b', {}, '🌙 La cola de la noche'),
+      h('span', { clase: 'meta crece' }, cola.corriendo
+        ? (cola.parar_al_acabar ? ' — se para al terminar el que está montando'
+          : ` — montando; ${esperan} más en espera`)
+        : (esperan ? ` — ${esperan} en espera` : ' — sin nada en espera')),
+      cola.corriendo
+        ? (cola.parar_al_acabar ? null : h('button', {
+          clase: 'mini', disabled: ocupada,
+          title: 'El que se está montando termina; el siguiente ya no empieza',
+          onclick: () => accionColaNoche(
+            () => pedir(`${API.colaRender()}/parar`, { method: 'POST' }),
+            'se parará al terminar este'),
+        }, 'Parar después de este'))
+        : (esperan ? h('button', {
+          clase: 'primario mini', disabled: ocupada,
+          title: 'Monta los vídeos en espera, uno detrás de otro, y avisa al acabar',
+          onclick: () => accionColaNoche(
+            () => pedir(`${API.colaRender()}/empezar`, { method: 'POST' }),
+            'cola en marcha: ya puedes dejar el portátil (enchufado y con la tapa abierta)'),
+        }, ocupada ? 'Arrancando…' : 'Empezar') : null),
+      terminados && !cola.corriendo ? h('button', {
+        clase: 'mini fantasma', disabled: ocupada,
+        onclick: () => accionColaNoche(
+          () => pedir(`${API.colaRender()}/limpiar`, { method: 'POST' })),
+      }, 'Quitar los terminados') : null));
+  /* MIENTRAS MONTA, LO QUE NO HAY QUE HACER: está sola y tarda horas */
+  if (cola.corriendo) {
+    caja.appendChild(h('div', { clase: 'caja-aviso' },
+      '🌙 Montando sin nadie delante: no apagues el portátil ni cierres la tapa '
+      + 'hasta que acabe. Puedes seguir usando el Estudio para mirar, pero no '
+      + 'montes otro vídeo a la vez: irían los dos más lentos. Se actualiza sola.'));
+  }
+  videos.forEach(v => {
+    const [clase, texto] = ESTADOS_COLA[v.estado] || ['', v.estado];
+    caja.appendChild(h('div', { clase: 'fila' },
+      h('span', { clase: `pastilla ${clase}`.trim() }, texto),
+      h('span', { clase: 'crece' }, v.nombre || v.pid,
+        v.detalle ? h('span', { clase: 'meta' }, ` · ${v.detalle}`) : null),
+      v.estado === 'montando' ? null : h('button', {
+        clase: 'mini fantasma', title: 'Quitarlo de la lista', disabled: ocupada,
+        onclick: () => quitarDeColaNoche(v.pid),
+      }, 'Quitar')));
+  });
+  caja.appendChild(h('div', { clase: 'meta' }, CONSEJO_RENDER
+    + ' Solo se monta lo que no cuesta: un vídeo al que le falten imágenes o voz '
+    + 'no entra en la cola (te dice por qué al pulsar la luna).'));
+  return caja;
+}
+
 function videosLight() {
   return ((APP.light.datos || {}).videos || []).slice();
 }
@@ -6663,6 +6869,7 @@ async function abrirVideoLight(pid) {
   recordarVideoLight(pid);
   APP.light.video.vista = '';
   irALight('elegido');
+  if (!colaNoche()) refrescarColaNoche();
   await cargarVideoLight(pid);
 }
 
@@ -6813,7 +7020,7 @@ function vistaEncargoVideoLight() {
    generar» es un botón que miente. */
 function pieDeEncargo() {
   const v = APP.light.video;
-  const corriendo = !!trabajoVideoLight();
+  const corriendo = ocupadoLight();
   refrescarPlanLight('guion');
   const queda = quedaTandaLight('guion');
   const hayGuion = !!v.guion;
@@ -6944,14 +7151,18 @@ async function refrescarFichasLight() {
    dejarlo generando y mirarlo desde el móvil. */
 async function lanzarTandaLight(tanda, modo) {
   const v = APP.light.video;
-  if (!v.pid) return;
+  if (!v.pid || v.lanzando) return;           // ya se está pidiendo una
+  v.lanzando = tanda;
   limpiarError(CLAVE_VIDEO_LIGHT);
+  pintarLight();
   try {
     const datos = await pedir(`${API.proyecto(v.pid)}/generar`, {
       method: 'POST',
       cuerpo: { tanda, modo: modo || 'pendientes' },
     });
     v.plan = datos.plan || null;
+    // POCA MEMORIA (Fase 4): el render sigue, pero se avisa bien a la vista
+    ((datos.plan || {}).avisos || []).forEach(a => toast(a, true));
     const tid = datos.trabajo_id || (datos.trabajo || {}).id;
     if (!tid) throw new Error('el servidor no ha devuelto ningún trabajo');
     // DE QUE TRABAJO ES ESE PREVISTO. La misma ranura la ocupan tambien las
@@ -6980,9 +7191,10 @@ async function lanzarTandaLight(tanda, modo) {
       if (tanda === 'video') refrescarPlanosLight();
       refrescarVivosLight();
     });
-    pintarLight();
   } catch (err) {
     mostrarError(CLAVE_VIDEO_LIGHT, err);
+  } finally {
+    v.lanzando = null;
     pintarLight();
   }
 }
@@ -7027,6 +7239,14 @@ async function refrescarPlanosLight() {
 function trabajoVideoLight() {
   const trabajo = APP.trabajos[CLAVE_VIDEO_LIGHT] || {};
   return trabajo.estado === 'ejecutando' ? trabajo : null;
+}
+
+/* OCUPADO TAMBIEN MIENTRAS SE PIDE (revision de la Fase 4). Entre pulsar y que
+   el servidor registre el trabajo pasan unos segundos —calcula el plan entero—
+   y en ese hueco el botón seguía encendido: un segundo clic lanzaba otra
+   petición. Ahora el botón se apaga en cuanto se pulsa. */
+function ocupadoLight() {
+  return !!trabajoVideoLight() || !!(APP.light.video || {}).lanzando;
 }
 
 /* La barra: a la derecha del botón y ocupando el resto de la franja. Dice por
@@ -7074,7 +7294,13 @@ function barraTandaLightAhora(tanda) {
     h('div', { clase: 'carril' }, relleno),
     h('div', { clase: 'meta' },
       [`${Math.round(avance * 100)} %`, avancePublico(trabajo),
-       restanteTandaLight(trabajo, avance)].filter(Boolean).join(' · ')));
+       restanteTandaLight(trabajo, avance)].filter(Boolean).join(' · ')),
+    /* LO QUE NO HAY QUE HACER MIENTRAS TRABAJA, a la vista (revision de la
+       Fase 4): cerrar el Estudio o la tapa lo corta, y lanzar otro a la vez
+       hace que los dos vayan más lentos. */
+    h('div', { clase: 'meta aviso-barra' },
+      '⏳ No cierres el Estudio ni la tapa del portátil hasta que acabe; '
+      + 'puedes mirar otras pantallas. Te avisa al terminar.'));
 }
 
 /* Lo que falta, con los tiempos MEDIDOS de esta máquina.
@@ -7136,6 +7362,8 @@ function textoDelPlan(tanda) {
       ? `≈ ${Number(coste.usd_por_generar).toFixed(2)} $ · hasta ${Number(coste.usd_total).toFixed(2)} $ si hay que rehacerlas`
       : `≈ ${Number(coste.usd_total).toFixed(2)} $`);
   }
+  // poca memoria antes del render (Fase 4): se dice, no se impide
+  (plan.avisos || []).forEach(a => partes.push(`⚠ ${a}`));
   return partes.join(' · ');
 }
 
@@ -7710,7 +7938,7 @@ function ayudaDiapositivas(hayVideo, obsoleto, queda) {
 
 function pieLight() {
   const v = APP.light.video;
-  const corriendo = !!trabajoVideoLight();
+  const corriendo = ocupadoLight();
   /* Los dos botones necesitan saber si a SU tanda le queda algo, y quien lo
      pregunta era la barra de cada una. Ahora la barra es una sola, asi que el
      plan de la otra se pide aqui. Como efecto y no como hijo: es `async`, y
@@ -8747,14 +8975,21 @@ function vistaVideoLight() {
           + 'montarlo daria el mismo fichero.'
         : unirAyuda('Encadena los planos que ya has visto, con sus transiciones, '
           + 'la voz y la musica, y saca el MP4. No genera ninguna imagen: no '
-          + 'cuesta dinero, cuesta tiempo de maquina.', textoDelPlan('render'))),
+          + 'cuesta dinero, cuesta tiempo de maquina. Los planos que no han '
+          + 'cambiado no se vuelven a dibujar. ' + CONSEJO_RENDER,
+          textoDelPlan('render'))),
       h('button', {
         clase: notasSinAplicar ? 'mini' : 'primario',
-        disabled: !!trabajoVideoLight() || notasSinAplicar
+        disabled: ocupadoLight() || notasSinAplicar
                   || quedaTandaLight('render') === false,
         onclick: () => lanzarTandaLight('render',
           (hayMp4Light() && !videoObsoletoLight()) ? 'todo' : 'pendientes'),
-      }, hayMp4Light() ? 'Regenerar Vídeo' : 'Generar Vídeo')),
+      }, APP.light.video.lanzando === 'render' ? 'Preparando…'
+        : (hayMp4Light() ? 'Regenerar Vídeo' : 'Generar Vídeo'))),
+    /* O DEJARLO PARA LA NOCHE (fork, Fase 4): a la cola, que monta uno detrás
+       de otro sin nadie delante. La cola se ve y se arranca en el inicio. */
+    notasSinAplicar || trabajoVideoLight() || quedaTandaLight('render') === false
+      ? null : botonColaNocheVideo(),
     quedaTandaLight('render') === false ? null : pastillaObsoletoLight(),
     h('span', { clase: 'crece' }),
     barraTandaLight('render'),
@@ -8788,6 +9023,8 @@ function vistaVideoLight() {
   /* EL REPASO VA DEBAJO DEL VÍDEO Y SOLO CUANDO HAY VÍDEO. Antes de eso no hay
      nada que comentar, y una caja de texto vacía debajo de una barra de
      progreso invita a escribir sobre algo que todavía no existe. */
+  const avisos = avisosDeMontajeLight();
+  if (avisos) caja.appendChild(avisos);
   if (hayMp4Light() && !trabajoVideoLight()) caja.appendChild(panelRepaso());
   /* LA MÚSICA, con los planos ya cortados: el arco de tramos sale del ritmo
      del montaje, así que antes de eso no hay tramos que enseñar. */
@@ -8795,6 +9032,19 @@ function vistaVideoLight() {
     caja.appendChild(panelMusicaLight());
   }
   return caja;
+}
+
+/* LO QUE CONVIENE SABER ANTES DE MONTAR, A LA VISTA (revision de la Fase 4).
+   Los avisos del plan —poca memoria libre, la cola de la noche montando otro
+   vídeo— iban solo en el tooltip del botón, y quien no pasa el ratón por encima
+   no los veía. Mientras el vídeo se monta no sale: eso lo dice la barra. */
+function avisosDeMontajeLight() {
+  if (trabajoVideoLight() || quedaTandaLight('render') === false) return null;
+  const avisos = (((APP.light.video.planes || {}).render) || {}).avisos || [];
+  if (!avisos.length) return null;
+  return h('div', { clase: 'caja-aviso aviso-montaje' },
+    h('b', {}, '⚠ Antes de montar el vídeo'),
+    h('ul', {}, avisos.map(a => h('li', {}, a))));
 }
 
 /* ==========================================================================
@@ -8827,6 +9077,10 @@ async function cargarMusicaLight(forzar) {
     m.arco = arco.tramos || [];
     m.fijadas = { ...(sonido.fijadas || {}) };
     m.error = '';
+    // una mezcla que ya corria (se recargo la pagina): se retoma su espera
+    if (sonido.mezcla_en_marcha && !m.mezclando) {
+      setTimeout(() => escucharMezclaLight(sonido.mezcla_en_marcha), 0);
+    }
   } catch (e) {
     m.error = e.message;
   }
@@ -8859,6 +9113,7 @@ async function elegirMusicaLight() {
     toast(e.message, true);
   }
   m.trabajando = false;
+  m.mezcla = '';            // la mezcla de antes ya no es la de esta música
   await cargarMusicaLight(true);
   // el MP4 se ha quedado viejo: que la barra de abajo lo diga
   try { await refrescarFichasLight(); } catch (e) { /* se vera al recargar */ }
@@ -8937,9 +9192,65 @@ function panelMusicaLight() {
       onclick: () => elegirMusicaLight(),
     }, m.trabajando ? 'Eligiendo…'
       : (puestos.length ? 'Volver a elegir la música' : 'Elegir la música ahora')),
-    h('span', { clase: 'meta' },
-      'Gratis: no llama a nadie. Después, «Regenerar Vídeo» la monta en el MP4.')));
+    h('span', { clase: 'meta' }, m.trabajando
+      ? 'Eligiendo la música: tarda unos segundos. No hace falta volver a pulsar.'
+      : 'Gratis: no llama a nadie. Después, «Regenerar Vídeo» la monta en el MP4.')));
+
+  /* ESCUCHAR LA MEZCLA ANTES DE MONTAR (fork, Fase 4): la voz con esta música,
+     en un MP3 y en segundos, para decidir sin esperar a un render. */
+  if (puestos.length) {
+    caja.appendChild(h('div', { clase: 'fila' },
+      h('button', {
+        clase: 'mini', disabled: m.mezclando || m.trabajando,
+        title: m.mezclando ? 'Ya se está mezclando: no hace falta volver a pulsar' : '',
+        onclick: () => escucharMezclaLight(),
+      }, m.mezclando ? h('span', { clase: 'latiendo' }, '⏳ Mezclando…')
+        : '🎧 Escuchar la mezcla'),
+      h('span', { clase: 'meta' }, m.mezclando
+        ? 'Preparando la mezcla: en un vídeo largo tarda unos minutos. No hace falta '
+          + 'volver a pulsar; el reproductor aparece aquí solo.'
+        : 'La voz con esta música, sin montar el vídeo. Gratis.')));
+    if (m.mezcla) {
+      caja.appendChild(registrarReproductor(h('audio', {
+        controls: true, preload: 'auto', src: m.mezcla, clase: 'mezcla-light',
+      })));
+    }
+  }
   return caja;
+}
+
+/* LA MEZCLA ES UN TRABAJO DE FONDO (revision de la Fase 4): el servidor
+   contesta al momento con su id y aquí se espera a que acabe, con el botón en
+   «Mezclando…». `enMarcha` es el id de una que ya corría (al recargar la
+   página, `mezcla_en_marcha` del sonido): se retoma en vez de lanzar otra. */
+async function escucharMezclaLight(enMarcha) {
+  const v = videoAbierto();
+  const m = estadoMusicaLight();
+  if (m.mezclando) return;                     // ya hay una: no se pide otra
+  m.mezclando = true;
+  repintarVideo();
+  let ruta = 'escucha/mezcla.mp3';
+  try {
+    let tid = enMarcha;
+    if (!tid) {
+      const r = await pedir(`${API.sonido(v.pid)}/escuchar`, { method: 'POST', cuerpo: {} });
+      tid = r.trabajo_id;
+      ruta = r.ruta || ruta;
+    }
+    const fin = await esperarFinDeTrabajo(tid);
+    if (fin.estado === 'listo') {
+      // con la hora detras: el fichero se llama siempre igual y el navegador
+      // serviria el de la vez anterior
+      m.mezcla = `${API.archivo(v.pid, (fin.resultado || {}).ruta || ruta)}?t=${Date.now()}`;
+      toast('mezcla lista: dale al play');
+    } else {
+      toast(fin.error || fin.mensaje || 'no se ha podido preparar la mezcla', true);
+    }
+  } catch (e) {
+    toast(e.message, true);
+  }
+  m.mezclando = false;
+  repintarVideo();
 }
 /* ==========================================================================
    EL REPASO: escribir sobre el vídeo montado, y aplicarlo
@@ -10173,6 +10484,10 @@ function vistaPresetLight() {
   caja.appendChild(bloqueLight('⏱️ Ritmo', 'cada cuánto corta el vídeo',
     sliderRitmo((ficha.origen_ritmo || ritmoPorDefecto()),
       v => guardarPresetLight(ficha.id, { ritmo: v }))));
+
+  // 🎵 la música: qué ánimo pide cada parte del vídeo (fork). Tampoco rehace nada
+  caja.appendChild(bloqueLight('🎵 Música', 'qué ánimo pide cada parte del vídeo',
+    animosDeMusicaLight(ficha)));
 
   // 🎙️ la voz, con su escucha
   const voz = h('div', {});
@@ -11779,6 +12094,13 @@ function tarjetaFreeSoundInicio() {
   ];
 }
 
+/* Lo que hay que preparar antes de montar un vídeo largo. Sale en la guía y
+   en la ayuda del botón del MP4: el render de 25 minutos dura horas. */
+const CONSEJO_RENDER = 'Antes de montar un vídeo largo (el MP4 tarda bastante): portátil '
+  + 'enchufado y con la tapa abierta, modo rendimiento (Armoury Crate o Fn+F5) y cerrados '
+  + 'los juegos y sus lanzadores (Steam, Battle.net), Chrome y las aplicaciones pesadas. '
+  + 'Mientras monta, el Estudio no deja que el portátil se suspenda y avisa al terminar.';
+
 function tarjetaFinalInicio() {
   const ficha = estadoConfig().ficha || {};
   const cli = estadoConfig().cli;
@@ -11791,23 +12113,28 @@ function tarjetaFinalInicio() {
     h('span', {}, nombre));
   // la voz vale con CUALQUIERA de los dos: Google Cloud o Cartesia
   const google = ficha.google || {};
-  const voz = !!(google.adc || google.cuenta_servicio) || !!(ficha.cartesia && ficha.cartesia.puesta);
-  const faltan = [!claude, !(ficha.openai && ficha.openai.length), !voz]
-    .filter(Boolean).length;
+  const conGoogle = !!(google.adc || google.cuenta_servicio);
+  const voz = conGoogle || !!(ficha.cartesia && ficha.cartesia.puesta);
+  // y las imagenes tambien (fork): Gemini en Vertex con la misma sesion de
+  // Google, u OpenAI con su clave
+  const imagenes = conGoogle || !!(ficha.openai && ficha.openai.length);
+  const faltan = [!claude, !imagenes, !voz].filter(Boolean).length;
   return [
     fila('Claude — guion, catálogo, rótulos y el asistente', claude),
-    fila('OpenAI — imágenes', !!(ficha.openai && ficha.openai.length)),
+    fila('Imágenes — Gemini en Google Cloud u OpenAI', imagenes),
     fila('Voz — Google Cloud o Cartesia', voz),
     fila('Jamendo — música', !!(ficha.jamendo && ficha.jamendo.puesta), true),
     fila('FreeSound — efectos', !!(ficha.freesound && ficha.freesound.puesta), true),
     faltan
       ? h('div', { clase: 'caja-aviso' },
         `Falta${faltan > 1 ? 'n' : ''} ${faltan} de las tres que hacen falta para un vídeo `
-        + '(Claude, OpenAI y la voz). Sin ellas no sale el vídeo entero: se '
+        + '(Claude, las imágenes y la voz). Sin ellas no sale el vídeo entero: se '
         + 'ponen desde Configuración, el engranaje de arriba a la derecha.')
       : h('div', { clase: 'caja-info' },
         'Está todo. Lo siguiente es crear un estilo (cómo se dibuja y cómo se '
         + 'cuenta) y, con él, el primer vídeo.'),
+    // EL RENDER ES LARGO (Fase 4): lo que hay que preparar en el portátil
+    h('div', { clase: 'caja-info' }, CONSEJO_RENDER),
     bloquePruebaClaves(),
     h('div', { clase: 'meta' },
       'Y si algo no cuadra en cualquier momento, la burbuja de abajo a la derecha '

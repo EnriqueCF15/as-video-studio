@@ -54,7 +54,13 @@ import sonido  # noqa: E402
 import transiciones  # noqa: E402
 
 PARAMS_POR_DEFECTO = {
-    "fps": 30,
+    # 25 Y NO 30 (fork, Fase 4, elegido por Enrique el 06-10): un 17 % menos de
+    # fotogramas que capturar, y en planos que son una imagen con un paneo lento
+    # no se nota. Solo el render: el plan de imagenes (p6) sigue diciendo 30
+    # porque cambiarlo ahi dejaria obsoletas las imagenes, que cuestan dinero.
+    # Cada plano saca sus fotogramas de su tiempo ABSOLUTO (t_in y t_out por
+    # fps, redondeados), asi que la voz no se desincroniza.
+    "fps": 25,
     "resolucion": [1920, 1080],
     "calidad_video": "alta",       # alta | media | baja
     # Duracion BASE de una transicion. Cada una la multiplica por su factor (un
@@ -105,6 +111,10 @@ PARAMS_POR_DEFECTO = {
     # tu carpeta}. Las lee la banda sonora al montarse; lo que no esta aqui lo
     # elige ella sola por el animo del tramo.
     "musica_fijada": {},
+    # QUE ANIMO PIDE CADA PARTE DEL VIDEO (fork): {inicio|medio|cierre:
+    # {lento|rapido: animo}}. Viene del Estilo (bloque `musica`); vacio es la
+    # tabla de siempre (`sonido.ANIMOS_ARCO`).
+    "animos_arco": {},
 }
 
 CALIDADES = {
@@ -112,6 +122,118 @@ CALIDADES = {
     "media": {"crf": "20", "preset": "medium"},
     "baja": {"crf": "26", "preset": "veryfast"},
 }
+
+
+# ------------------------------------------- en que se guarda cada fotograma
+#
+# EN JPEG Y NO EN PNG (fork, Fase 4, elegido por Enrique el 06-10). El 88 % del
+# render era Edge COMPRIMIENDO el PNG de cada fotograma: medido en el portatil
+# sobre un plano real con rotulo y subtitulo (temp\medir_formatos.py), un PNG
+# de 1920x1080 tardaba 1,48 s y un JPEG de calidad 95, 0,27 s; con 6 procesos,
+# 2,5 fotogramas/s contra 12,3. Y el fotograma no es el producto: despues va a
+# libx264 en 4:2:0, que ya tira mas detalle que el JPEG. Medido contra los PNG
+# originales, el MP4 final da PSNR 50,0 dB por el camino PNG y 47,8 por el
+# JPEG 95 (por encima de ~45 no se distingue), y el texto ampliado x3 se ve
+# igual. ESTUDIO_FOTOGRAMAS=png vuelve al camino de antes, que sigue entero.
+#
+# El PNG que queda (otras capturas, o con la variable) va con
+# `optimizeForSpeed`: menos compresion, los MISMOS pixeles, un 20 % mas rapido.
+
+CALIDAD_JPEG = 95
+
+
+def extension_fotogramas():
+    """'jpg' (lo de siempre desde el 06-10) o 'png' con ESTUDIO_FOTOGRAMAS=png."""
+    pedida = str(os.environ.get("ESTUDIO_FOTOGRAMAS") or "").strip().lower()
+    return "png" if pedida == "png" else "jpg"
+
+
+def _extension_en(carpeta):
+    """La extension de la secuencia que hay en `carpeta` (mira el primero)."""
+    for extension in ("jpg", "png"):
+        if os.path.exists(os.path.join(carpeta, f"f00001.{extension}")):
+            return extension
+    return extension_fotogramas()
+
+
+# ------------------------------------------------------- la huella de un clip
+#
+# UN CLIP QUE NO HA CAMBIADO NO SE VUELVE A DIBUJAR (fork, Fase 4). Cambiar la
+# musica, encender el sonido o volver a montar tras un corte redibujaba TODOS
+# los planos en Edge: 13 minutos para un video de uno, horas para uno de 25.
+# El modo `solo_montar` lo evitaba, pero solo lo usaba el repaso.
+#
+# Cada clip deja al lado su huella («S001.mp4.huella»): un resumen de todo lo
+# que decide sus fotogramas. En la pasada siguiente, un clip con la misma huella
+# se conserva tal cual. Sirve para las dos cosas: cambiar la musica solo vuelve
+# a mezclar, y un render cortado se REANUDA (la carpeta de trabajo conserva los
+# clips terminados, y cada uno escribe su huella al acabar, nunca antes).
+
+EXT_HUELLA = ".huella"
+
+#: Se sube A MANO cuando cambie COMO se dibuja un clip (el codigo, no sus
+#: datos): con otra version ninguna huella vieja vale y se redibuja todo.
+#: 2 (06-10): fotogramas en JPEG y 25 fps. 3: el JPEG pasa a rango de TV al codificar.
+VERSION_HUELLA = 3
+
+_HUELLAS_FICHERO = {}
+
+
+def _huella_fichero(ruta):
+    """sha1 del contenido de un fichero, recordado por (ruta, tamano, fecha)."""
+    import hashlib                                           # noqa: PLC0415
+    try:
+        estado = os.stat(ruta)
+    except OSError:
+        return ""
+    clave = (os.path.normcase(os.path.abspath(ruta)), estado.st_size, estado.st_mtime)
+    if clave not in _HUELLAS_FICHERO:
+        suma = hashlib.sha1()
+        with open(ruta, "rb") as fh:
+            for trozo in iter(lambda: fh.read(1 << 20), b""):
+                suma.update(trozo)
+        _HUELLAS_FICHERO[clave] = suma.hexdigest()
+    return _HUELLAS_FICHERO[clave]
+
+
+def huella_de_clip(escena, mov, hyper, capa, capa_fija, corte, fps, resolucion,
+                   calidad, paleta=None, huella_anterior="", fotogramas="jpg"):
+    """Todo lo que decide los fotogramas de un clip, resumido. -> str
+
+    El tramo de tiempo, la camara, la imagen (su CONTENIDO, no su nombre), las
+    dos capas, la transicion y como se codifica. Si la transicion se cuece
+    sobre el ultimo fotograma del plano anterior, entra tambien la huella de
+    ese: cambiar un plano cambia la entrada del siguiente.
+    """
+    import hashlib                                           # noqa: PLC0415
+    cuece = transiciones.cuece_el_anterior(corte or {})
+    datos = {
+        "v": VERSION_HUELLA,
+        "escena": [escena.get("id"), round(float(escena.get("t_in") or 0), 3),
+                   round(float(escena.get("t_out") or 0), 3)],
+        "mov": {k: (mov or {}).get(k) for k in ("ventana_ini", "ventana_fin",
+                                                 "hyperframe_px")},
+        "hyper": _huella_fichero(hyper),
+        "capa": hashlib.sha1((capa or "").encode("utf-8")).hexdigest(),
+        "fija": hashlib.sha1((capa_fija or "").encode("utf-8")).hexdigest(),
+        "corte": corte or {}, "fps": int(fps), "resolucion": list(resolucion),
+        "calidad": calidad, "fotogramas": fotogramas,
+        "paleta": paleta if cuece else None,
+        "anterior": huella_anterior if cuece else "",
+    }
+    return hashlib.sha1(json.dumps(datos, sort_keys=True, default=str)
+                        .encode("utf-8")).hexdigest()
+
+
+def huella_guardada(clip):
+    """La huella que dejo un clip al terminarse, o '' si no hay o falta el clip."""
+    if not os.path.exists(clip):
+        return ""
+    try:
+        with open(clip + EXT_HUELLA, "r", encoding="utf-8") as fh:
+            return fh.read().strip()
+    except OSError:
+        return ""
 
 
 def describir(params):
@@ -150,6 +272,19 @@ class Navegador:
         # dentro del perfil, que es temporal y se borra en `cerrar`.
         self.registro = os.path.join(self.perfil, "edge.log")
         self._registro = open(self.registro, "w", encoding="utf-8", errors="replace")
+        # SIN __COMPAT_LAYER (fork, Fase 4). Si el Estudio arranca con esa
+        # variable puesta --Windows pone `DetectorsAppHealth` a los procesos de
+        # algunas aplicaciones, y se hereda--, msedge.exe se RELANZA a si mismo
+        # para quitarsela (`--edge-skip-compat-layer-relaunch`) y el proceso que
+        # lanzamos sale con codigo 0. Dos daños, medidos el 06-10: `cerrar`
+        # mataba al lanzador y el Edge de verdad quedaba vivo -- 1.009 procesos
+        # huerfanos tras una tarde de renders, que se comian la RAM y acabaron
+        # impidiendo que arrancara ninguno --; y si el lanzador salia antes de
+        # que el hijo abriera el puerto, el render moria con «Edge se ha cerrado
+        # solo con codigo 0».
+        entorno = {k: v for k, v in os.environ.items()
+                   if k.upper() != "__COMPAT_LAYER"}
+        self.relanzado = False
         self.proceso = subprocess.Popen(
             [medios.edge(), "--headless=new", "--disable-gpu", "--no-first-run",
              "--disable-extensions", "--hide-scrollbars", "--mute-audio",
@@ -168,7 +303,7 @@ class Navegador:
              "--allow-file-access-from-files",
              f"--remote-debugging-port={self.puerto}",
              f"--window-size={int(ancho)},{int(alto)}", "about:blank"],
-            stdout=subprocess.DEVNULL, stderr=self._registro,
+            stdout=subprocess.DEVNULL, stderr=self._registro, env=entorno,
             **medios.SIN_VENTANA)
         try:
             self.ws = websocket.create_connection(self._url_pestana(), timeout=60)
@@ -202,7 +337,13 @@ class Navegador:
         limite = time.time() + espera
         while time.time() < limite:
             codigo = self.proceso.poll()
-            if codigo is not None:
+            if codigo == 0 and not self.relanzado:
+                # SE HA RELANZADO, no ha muerto: el Edge de verdad es un hijo
+                # que todavia esta abriendo el puerto (ver __COMPAT_LAYER en
+                # __init__). Se le sigue esperando, y `cerrar` lo busca por el
+                # perfil, que es lo unico suyo que conocemos.
+                self.relanzado = True
+            if codigo is not None and not self.relanzado:
                 raise RuntimeError(
                     f"Edge se ha cerrado solo con codigo {codigo} sin abrir el "
                     f"puerto de depuracion (tardo "
@@ -281,8 +422,13 @@ class Navegador:
             self.rAF = False
 
     def capturar(self, destino):
-        datos = self.llamar("Page.captureScreenshot", format="png",
-                            captureBeyondViewport=False)
+        # el formato lo dice la extension del destino (ver CALIDAD_JPEG)
+        if destino.lower().endswith((".jpg", ".jpeg")):
+            formato = {"format": "jpeg", "quality": CALIDAD_JPEG}
+        else:
+            formato = {"format": "png", "optimizeForSpeed": True}
+        datos = self.llamar("Page.captureScreenshot", captureBeyondViewport=False,
+                            **formato)
         with open(destino, "wb") as fh:
             fh.write(base64.b64decode(datos["data"]))
         return destino
@@ -292,16 +438,41 @@ class Navegador:
             self.ws.close()
         except Exception:
             pass
+        # el lanzador ya habia salido solo: el Edge de verdad es otro proceso
+        relanzado = self.relanzado or self.proceso.poll() is not None
         self.proceso.terminate()
         try:
             self.proceso.wait(timeout=10)
         except subprocess.TimeoutExpired:
             self.proceso.kill()
+        if relanzado:
+            _matar_edge_de(self.perfil)
         try:
             self._registro.close()
         except Exception:
             pass
         shutil.rmtree(self.perfil, ignore_errors=True)
+
+
+def _matar_edge_de(perfil):
+    """Cierra los Edge que siguen vivos con ESTE perfil temporal (fork, Fase 4).
+
+    Solo hace falta cuando Edge se relanzo (ver __COMPAT_LAYER en
+    `Navegador.__init__`): el perfil es lo unico que el hijo comparte con el
+    proceso que lanzamos. Nunca toca otro Edge -- el perfil es una carpeta
+    temporal unica de este navegador --, y nunca levanta.
+    """
+    if os.name != "nt" or not perfil or "'" in perfil:
+        return
+    orden = ("Get-CimInstance Win32_Process -Filter \"Name='msedge.exe'\" | "
+             f"Where-Object {{ $_.CommandLine -like '*{perfil}*' }} | "
+             "ForEach-Object { Stop-Process -Id $_.ProcessId -Force "
+             "-ErrorAction SilentlyContinue }")
+    try:
+        subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", orden],
+                       capture_output=True, timeout=60, **medios.SIN_VENTANA)
+    except Exception:                                          # noqa: BLE001
+        pass
 
 
 def _puerto_libre():
@@ -439,8 +610,15 @@ def _pagina_de(escena, mov, capa_svg, hyper, p, destino, capa_fija="", fps=30):
 
 def _codificar(dir_frames, destino, fps, calidad):
     ajustes = CALIDADES.get(calidad) or CALIDADES["media"]
+    extension = _extension_en(dir_frames)
+    # UN JPEG ES DE RANGO COMPLETO (0-255) y el video, de rango de TV (16-235),
+    # que es como salia siempre desde los PNG. Sin convertirlo, el MP4 salia
+    # marcado «yuvj420p / pc» y cada reproductor lo pinta a su manera; con esto
+    # sale igual que antes y mas fiel a la imagen (medido: 48,6 dB contra 47,8).
+    rango = (["-vf", "scale=in_range=pc:out_range=tv"] if extension == "jpg" else [])
     orden = [medios.ffmpeg(), "-y", "-loglevel", "error",
-             "-framerate", str(fps), "-i", os.path.join(dir_frames, "f%05d.png"),
+             "-framerate", str(fps), "-i", os.path.join(dir_frames, f"f%05d.{extension}"),
+             *rango,
              "-c:v", "libx264", "-preset", ajustes["preset"], "-crf", ajustes["crf"],
              "-pix_fmt", "yuv420p", "-r", str(fps), destino]
     proceso = subprocess.run(orden, capture_output=True, text=True, timeout=3600,
@@ -630,6 +808,157 @@ def _concatenar(clips, destino, audio, desfase, trabajo, musica=None,
     return destino
 
 
+# --------------------------------------------- la memoria antes de un render
+
+#: Por debajo de esto, los navegadores del render se pelean por la RAM con lo
+#: que tengas abierto y el portatil empieza a tirar de disco (fork, Fase 4).
+RAM_MINIMA_GB = 4.0
+
+
+def memoria_libre_gb():
+    """La RAM libre ahora mismo, en GB, o None si no se puede saber."""
+    try:
+        if os.name == "nt":
+            import ctypes                                     # noqa: PLC0415
+
+            class _Estado(ctypes.Structure):
+                _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
+                            ("ullTotalPhys", ctypes.c_ulonglong),
+                            ("ullAvailPhys", ctypes.c_ulonglong),
+                            ("ullTotalPageFile", ctypes.c_ulonglong),
+                            ("ullAvailPageFile", ctypes.c_ulonglong),
+                            ("ullTotalVirtual", ctypes.c_ulonglong),
+                            ("ullAvailVirtual", ctypes.c_ulonglong),
+                            ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+            estado = _Estado()
+            estado.dwLength = ctypes.sizeof(_Estado)
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(estado)):
+                return estado.ullAvailPhys / 1024 ** 3
+            return None
+        with open("/proc/meminfo", "r", encoding="utf-8") as fh:
+            for linea in fh:
+                if linea.startswith("MemAvailable:"):
+                    return int(linea.split()[1]) / 1024 ** 2
+    except Exception:                                         # noqa: BLE001
+        return None
+    return None
+
+
+def aviso_de_memoria(libre=None):
+    """Lo que hay que decir antes de un render si queda poca RAM, o ''."""
+    libre = memoria_libre_gb() if libre is None else libre
+    if libre is None or libre >= RAM_MINIMA_GB:
+        return ""
+    return (f"Quedan {libre:.1f} GB de memoria libre y el render necesita unos "
+            f"{RAM_MINIMA_GB:.0f}: cierra los juegos, Chrome y las aplicaciones pesadas antes de "
+            f"montar, o irá muy lento")
+
+
+# ------------------------------------------------- escuchar la mezcla (fork)
+
+def escuchar_mezcla(proyecto, params, destino):
+    """La banda sonora del video SIN montar el video: voz, musica y efectos en
+    un MP3. -> {mp3, duracion, musica}
+
+    Para decidir la musica sin pagar un render: es la MISMA mezcla que hace
+    `_concatenar` al muxear (mismo grafo, misma medida en dos pasadas, misma
+    cola), solo que sin clips. No sale a la red ni toca ningun paso: lee la voz,
+    el plan y lo que la banda sonora dejo en el banco.
+    """
+    p = _con_defectos(params)
+    ruta_plan = medios.salida_de(proyecto, "assets", claves=("plan",),
+                                 patrones=(r"plan\.json",))
+    plan = medios.leer_json(ruta_plan, {}) if ruta_plan else {}
+    escenas = (plan or {}).get("escenas") or []
+    if not escenas:
+        raise RuntimeError("todavía no hay planos: la mezcla sigue el corte del vídeo")
+    audio = p["audio"] or medios.salida_de(
+        proyecto, "voz", claves=("wav", "audio", "narracion"),
+        patrones=(r"narracion\.wav", r".*\.wav"))
+    if not audio or not os.path.exists(audio):
+        raise RuntimeError("todavía no hay voz grabada")
+    desfase = float(escenas[0]["t_in"])
+    largo = float(escenas[-1]["t_out"]) - desfase
+    largo_con_cola = largo + COLA_NEGRO_S
+    # UNA CARPETA POR MEZCLA, y fuera pase lo que pase: dos mezclas a la vez
+    # (dos pestanas, o una que falla a medias) compartian `_mezcla` y se pisaban
+    # los wav. El MP3 se escribe dentro y se mueve al final de golpe.
+    os.makedirs(os.path.dirname(os.path.abspath(destino)), exist_ok=True)
+    carpeta = tempfile.mkdtemp(prefix="_mezcla_",
+                               dir=os.path.dirname(os.path.abspath(destino)))
+    try:
+        return _mezclar_en(carpeta, p, plan, escenas, audio, desfase, largo,
+                           largo_con_cola, destino)
+    finally:
+        shutil.rmtree(carpeta, ignore_errors=True)
+
+
+def _mezclar_en(carpeta, p, plan, escenas, audio, desfase, largo, largo_con_cola,
+                destino):
+    """El cuerpo de `escuchar_mezcla`, dentro de su carpeta de trabajo."""
+    pista_efectos, pista_musica, cama = None, None, False
+    if p.get("sonido", True):
+        cortes = transiciones.resolver(escenas, p, semilla=(plan.get("semilla") or 0))
+        lista = sonido.eventos(escenas, cortes, p, semilla=(plan.get("semilla") or 0))
+        if lista:
+            pista_efectos, _cuantos = sonido.pista_de_efectos(
+                lista, largo, os.path.join(carpeta, "efectos.wav"))
+        musica = p.get("musica") or {}
+        if musica.get("tramos"):
+            pista_musica, _faltan = sonido.construir_cama(
+                musica, largo_con_cola, os.path.join(carpeta, "cama.wav"))
+            cama = bool(pista_musica)
+        elif musica.get("id"):
+            candidata = sonido.banco("musica", sonido._nombre_de(musica))
+            pista_musica = candidata if os.path.exists(candidata) else None
+
+    # una entrada 0 de relleno: el grafo de la mezcla cuenta la voz como [1:a]
+    # porque en el MP4 la 0 es el video
+    orden = [medios.ffmpeg(), "-y", "-loglevel", "error",
+             "-f", "lavfi", "-t", f"{largo_con_cola:.3f}",
+             "-i", f"anullsrc=r={sonido.FRECUENCIA}:cl=stereo",
+             "-ss", f"{max(0.0, desfase):.3f}", "-i", audio]
+    con_musica = bool(pista_musica and os.path.exists(pista_musica))
+    con_efectos = bool(pista_efectos and os.path.exists(pista_efectos))
+    if con_musica:
+        if not cama:
+            orden += ["-stream_loop", "-1"]
+        orden += ["-i", pista_musica]
+    if con_efectos:
+        orden += ["-i", pista_efectos]
+    try:
+        ajuste_musica = float(p.get("musica_db") or 0.0)
+    except (TypeError, ValueError):
+        ajuste_musica = 0.0
+    try:
+        ajuste_efectos = float(p.get("efectos_db") or 0.0)
+    except (TypeError, ValueError):
+        ajuste_efectos = 0.0
+    if con_musica or con_efectos:
+        def mezcla(medida=None):
+            lufs = p.get("musica_lufs")
+            return sonido.filtro_de_mezcla(
+                con_musica, con_efectos, max(0.1, largo_con_cola),
+                lufs if lufs is not None else sonido.MUSICA_LUFS,
+                ya_normalizada=cama, ajuste_db=ajuste_musica,
+                master=True, medida=medida, efectos_db=ajuste_efectos)
+        medida = _medir_mezcla(orden + ["-filter_complex", mezcla(),
+                                        "-map", "[salida]", "-f", "null", "-"])
+        orden += ["-filter_complex", mezcla(medida), "-map", "[salida]"]
+    else:
+        orden += ["-map", "1:a"]
+    temporal = os.path.join(carpeta, "mezcla.mp3")
+    orden += ["-c:a", "libmp3lame", "-b:a", "160k", temporal]
+    proceso = subprocess.run(orden, capture_output=True, text=True, timeout=1800,
+                             **medios.SIN_VENTANA)
+    if proceso.returncode != 0 or not os.path.exists(temporal):
+        raise RuntimeError(f"ffmpeg no pudo mezclar: {proceso.stderr[-400:]}")
+    medios.reemplazar(temporal, destino)
+    return {"mp3": destino, "duracion": round(largo_con_cola, 2),
+            "musica": sonido.describir(p), "con_musica": con_musica,
+            "con_efectos": con_efectos}
+
+
 # -------------------------------------------------------------- reproductor
 
 def reproductor(proyecto):
@@ -682,8 +1011,9 @@ def _cocer_transicion(navegador, pagina_trans, anterior, carpeta, total, fps,
     if cuantos <= 0:
         return 0
     navegador.abrir(pagina_trans)
+    extension = _extension_en(carpeta)
     for indice, progreso in enumerate(transiciones.progresos(cuantos)):
-        marco = os.path.join(carpeta, f"f{indice + 1:05d}.png")
+        marco = os.path.join(carpeta, f"f{indice + 1:05d}.{extension}")
         transiciones.componer(navegador, anterior, marco, progreso,
                               corte["shader"], marco)
     return cuantos
@@ -786,8 +1116,32 @@ def _cuantos_lotes(p, cuantos_planos):
     except ValueError:
         forzado = 0
     if forzado > 0:
-        return max(1, min(forzado, MAX_LOTES, cuantos_planos))
-    return max(1, min(MAX_LOTES, (os.cpu_count() or 2) // 2, cuantos_planos))
+        return _tope_por_memoria(max(1, min(forzado, MAX_LOTES, cuantos_planos)))
+    return _tope_por_memoria(
+        max(1, min(MAX_LOTES, (os.cpu_count() or 2) // 2, cuantos_planos)))
+
+
+#: LA MEMORIA LIBRE MANDA SOBRE EL AUTOMATICO (fork, Fase 4). Medido el 06-10
+#: en el portatil: cada proceso de captura (su Python y su Edge) ocupa ~0,45
+#: GB, y con 6 a la vez y un juego abierto quedaban 2 GB y Windows tiraba de
+#: disco. Y al acabar cada plano su lote codifica el clip: libx264 «slow» a
+#: 1080p llega a 0,88 GB de pico (medido el 07-10; con menos hilos baja a 0,56
+#: pero tarda el triple, no compensa). Esas codificaciones duran segundos y no
+#: coinciden todas, asi que se cuenta 0,45 fijos + ~0,3 de media: 0,75 por
+#: lote. Se deja RAM_RESERVA_GB para Windows y lo demas, y nunca se baja de
+#: MIN_LOTES_RAM. Un `lotes` puesto a mano en los params no se toca.
+RAM_POR_LOTE_GB = 0.75
+RAM_RESERVA_GB = 2.0
+MIN_LOTES_RAM = 2
+
+
+def _tope_por_memoria(cuantos, libre=None):
+    """`cuantos`, o menos si no caben en la RAM libre de ahora."""
+    libre = memoria_libre_gb() if libre is None else libre
+    if libre is None:
+        return cuantos
+    caben = int((float(libre) - RAM_RESERVA_GB) / RAM_POR_LOTE_GB)
+    return max(1, min(cuantos, max(MIN_LOTES_RAM, caben)))
 
 
 def _repartir_lotes(pendientes, cuantos):
@@ -872,6 +1226,10 @@ def renderizar_plano(tarea, navegador=None):
     fps = int(tarea["fps"])
     total = int(tarea["frames"])
     carpeta = tarea["carpeta"]
+    # LA HUELLA VIEJA FUERA ANTES DE TOCAR EL CLIP: si este render se corta a
+    # mitad, el clip a medio escribir no puede quedar con una huella que lo de
+    # por bueno en la pasada siguiente (ver `huella_de_clip`).
+    medios.borrar(tarea["clip"] + EXT_HUELLA)
     # SE VACIA, NO SE BORRA: el mismo Edge acaba de tener abiertos como textura
     # los PNG del plano anterior de este lote, y borrar la carpeta con un handle
     # vivo dentro la deja en BORRADO PENDIENTE -- existe para `os.path.exists`,
@@ -890,14 +1248,16 @@ def renderizar_plano(tarea, navegador=None):
                         os.path.join(carpeta, "escena.html"),
                         capa_fija=tarea.get("capa_fija") or "", fps=fps)
 
+    # jpg desde el 06-10 (ver CALIDAD_JPEG); una tarea sin la clave es de antes
+    extension = tarea.get("fotogramas") or "png"
     navegador.abrir(pagina)
     for numero in range(total):
         navegador.pintar(numero / float(fps))
-        navegador.capturar(os.path.join(carpeta, f"f{numero + 1:05d}.png"))
+        navegador.capturar(os.path.join(carpeta, f"f{numero + 1:05d}.{extension}"))
     # El ultimo fotograma se guarda ANTES de la transicion: es el que mira el
     # plano siguiente, y lo que tiene que mirar es este plano limpio, no este
     # plano mezclado con el anterior.
-    _guardar_ultimo(os.path.join(carpeta, f"f{total:05d}.png"), tarea["ultimo"])
+    _guardar_ultimo(os.path.join(carpeta, f"f{total:05d}.{extension}"), tarea["ultimo"])
 
     corte = tarea.get("corte") or {}
     pintados = 0
@@ -923,6 +1283,9 @@ def renderizar_plano(tarea, navegador=None):
                                          anterior, carpeta, total, fps, corte)
 
     _codificar(carpeta, tarea["clip"], fps, tarea["calidad"])
+    # y la nueva SOLO con el clip ya escrito entero
+    if tarea.get("huella"):
+        medios.escribir_texto(tarea["clip"] + EXT_HUELLA, tarea["huella"])
     medios.borrar(pagina)
     if not tarea.get("conservar_frames"):
         shutil.rmtree(carpeta, ignore_errors=True)
@@ -1107,6 +1470,32 @@ def _correr_lotes_en_procesos(lotes, trabajo, avisar, total_planos,
 OPCIONES_EJECUCION = ("solo_montar",)
 
 
+def _fps_del_montaje(proyecto, params, parcial):
+    """Con cuantos fotogramas por segundo se monta ESTA vez. -> int
+
+    UN VIDEO NO MEZCLA FRECUENCIAS (fork, Fase 4). El defecto paso de 30 a 25 el
+    06-10, y un montaje PARCIAL --rehacer un plano, aplicar las notas del
+    repaso, solo remezclar-- conserva los clips que ya hay: con el defecto
+    nuevo, el plano rehecho salia a 25 entre clips a 30 y el MP4 quedaba con
+    las dos frecuencias. Asi que:
+      - si los params fijan `fps`, mandan ellos;
+      - si el montaje es parcial y ya hay uno hecho, los de ESE montaje;
+      - si no (un render entero, que redibuja todo), los de por defecto.
+    Un video de antes pasa a 25 la primera vez que se monta entero.
+    """
+    if (params or {}).get("fps"):
+        return int(params["fps"])
+    if parcial:
+        try:
+            from nucleo.estado import Estado                    # noqa: PLC0415
+            previo = (Estado(proyecto).salidas("render") or {}).get("fps")
+        except Exception:                                       # noqa: BLE001
+            previo = None
+        if previo:
+            return int(previo)
+    return int(PARAMS_POR_DEFECTO["fps"])
+
+
 def ejecutar(proyecto, params, avisar=None, unidades=None, solo_montar=False):
     """Renderiza los clips que toquen y rehace el MP4 final.
 
@@ -1152,7 +1541,10 @@ def ejecutar(proyecto, params, avisar=None, unidades=None, solo_montar=False):
         os.makedirs(ruta, exist_ok=True)
 
     escenas = plan.get("escenas") or []
-    fps = int(p["fps"])
+    fps = _fps_del_montaje(proyecto, params,
+                           parcial=bool(solo_montar or unidades is not None))
+    p["fps"] = fps
+    fotogramas = extension_fotogramas()
     # QUE transicion concreta lleva cada plano. El plan solo trae la RANURA
     # (corte / suave / acento), que es una decision del corte; cual la ocupa se
     # resuelve aqui, al renderizar, contra la paleta elegida en esta pantalla.
@@ -1200,6 +1592,7 @@ def ejecutar(proyecto, params, avisar=None, unidades=None, solo_montar=False):
     resultados = {}
     clips = []
     tareas = []
+    huellas = {}
     for indice, escena in enumerate(escenas):
         sid = escena["id"]
         uid = f"escena:{sid}"
@@ -1216,6 +1609,7 @@ def ejecutar(proyecto, params, avisar=None, unidades=None, solo_montar=False):
                            and os.path.exists(clip)):
             resultados[uid] = {"clip": os.path.relpath(clip, trabajo),
                                "frames": total, "origen": "conservado"}
+            huellas[sid] = huella_guardada(clip)
             continue
 
         mov = movimientos.get(sid)
@@ -1244,7 +1638,22 @@ def ejecutar(proyecto, params, avisar=None, unidades=None, solo_montar=False):
                 with open(ruta_fija, "r", encoding="utf-8") as fh:
                     fija = fh.read()
 
+        # LA MISMA HUELLA QUE EL CLIP QUE YA HAY: se conserva sin dibujarlo. Es
+        # lo que hace que cambiar la musica solo vuelva a mezclar y que un
+        # render cortado siga por donde iba (ver `huella_de_clip`). Una peticion
+        # de planos concretos (`pedidas`) los redibuja siempre: es lo pedido.
+        previo = escenas[indice - 1]["id"] if indice else None
+        huella = huella_de_clip(escena, mov, hyper, svg, fija, cortes.get(sid) or {},
+                                fps, (ancho, alto), p["calidad_video"], paleta,
+                                huellas.get(previo, ""), fotogramas=fotogramas)
+        huellas[sid] = huella
+        if pedidas is None and huella_guardada(clip) == huella:
+            resultados[uid] = {"clip": os.path.relpath(clip, trabajo),
+                               "frames": total, "origen": "conservado"}
+            continue
+
         tareas.append({
+            "huella": huella,
             "id": sid, "escena": {"id": sid, "t_in": escena["t_in"],
                                   "t_out": escena["t_out"]},
             "mov": {"ventana_ini": mov["ventana_ini"],
@@ -1254,13 +1663,14 @@ def ejecutar(proyecto, params, avisar=None, unidades=None, solo_montar=False):
             "hyper": hyper, "frames": total, "fps": fps,
             "resolucion": [ancho, alto], "calidad": p["calidad_video"],
             "carpeta": os.path.join(dir_frames, sid), "clip": clip,
-            "ultimo": os.path.join(dir_ultimo, f"{sid}.png"),
+            "ultimo": os.path.join(dir_ultimo, f"{sid}.{fotogramas}"),
+            "fotogramas": fotogramas,
             # el arranque de ESTA pasada: con el, el ultimo fotograma del plano
             # de antes deja de ser «un fichero que existe» y pasa a ser «un
             # fichero que ha escrito este render» (ver _esperar)
             "desde": arranque_render,
             "anterior": (os.path.join(dir_ultimo,
-                                      f"{escenas[indice - 1]['id']}.png")
+                                      f"{escenas[indice - 1]['id']}.{fotogramas}")
                          if indice else None),
             "previo": escenas[indice - 1]["id"] if indice else None,
             "corte": {k: v for k, v in (cortes.get(sid) or {}).items()},

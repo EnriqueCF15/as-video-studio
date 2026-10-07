@@ -1032,6 +1032,11 @@ def _resumen_alineado(alineado):
 
 #: Cuantas veces se regraba una seccion que ha leido su instruccion.
 REINTENTOS_FUGA = 2
+
+#: Hasta cuanto texto se junta en UNA toma de Google (secciones seguidas con el
+#: mismo estilo). Su tope son 4.000 bytes; con 3.500 queda margen y salen unos
+#: tres o cuatro minutos de voz por toma.
+BYTES_TOMA_UNICA = 3500
 #: Palabras de mas a partir de las cuales se mira si son la instruccion, y que
 #: parte de ellas tiene que estar en la instruccion para darlo por hecho.
 FUGA_MIN_PALABRAS = 3
@@ -1122,34 +1127,63 @@ def _sustituir_trozo(wav, info, indice, wav_nuevo, info_nuevo):
     return motor_google.wav_desde_pcm(pista), len(pista) / (sr * 2)
 
 
-def _secciones_mal(alineado, info, trozos, hablados):
-    """Lo que hay que regrabar: {indice: (motivo, dato)} -- la fuga manda."""
-    malas = {i: ("omision", n) for i, n in omisiones_por_seccion(alineado, hablados).items()}
-    malas.update({i: ("fuga", t) for i, t in fugas_de_estilo(alineado, info, trozos).items()})
+def _id_de_seccion(trozos, trozo_de, indice):
+    """El id de la seccion `indice` (de `hablados`), mirando dentro de su toma."""
+    toma = trozo_de[indice]
+    ids = trozos[toma].get("secciones")
+    if ids:
+        posicion = indice - trozo_de.index(toma)
+        if 0 <= posicion < len(ids):
+            return ids[posicion]
+    return trozos[toma].get("seccion", indice)
+
+
+def _secciones_mal(alineado, info, trozos, hablados, trozo_de=None):
+    """Lo que hay que regrabar: {toma: (motivo, dato, [secciones])} -- la fuga manda.
+
+    Las omisiones se miden POR SECCION aunque varias vayan en la misma toma
+    (`trozo_de[i]` = la toma de la seccion i): medidas sobre una toma larga, un
+    gancho de veinte palabras saltado se diluia por debajo del umbral. Se
+    regraba la TOMA entera --partirla cambiaria la entonacion, que es por lo que
+    se junto-- pero se dice que secciones fallaron: el aviso nombraba siempre la
+    primera de la toma, aunque la mala fuera otra (revision de la Fase 4).
+    """
+    trozo_de = trozo_de or list(range(len(hablados)))
+    malas = {}
+    for i, n in omisiones_por_seccion(alineado, hablados).items():
+        toma = trozo_de[i]
+        _m, palabras, cuales = malas.get(toma, ("omision", 0, []))
+        malas[toma] = ("omision", palabras + n, cuales + [_id_de_seccion(trozos, trozo_de, i)])
+    malas.update({i: ("fuga", t, [trozos[i].get("seccion", i)])
+                  for i, t in fugas_de_estilo(alineado, info, trozos).items()})
     return malas
 
 
-def _google_verificado(trozos, hablados, cfg, progreso):
+def _google_verificado(trozos, hablados, cfg, progreso, trozo_de=None):
     """Graba con Google, alinea y regraba las secciones que leyeron su
     instruccion o se saltaron texto. -> (wav, segundos, alineado, info)
 
-    `hablados`: lo que se locuta de cada trozo, en el mismo orden.
+    `hablados`: lo que se locuta de cada SECCION, en orden; `trozo_de[i]` es la
+    toma (trozo) que lleva la seccion i (sin el, una toma por seccion).
     """
     hablado = " ".join(hablados)
     wav, duracion, info = _sintesis_google(trozos, cfg, lambda f, m="": progreso(0.5 * f, m))
     alineado = _alinear(wav, hablado, cfg, lambda f, m="": progreso(0.5 + 0.4 * f, m))
     regrabados = []
     for intento in range(REINTENTOS_FUGA):
-        malas = _secciones_mal(alineado, info, trozos, hablados)
+        malas = _secciones_mal(alineado, info, trozos, hablados, trozo_de)
         if not malas:
             break
-        for indice, (motivo, dato) in malas.items():
-            seccion = trozos[indice].get("seccion", indice)
+        for indice, (motivo, dato, cuales) in malas.items():
+            seccion = ", ".join(str(c) for c in cuales)
+            juntas = len(trozos[indice].get("secciones") or [None])
+            regraba = ("se regraba esa sección" if juntas <= 1 else
+                       f"se regraba su toma entera ({juntas} secciones juntas, para que "
+                       f"no cambie la entonación)")
             progreso(0.9, f"AVISO: la voz leyó en voz alta su instrucción de estilo en "
-                          f"{seccion} («{str(dato)[:70]}»): se regraba esa sección"
+                          f"{seccion} («{str(dato)[:70]}»): {regraba}"
                      if motivo == "fuga" else
-                     f"AVISO: la voz se saltó {dato} palabras en {seccion}: se regraba "
-                     f"esa sección")
+                     f"AVISO: la voz se saltó {dato} palabras en {seccion}: {regraba}")
             wav_nuevo, _d, info_nuevo = _sintesis_google([trozos[indice]], cfg,
                                                          lambda f, m="": None)
             wav, duracion = _sustituir_trozo(wav, info, indice, wav_nuevo, info_nuevo)
@@ -1158,10 +1192,11 @@ def _google_verificado(trozos, hablados, cfg, progreso):
         alineado = _alinear(wav, hablado, cfg, lambda f, m="": progreso(0.92, m))
     if regrabados:
         info["regrabados"] = regrabados
-    restantes = _secciones_mal(alineado, info, trozos, hablados)
+    restantes = _secciones_mal(alineado, info, trozos, hablados, trozo_de)
     if restantes:
-        info["sin_arreglar"] = [{"seccion": trozos[i].get("seccion", i), "motivo": m,
-                                 "detalle": d} for i, (m, d) in restantes.items()]
+        info["sin_arreglar"] = [{"seccion": ", ".join(str(c) for c in cuales),
+                                 "motivo": m, "detalle": d}
+                                for i, (m, d, cuales) in restantes.items()]
     return wav, duracion, alineado, info
 
 
@@ -1174,13 +1209,24 @@ def _toma_google(secciones, bloques, cfg, progreso):
     """
     familia = motor_google.familia_de(cfg["modelo"])
     por_id = {b["id"]: b for b in bloques}
-    trozos = []
+    trozos, trozo_de = [], []
     for seccion in secciones:
         texto = " ".join(marcas_tts.para_google(por_id[b]["texto"], familia)
                          for b in seccion["bloques"])
-        trozos.append({"texto": texto, "seccion": seccion["id"],
-                       "estilo": estilo_de(seccion.get("tramo"), cfg)
-                       if familia == "gemini" else None})
+        estilo = estilo_de(seccion.get("tramo"), cfg) if familia == "gemini" else None
+        previo = trozos[-1] if trozos else None
+        # UNA SOLA TOMA para las secciones seguidas con el MISMO estilo, mientras
+        # quepan: grabadas por separado, cada una sale con su propia entonacion
+        # (la prueba A/B del 06-10: la toma unica sonaba natural y la de una
+        # peticion por bloque, sobreactuada al principio).
+        if (previo is not None and previo["estilo"] == estilo
+                and len(f"{previo['texto']} {texto}".encode("utf-8")) <= BYTES_TOMA_UNICA):
+            previo["texto"] = f"{previo['texto']} {texto}"
+            previo["secciones"].append(seccion["id"])
+        else:
+            trozos.append({"texto": texto, "seccion": seccion["id"],
+                           "secciones": [seccion["id"]], "estilo": estilo})
+        trozo_de.append(len(trozos) - 1)
     hablados = [" ".join(marcas_tts.limpiar(por_id[b]["texto"]) for b in s["bloques"])
                 for s in secciones]
     hablado = " ".join(hablados)
@@ -1188,7 +1234,8 @@ def _toma_google(secciones, bloques, cfg, progreso):
         wav, duracion, palabras = _toma_simulada(hablado, cfg)
         return wav, duracion, palabras, {"simulado": True, "peticiones": len(trozos)}
 
-    wav, duracion, alineado, info = _google_verificado(trozos, hablados, cfg, progreso)
+    wav, duracion, alineado, info = _google_verificado(trozos, hablados, cfg, progreso,
+                                                       trozo_de=trozo_de)
     info["alineado"] = _resumen_alineado(alineado)
     return wav, duracion, alineado["palabras"], info
 

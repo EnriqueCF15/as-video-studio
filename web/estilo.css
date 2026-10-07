@@ -1276,6 +1276,13 @@ video { width: 100%; border-radius: 9px; border: 1px solid var(--linea); backgro
 .form-audio-pie { border-top: 1px solid var(--linea); padding-top: 8px; margin-top: 4px; }
 .trozos { display: grid; gap: 4px; padding: 6px 8px; border: 1px dashed var(--linea);
   border-radius: 8px; }
+/* Los ánimos de la música de un Estilo: una fila por parte del vídeo. */
+.animos-parte {
+  display: grid; grid-template-columns: 80px 1fr 1fr; gap: 8px; align-items: end;
+  border-top: 1px solid var(--linea); padding-top: 6px;
+}
+.animos-parte > b { align-self: center; }
+.animos-parte .campo { margin-bottom: 4px; }
 /* La música de un vídeo: un tramo por bloque, con su canción elegible. */
 .musica-light .tramo-musica { border-top: 1px solid var(--linea); padding: 8px 0 4px; }
 
@@ -1628,6 +1635,25 @@ input[type=range].ritmo {
   border-radius: 10px;
 }
 .sueltos > .fila { margin-top: 8px; gap: 8px; align-items: baseline; }
+
+/* LA COLA DE LA NOCHE, encima de «Tus vídeos» (fork, Fase 4). La misma caja que
+   los intentos a medias, con el borde del acento: no avisa de nada malo. */
+.cola-noche {
+  margin: 4px 0 16px; padding: 11px 13px;
+  background: var(--hueco); border: 1px solid var(--acento);
+  border-radius: 10px; display: flex; flex-direction: column; gap: 7px;
+}
+.cola-noche > .fila { gap: 8px; align-items: baseline; }
+.cola-noche .crece { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.video-light .renombrar.activo { border-color: var(--acento); background: var(--hueco); }
+
+/* «Mezclando…» y demas trabajos en marcha dentro de un boton: late despacio,
+   para que se vea que algo pasa y que no hace falta volver a pulsar. */
+.latiendo { animation: latido 1.4s infinite; }
+/* Los avisos del plan antes de montar, en la pagina del video. */
+.aviso-montaje { margin: 0 0 14px; }
+.aviso-montaje ul { margin: 6px 0 0; padding-left: 18px; }
+.aviso-montaje li { margin: 2px 0; }
 .sueltos .crece { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* ---- las muestras en fila, dentro del bloque de estilo gráfico
@@ -1870,6 +1896,10 @@ textarea.texto-bloque:focus { outline: none; }
   font-size: 11px; color: var(--tenue2);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+/* Lo que no hay que hacer mientras trabaja (revision de la Fase 4): debajo del
+   progreso, en el color de los avisos para que se lea sin buscarlo, y pudiendo
+   partirse en dos lineas en una ventana estrecha. */
+.barra-light .meta.aviso-barra { color: var(--aviso); white-space: normal; }
 
 /* ---- el vídeo: un rectángulo por el que van pasando los planos
  *

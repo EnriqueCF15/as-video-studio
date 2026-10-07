@@ -24,9 +24,9 @@ Las cuatro que nombra PENDIENTE.md 20, cada una aislada:
                  SVG dentro). Una vez por PLANO.
     pintar       poner la pagina en el instante t: `pintar(t)` mas los dos
                  requestAnimationFrame que esperan a que quede pintado.
-    capturar     `Page.captureScreenshot` en PNG, decodificar el base64 y
+    capturar     `Page.captureScreenshot` (JPEG desde el 06-10), decodificar el base64 y
                  escribir el fichero. Una vez por FOTOGRAMA.
-    codificar    libx264 sobre la secuencia de PNG del clip.
+    codificar    libx264 sobre la secuencia de fotogramas del clip.
     transicion   los primeros fotogramas repintados con WebGL.
     montar       concatenar los clips y muxear el audio.
 
@@ -152,6 +152,8 @@ def medir(fotogramas=FOTOGRAMAS, resolucion=(1920, 1080), fps=30,
     """
     hyper, svg = _hyperframe_y_capa(hyper, capa)
     ancho, alto = [int(v) for v in resolucion]
+    # la del render de verdad: JPEG desde el 06-10 (p8_render.CALIDAD_JPEG)
+    extension = p8_render.extension_fotogramas()
     trabajo = tempfile.mkdtemp(prefix="medir_render_")
     carpeta = os.path.join(trabajo, "frames")
     os.makedirs(carpeta, exist_ok=True)
@@ -183,7 +185,7 @@ def medir(fotogramas=FOTOGRAMAS, resolucion=(1920, 1080), fps=30,
             t0 = time.perf_counter()
             navegador.pintar(numero / float(fps))
             t1 = time.perf_counter()
-            navegador.capturar(os.path.join(carpeta, f"f{numero + 1:05d}.png"))
+            navegador.capturar(os.path.join(carpeta, f"f{numero + 1:05d}.{extension}"))
             t2 = time.perf_counter()
             pintar += t1 - t0
             capturar += t2 - t1
@@ -200,7 +202,7 @@ def medir(fotogramas=FOTOGRAMAS, resolucion=(1920, 1080), fps=30,
             paleta = {"linea": "#d8a657", "acento": "#d8785a", "texto": "#ece7dc"}
             pagina_trans = transiciones.pagina(
                 os.path.join(trabajo, "transicion.html"), ancho, alto, paleta)
-            anterior = os.path.join(carpeta, "f00001.png")
+            anterior = os.path.join(carpeta, f"f00001.{extension}")
             cuantos = min(fotogramas, int(round(fps * 0.4)))
             corte = {"shader": transiciones.frag_de("fundido"), "duracion": 0.4}
             tiempos["transicion"] = _cronometrar(
@@ -281,6 +283,7 @@ def medir_reparto(procesos=(1, 4, 8, 16), fotogramas=30, resolucion=(1920, 1080)
     """
     hyper, svg = _hyperframe_y_capa(hyper, capa)
     ancho, alto = [int(v) for v in resolucion]
+    extension = p8_render.extension_fotogramas()
     with Image.open(hyper) as imagen:
         hyper_px = list(imagen.size)
     trabajo = tempfile.mkdtemp(prefix="medir_reparto_")
@@ -301,7 +304,8 @@ def medir_reparto(procesos=(1, 4, 8, 16), fotogramas=30, resolucion=(1920, 1080)
                     "fps": fps, "resolucion": [ancho, alto], "calidad": "alta",
                     "carpeta": carpeta,
                     "clip": os.path.join(carpeta, "clip.mp4"),
-                    "ultimo": os.path.join(carpeta, "ultimo.png"),
+                    "ultimo": os.path.join(carpeta, f"ultimo.{extension}"),
+                    "fotogramas": extension,
                     "anterior": None, "esperar_anterior": False,
                     "corte": {}, "pagina_trans": "",
                     "conservar_frames": False}])

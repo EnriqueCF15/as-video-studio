@@ -101,6 +101,8 @@ def arrancar(puerto, carpeta):
     """Lanza el servidor y espera a que /api/salud conteste."""
     entorno = dict(os.environ)
     entorno["ESTUDIO_SIMULAR"] = "1"
+    # sin burbujas de Windows: la prueba lanza tandas y no hay nadie mirando
+    entorno["ESTUDIO_SIN_AVISOS"] = "1"
     entorno["PYTHONIOENCODING"] = "utf-8"
     # los presets del canal tambien van a la carpeta temporal: sin esto la
     # prueba escribia sus presets de mentira en el presets.json del canal real
@@ -956,6 +958,30 @@ def probar_cartelas_y_transiciones(cliente, pid, raiz_proyecto=None):
     respuesta, _ = cliente.post(f"/api/proyectos/{pid}/sonido/banda",
                                 {"fijadas": {"uno": "x.mp3"}})
     igual(respuesta.status_code, 400, "fijar una cancion a un tramo que no es un numero da 400")
+    # escuchar la mezcla (Fase 4): EN SEGUNDO PLANO y de una en una. Sin planos
+    # ni voz el trabajo falla diciendo por que; no revienta ni se queda colgado
+    respuesta, datos = cliente.post(f"/api/proyectos/{pid}/sonido/escuchar", {})
+    igual(respuesta.status_code, 202, "escuchar la mezcla lanza un trabajo (202)")
+    tid_mezcla = datos.get("trabajo_id")
+    ok(tid_mezcla and datos.get("ruta") == "escucha/mezcla.mp3",
+       f"con su trabajo y la ruta del MP3: {str(datos)[:120]}")
+    otra, otra_datos = cliente.post(f"/api/proyectos/{pid}/sonido/escuchar", {})
+    ok(otra.status_code in (202, 409),
+       "una segunda mientras corre la primera da 409 (o 202 si la primera ya acabo)")
+    limite = time.time() + 60
+    ficha_mezcla = {}
+    while time.time() < limite:
+        _, ficha_mezcla = cliente.get(f"/api/trabajos/{tid_mezcla}")
+        if ficha_mezcla.get("estado") in ("listo", "error", "cancelado"):
+            break
+        time.sleep(0.3)
+    ok(ficha_mezcla.get("estado") in ("listo", "error"),
+       f"y el trabajo de la mezcla acaba: {ficha_mezcla.get('estado')}")
+    if ficha_mezcla.get("estado") == "error":
+        ok(ficha_mezcla.get("error"), "y si falla dice por que")
+    respuesta, datos = cliente.get(f"/api/proyectos/{pid}/sonido")
+    ok("mezcla_en_marcha" in datos,
+       "el sonido dice si hay una mezcla en marcha (para retomar «Mezclando…»)")
 
     # --- EL VETO DE UN EFECTO (PENDIENTE 19). Se veta lo que se acaba de oir,
     # donde se oye: la pantalla trae cada efecto con su muestra y su ✕, y el
@@ -2885,6 +2911,22 @@ def probar_modo_light(cliente):
     respuesta, datos = cliente.put(f"/api/presets-light/{pid_preset}", {"idioma": "kl"})
     igual(respuesta.status_code, 400, "un idioma que no existe da 400 al editar")
 
+    # LOS ANIMOS DE LA MUSICA DEL ESTILO (fork): se guardan con el resto
+    respuesta, datos = cliente.put(f"/api/presets-light/{pid_preset}", {
+        "animos_arco": {"inicio": {"lento": "sobrio", "rapido": "sobrio"}}})
+    igual(respuesta.status_code, 200, "guardar los animos de la musica responde 200")
+    musica = ((datos.get("preset") or {}).get("datos") or {}).get("musica") or {}
+    igual(((musica.get("animos_arco") or {}).get("inicio") or {}).get("rapido"), "sobrio",
+          "y el estilo guarda que el arranque rapido pide sobrio")
+    igual(((musica.get("animos_arco") or {}).get("cierre") or {}).get("lento"),
+          "melancolico", "con el resto de la tabla como siempre")
+    respuesta, _ = cliente.put(f"/api/presets-light/{pid_preset}", {
+        "animos_arco": {"inicio": {"lento": "alegre"}}})
+    igual(respuesta.status_code, 400, "un animo que no existe da 400")
+    respuesta, datos = cliente.get("/api/presets-light")
+    ok(datos.get("musica_por_defecto") and "sobrio" in (datos.get("animos_musica") or []),
+       "la galeria trae la tabla de siempre y los animos para la pantalla")
+
     # rehacer una parte de un preset SIN taller se dice, no se inventa uno
     respuesta, datos = cliente.post(
         f"/api/presets-light/{pid_preset}/regenerar",
@@ -3450,6 +3492,77 @@ def probar_taller_oculto(cliente):
           "pero sigue abriendose por su id: es donde corre la generacion")
 
 
+def probar_la_cola_de_la_noche(cliente):
+    """La cola de la noche: poner, quitar, arrancar y saltar lo que no se puede.
+
+    No monta ningun MP4 de verdad (eso es un render de minutos): con un video
+    recien creado, al que le falta todo, comprueba que no entra en la cola (y
+    dice por que) y que, si ya estaba dentro, la cola lo SALTA con su motivo en
+    vez de quedarse colgada o lanzar algo que gaste.
+    """
+    seccion("LA COLA DE LA NOCHE")
+    respuesta, cola = cliente.get("/api/cola-render")
+    igual(respuesta.status_code, 200, "la cola se lee")
+    igual((cola.get("videos"), cola.get("corriendo")), ([], False),
+          "y empieza vacia y parada")
+    respuesta, _ = cliente.post("/api/cola-render/empezar")
+    igual(respuesta.status_code, 409, "empezar sin nada en espera da 409")
+    respuesta, _ = cliente.post("/api/cola-render", {})
+    igual(respuesta.status_code, 400, "poner sin 'pid' da 400")
+    respuesta, _ = cliente.post("/api/cola-render", {"pid": "no_existe_xyz"})
+    igual(respuesta.status_code, 404, "poner un video que no existe da 404")
+
+    respuesta, datos = cliente.post("/api/proyectos", {"nombre": "Cola de noche"})
+    pid = (datos.get("proyecto") or {}).get("id")
+    # AL PONERLO YA SE DICE SI DE NOCHE NO SE PODRA (revision de la Fase 4): a
+    # este le falta todo, y antes se aceptaba y fallaba a la manana siguiente
+    respuesta, datos = cliente.post("/api/cola-render", {"pid": pid})
+    igual(respuesta.status_code, 409, "un video al que le falta todo no entra en la cola")
+    ok("no se puede dejar para la noche" in str(datos.get("error")),
+       f"y dice por que, al momento: {str(datos.get('error'))[:120]}")
+
+    # Y SI ENTRO ANTES y luego cambio (se quedo sin una imagen, por ejemplo), la
+    # cola lo SALTA al montarlo con su motivo. Se pone a mano en el fichero,
+    # que es lo que habria quedado de una tarde en la que si se podia.
+    fichero = os.path.join(cliente.carpeta, "_cola_render.json")
+
+    def sembrar_cola():
+        with io.open(fichero, "w", encoding="utf-8") as fh:
+            json.dump({"videos": [{"pid": pid, "nombre": "Cola de noche",
+                                   "estado": "en_cola", "detalle": "",
+                                   "anadido": "2026-10-07T00:00:00"}]}, fh)
+
+    sembrar_cola()
+    respuesta, cola = cliente.get("/api/cola-render")
+    igual([(v["pid"], v["estado"]) for v in cola.get("videos") or []],
+          [(pid, "en_cola")], "la cola se lee de su fichero, con el video en espera")
+    igual(cola.get("en_cola"), 1, "y la cuenta de los que esperan")
+    respuesta, _ = cliente.delete("/api/cola-render/otro_que_no")
+    igual(respuesta.status_code, 404, "quitar uno que no esta da 404")
+    respuesta, cola = cliente.delete(f"/api/cola-render/{pid}")
+    igual((respuesta.status_code, cola.get("videos")), (200, []), "quitarlo lo saca")
+
+    sembrar_cola()
+    respuesta, cola = cliente.post("/api/cola-render/empezar")
+    igual(respuesta.status_code, 202, "empezar con uno en espera da 202")
+    limite = time.time() + 60
+    while time.time() < limite:
+        respuesta, cola = cliente.get("/api/cola-render")
+        if not cola.get("corriendo"):
+            break
+        time.sleep(0.5)
+    igual(cola.get("corriendo"), False, "y la cola acaba sola")
+    video = (cola.get("videos") or [{}])[0]
+    igual(video.get("estado"), "error",
+          "un video al que le falta todo NO se monta: queda «no se pudo»")
+    ok(bool(video.get("detalle")), "y dice por que")
+    respuesta, cola = cliente.post("/api/cola-render/parar")
+    igual((respuesta.status_code, cola.get("corriendo")), (200, False),
+          "parar con la cola parada no hace nada")
+    respuesta, cola = cliente.post("/api/cola-render/limpiar")
+    igual(cola.get("videos"), [], "limpiar quita los terminados")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Prueba del servicio HTTP")
     parser.add_argument("--conservar", action="store_true",
@@ -3512,6 +3625,7 @@ def main():
         probar_que_no_falta_ningun_nombre_en_la_pantalla()
         probar_que_no_falta_ningun_nombre_en_el_servidor()
         probar_el_reloj_de_un_trabajo()
+        probar_la_cola_de_la_noche(cliente)
     finally:
         parar(proceso)
         if not argumentos.conservar:

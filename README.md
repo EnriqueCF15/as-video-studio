@@ -214,7 +214,9 @@ aislamiento por proceso:
 | `ESTUDIO_ESTADISTICAS`, `ESTUDIO_COSTE_GLOBAL`, `ESTUDIO_BITACORA_GLOBAL` | lo medido y lo gastado |
 | `ESTUDIO_MOTORES`, `ESTUDIO_FUENTES` | los motores y las tipografías |
 | `ESTUDIO_EDGE`, `ESTUDIO_FFMPEG`, `ESTUDIO_FFPROBE` | los ejecutables |
-| `ESTUDIO_LOTES` | cuántos planos se renderizan a la vez |
+| `ESTUDIO_LOTES` | cuántos planos se renderizan a la vez (con poca RAM libre, menos) |
+| `ESTUDIO_FOTOGRAMAS=png` | captura los fotogramas en PNG en vez de JPEG 95 (más lento) |
+| `ESTUDIO_SIN_AVISOS=1` | sin burbujas de Windows al terminar (lo usan las pruebas) |
 | `ESTUDIO_SIMULAR=1` | no sale a ninguna API de pago: lo usan las pruebas |
 
 **`ESTUDIO_ESTADISTICAS` importa más de lo que parece.** El histórico guarda 30
