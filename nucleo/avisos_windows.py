@@ -43,9 +43,12 @@ def _orden_powershell(titulo, texto):
     En base64 y con el texto escapado para XML y para la comilla simple: el
     nombre de un proyecto lo escribe quien sea y no puede convertirse en codigo.
     """
+    # SE RECORTA ANTES DE ESCAPAR: al reves, el corte podia partir un «&amp;» o
+    # un «&lt;» por la mitad, el XML quedaba roto y la burbuja no salia -- justo
+    # con los mensajes de error de ffmpeg, que van llenos de < y & (revision).
     xml = ("<toast><visual><binding template='ToastGeneric'>"
-           f"<text>{escape(str(titulo))[:120]}</text>"
-           f"<text>{escape(str(texto))[:300]}</text>"
+           f"<text>{escape(str(titulo)[:120])}</text>"
+           f"<text>{escape(str(texto)[:300])}</text>"
            "</binding></visual>"
            "<audio src='ms-winsoundevent:Notification.Default'/></toast>")
     xml = xml.replace("'", "''")

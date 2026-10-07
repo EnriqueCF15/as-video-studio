@@ -102,6 +102,10 @@ def prueba_catalogo():
     ok("arranque misterioso/misterioso" in presets.resumen_de(
         {"tipo": "musica", "datos": {"animos_arco": animos}}),
        "y su resumen dice que pide el arranque")
+    igual(presets.resumen_de({"tipo": "musica", "datos": {}}), "animos de siempre",
+          "sin tabla, el resumen dice que son los animos de siempre")
+    ok("?" not in presets.resumen_de({"tipo": "musica", "datos": {"animos_arco": animos}}),
+       "y una tabla a medias no ensena interrogaciones: lo que falta es «de siempre»")
     revienta(lambda: presets.guardar("loquesea", "x", {"a": 1}),
              "tipo de preset desconocido", "un tipo inventado se rechaza")
 

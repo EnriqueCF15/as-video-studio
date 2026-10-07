@@ -584,12 +584,15 @@ def prueba_toma_unica():
     # LA OMISION SE MIDE POR SECCION aunque vaya en una toma con otras: se regraba
     # la toma que la lleva
     hablados = ["one two three four five six", "a b c d e f g h", "q r s t u v w x"]
-    trozos = [{"texto": hablados[0], "estilo": calma, "seccion": "SB001"},
-              {"texto": " ".join(hablados[1:]), "estilo": calma, "seccion": "SB002"}]
+    trozos = [{"texto": hablados[0], "estilo": calma, "seccion": "SB001",
+               "secciones": ["SB001"]},
+              {"texto": " ".join(hablados[1:]), "estilo": calma, "seccion": "SB002",
+               "secciones": ["SB002", "SB003"]}]
     malas = p4_voz._secciones_mal({"faltan_idx": list(range(14, 20))}, {"piezas": []},
                                   trozos, hablados, trozo_de=[0, 1, 1])
-    igual(malas, {1: ("omision", 6)},
-          "seis palabras saltadas en la tercera seccion: se regraba la toma que la lleva")
+    igual(malas, {1: ("omision", 6, ["SB003"])},
+          "seis palabras saltadas en la tercera seccion: se regraba la toma que la "
+          "lleva, y se dice que la mala es SB003 y no la primera de la toma")
 
 
 def prueba_coste():

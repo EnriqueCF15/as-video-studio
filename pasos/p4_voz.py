@@ -1127,17 +1127,35 @@ def _sustituir_trozo(wav, info, indice, wav_nuevo, info_nuevo):
     return motor_google.wav_desde_pcm(pista), len(pista) / (sr * 2)
 
 
+def _id_de_seccion(trozos, trozo_de, indice):
+    """El id de la seccion `indice` (de `hablados`), mirando dentro de su toma."""
+    toma = trozo_de[indice]
+    ids = trozos[toma].get("secciones")
+    if ids:
+        posicion = indice - trozo_de.index(toma)
+        if 0 <= posicion < len(ids):
+            return ids[posicion]
+    return trozos[toma].get("seccion", indice)
+
+
 def _secciones_mal(alineado, info, trozos, hablados, trozo_de=None):
-    """Lo que hay que regrabar: {indice de trozo: (motivo, dato)} -- la fuga manda.
+    """Lo que hay que regrabar: {toma: (motivo, dato, [secciones])} -- la fuga manda.
 
     Las omisiones se miden POR SECCION aunque varias vayan en la misma toma
     (`trozo_de[i]` = la toma de la seccion i): medidas sobre una toma larga, un
-    gancho de veinte palabras saltado se diluia por debajo del umbral.
+    gancho de veinte palabras saltado se diluia por debajo del umbral. Se
+    regraba la TOMA entera --partirla cambiaria la entonacion, que es por lo que
+    se junto-- pero se dice que secciones fallaron: el aviso nombraba siempre la
+    primera de la toma, aunque la mala fuera otra (revision de la Fase 4).
     """
     trozo_de = trozo_de or list(range(len(hablados)))
-    malas = {trozo_de[i]: ("omision", n)
-             for i, n in omisiones_por_seccion(alineado, hablados).items()}
-    malas.update({i: ("fuga", t) for i, t in fugas_de_estilo(alineado, info, trozos).items()})
+    malas = {}
+    for i, n in omisiones_por_seccion(alineado, hablados).items():
+        toma = trozo_de[i]
+        _m, palabras, cuales = malas.get(toma, ("omision", 0, []))
+        malas[toma] = ("omision", palabras + n, cuales + [_id_de_seccion(trozos, trozo_de, i)])
+    malas.update({i: ("fuga", t, [trozos[i].get("seccion", i)])
+                  for i, t in fugas_de_estilo(alineado, info, trozos).items()})
     return malas
 
 
@@ -1156,13 +1174,16 @@ def _google_verificado(trozos, hablados, cfg, progreso, trozo_de=None):
         malas = _secciones_mal(alineado, info, trozos, hablados, trozo_de)
         if not malas:
             break
-        for indice, (motivo, dato) in malas.items():
-            seccion = trozos[indice].get("seccion", indice)
+        for indice, (motivo, dato, cuales) in malas.items():
+            seccion = ", ".join(str(c) for c in cuales)
+            juntas = len(trozos[indice].get("secciones") or [None])
+            regraba = ("se regraba esa sección" if juntas <= 1 else
+                       f"se regraba su toma entera ({juntas} secciones juntas, para que "
+                       f"no cambie la entonación)")
             progreso(0.9, f"AVISO: la voz leyó en voz alta su instrucción de estilo en "
-                          f"{seccion} («{str(dato)[:70]}»): se regraba esa sección"
+                          f"{seccion} («{str(dato)[:70]}»): {regraba}"
                      if motivo == "fuga" else
-                     f"AVISO: la voz se saltó {dato} palabras en {seccion}: se regraba "
-                     f"esa sección")
+                     f"AVISO: la voz se saltó {dato} palabras en {seccion}: {regraba}")
             wav_nuevo, _d, info_nuevo = _sintesis_google([trozos[indice]], cfg,
                                                          lambda f, m="": None)
             wav, duracion = _sustituir_trozo(wav, info, indice, wav_nuevo, info_nuevo)
@@ -1173,8 +1194,9 @@ def _google_verificado(trozos, hablados, cfg, progreso, trozo_de=None):
         info["regrabados"] = regrabados
     restantes = _secciones_mal(alineado, info, trozos, hablados, trozo_de)
     if restantes:
-        info["sin_arreglar"] = [{"seccion": trozos[i].get("seccion", i), "motivo": m,
-                                 "detalle": d} for i, (m, d) in restantes.items()]
+        info["sin_arreglar"] = [{"seccion": ", ".join(str(c) for c in cuales),
+                                 "motivo": m, "detalle": d}
+                                for i, (m, d, cuales) in restantes.items()]
     return wav, duracion, alineado, info
 
 

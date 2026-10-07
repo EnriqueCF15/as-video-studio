@@ -880,9 +880,22 @@ def escuchar_mezcla(proyecto, params, destino):
     desfase = float(escenas[0]["t_in"])
     largo = float(escenas[-1]["t_out"]) - desfase
     largo_con_cola = largo + COLA_NEGRO_S
-    carpeta = os.path.join(os.path.dirname(os.path.abspath(destino)), "_mezcla")
-    os.makedirs(carpeta, exist_ok=True)
+    # UNA CARPETA POR MEZCLA, y fuera pase lo que pase: dos mezclas a la vez
+    # (dos pestanas, o una que falla a medias) compartian `_mezcla` y se pisaban
+    # los wav. El MP3 se escribe dentro y se mueve al final de golpe.
+    os.makedirs(os.path.dirname(os.path.abspath(destino)), exist_ok=True)
+    carpeta = tempfile.mkdtemp(prefix="_mezcla_",
+                               dir=os.path.dirname(os.path.abspath(destino)))
+    try:
+        return _mezclar_en(carpeta, p, plan, escenas, audio, desfase, largo,
+                           largo_con_cola, destino)
+    finally:
+        shutil.rmtree(carpeta, ignore_errors=True)
 
+
+def _mezclar_en(carpeta, p, plan, escenas, audio, desfase, largo, largo_con_cola,
+                destino):
+    """El cuerpo de `escuchar_mezcla`, dentro de su carpeta de trabajo."""
     pista_efectos, pista_musica, cama = None, None, False
     if p.get("sonido", True):
         cortes = transiciones.resolver(escenas, p, semilla=(plan.get("semilla") or 0))
@@ -934,12 +947,13 @@ def escuchar_mezcla(proyecto, params, destino):
         orden += ["-filter_complex", mezcla(medida), "-map", "[salida]"]
     else:
         orden += ["-map", "1:a"]
-    orden += ["-c:a", "libmp3lame", "-b:a", "160k", destino]
+    temporal = os.path.join(carpeta, "mezcla.mp3")
+    orden += ["-c:a", "libmp3lame", "-b:a", "160k", temporal]
     proceso = subprocess.run(orden, capture_output=True, text=True, timeout=1800,
                              **medios.SIN_VENTANA)
-    if proceso.returncode != 0 or not os.path.exists(destino):
+    if proceso.returncode != 0 or not os.path.exists(temporal):
         raise RuntimeError(f"ffmpeg no pudo mezclar: {proceso.stderr[-400:]}")
-    shutil.rmtree(carpeta, ignore_errors=True)
+    medios.reemplazar(temporal, destino)
     return {"mp3": destino, "duracion": round(largo_con_cola, 2),
             "musica": sonido.describir(p), "con_musica": con_musica,
             "con_efectos": con_efectos}
@@ -1110,9 +1124,13 @@ def _cuantos_lotes(p, cuantos_planos):
 #: LA MEMORIA LIBRE MANDA SOBRE EL AUTOMATICO (fork, Fase 4). Medido el 06-10
 #: en el portatil: cada proceso de captura (su Python y su Edge) ocupa ~0,45
 #: GB, y con 6 a la vez y un juego abierto quedaban 2 GB y Windows tiraba de
-#: disco. Se deja RAM_RESERVA_GB para Windows y lo demas, y nunca se baja de
+#: disco. Y al acabar cada plano su lote codifica el clip: libx264 «slow» a
+#: 1080p llega a 0,88 GB de pico (medido el 07-10; con menos hilos baja a 0,56
+#: pero tarda el triple, no compensa). Esas codificaciones duran segundos y no
+#: coinciden todas, asi que se cuenta 0,45 fijos + ~0,3 de media: 0,75 por
+#: lote. Se deja RAM_RESERVA_GB para Windows y lo demas, y nunca se baja de
 #: MIN_LOTES_RAM. Un `lotes` puesto a mano en los params no se toca.
-RAM_POR_LOTE_GB = 0.5
+RAM_POR_LOTE_GB = 0.75
 RAM_RESERVA_GB = 2.0
 MIN_LOTES_RAM = 2
 
@@ -1452,6 +1470,32 @@ def _correr_lotes_en_procesos(lotes, trabajo, avisar, total_planos,
 OPCIONES_EJECUCION = ("solo_montar",)
 
 
+def _fps_del_montaje(proyecto, params, parcial):
+    """Con cuantos fotogramas por segundo se monta ESTA vez. -> int
+
+    UN VIDEO NO MEZCLA FRECUENCIAS (fork, Fase 4). El defecto paso de 30 a 25 el
+    06-10, y un montaje PARCIAL --rehacer un plano, aplicar las notas del
+    repaso, solo remezclar-- conserva los clips que ya hay: con el defecto
+    nuevo, el plano rehecho salia a 25 entre clips a 30 y el MP4 quedaba con
+    las dos frecuencias. Asi que:
+      - si los params fijan `fps`, mandan ellos;
+      - si el montaje es parcial y ya hay uno hecho, los de ESE montaje;
+      - si no (un render entero, que redibuja todo), los de por defecto.
+    Un video de antes pasa a 25 la primera vez que se monta entero.
+    """
+    if (params or {}).get("fps"):
+        return int(params["fps"])
+    if parcial:
+        try:
+            from nucleo.estado import Estado                    # noqa: PLC0415
+            previo = (Estado(proyecto).salidas("render") or {}).get("fps")
+        except Exception:                                       # noqa: BLE001
+            previo = None
+        if previo:
+            return int(previo)
+    return int(PARAMS_POR_DEFECTO["fps"])
+
+
 def ejecutar(proyecto, params, avisar=None, unidades=None, solo_montar=False):
     """Renderiza los clips que toquen y rehace el MP4 final.
 
@@ -1497,7 +1541,9 @@ def ejecutar(proyecto, params, avisar=None, unidades=None, solo_montar=False):
         os.makedirs(ruta, exist_ok=True)
 
     escenas = plan.get("escenas") or []
-    fps = int(p["fps"])
+    fps = _fps_del_montaje(proyecto, params,
+                           parcial=bool(solo_montar or unidades is not None))
+    p["fps"] = fps
     fotogramas = extension_fotogramas()
     # QUE transicion concreta lleva cada plano. El plan solo trae la RANURA
     # (corte / suave / acento), que es una decision del corte; cual la ocupa se

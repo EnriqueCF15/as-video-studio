@@ -443,11 +443,15 @@ def resumen_de(ficha):
         ] if x)
     if tipo == "musica":
         animos = datos.get("animos_arco") or {}
+        if not any(animos.get(p) for p in ("inicio", "medio", "cierre")):
+            return "animos de siempre"
         nombres = {"inicio": "arranque", "medio": "cuerpo", "cierre": "cierre"}
+        # lo que el Estilo no fija sigue la tabla de siempre: se dice asi, y no
+        # con un «?» que parece un fallo (revision de la Fase 4)
         return " · ".join(
-            f"{nombres[p]} {(animos.get(p) or {}).get('lento', '?')}"
-            f"/{(animos.get(p) or {}).get('rapido', '?')}"
-            for p in ("inicio", "medio", "cierre")) or "animos de siempre"
+            f"{nombres[p]} {(animos.get(p) or {}).get('lento', 'de siempre')}"
+            f"/{(animos.get(p) or {}).get('rapido', 'de siempre')}"
+            for p in ("inicio", "medio", "cierre"))
     if tipo == "rotulos":
         fijados = len((datos.get("paleta") or {}).get("fijados") or {})
         return " · ".join(x for x in [

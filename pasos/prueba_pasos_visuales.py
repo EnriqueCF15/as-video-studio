@@ -1173,9 +1173,19 @@ def probar_render(proyecto, estado, params):
             os.environ.pop("ESTUDIO_FOTOGRAMAS", None)
         else:
             os.environ["ESTUDIO_FOTOGRAMAS"] = antes
-    igual([p8_render._tope_por_memoria(8, libre) for libre in (16, 6, 4, 1)], [8, 8, 4, 2],
+    igual([p8_render._tope_por_memoria(8, libre) for libre in (16, 8, 6, 4, 1)], [8, 8, 5, 2, 2],
           "con poca RAM libre se renderizan menos planos a la vez, nunca menos de 2")
     igual(p8_render._tope_por_memoria(1, 16), 1, "y uno en fila sigue en fila")
+
+    # UN VIDEO NO MEZCLA FRECUENCIAS (revision de la Fase 4): un montaje parcial
+    # sigue con los fps del montaje que ya hay; uno entero, con los de por defecto
+    montado = int(estado.salidas("render").get("fps") or 0)
+    igual(p8_render._fps_del_montaje(proyecto, {}, parcial=True), montado,
+          "rehacer un plano usa los fps del video ya montado, no el defecto nuevo")
+    igual(p8_render._fps_del_montaje(proyecto, {}, parcial=False),
+          p8_render.PARAMS_POR_DEFECTO["fps"], "un render entero usa los de por defecto")
+    igual(p8_render._fps_del_montaje(proyecto, {"fps": 30}, parcial=True), 30,
+          "y si los params los fijan, mandan los params")
 
     # rehacer un plano no rehace el video entero
     print("      re-render de un solo plano")
