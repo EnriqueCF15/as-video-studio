@@ -54,7 +54,13 @@ import sonido  # noqa: E402
 import transiciones  # noqa: E402
 
 PARAMS_POR_DEFECTO = {
-    "fps": 30,
+    # 25 Y NO 30 (fork, Fase 4, elegido por Enrique el 06-10): un 17 % menos de
+    # fotogramas que capturar, y en planos que son una imagen con un paneo lento
+    # no se nota. Solo el render: el plan de imagenes (p6) sigue diciendo 30
+    # porque cambiarlo ahi dejaria obsoletas las imagenes, que cuestan dinero.
+    # Cada plano saca sus fotogramas de su tiempo ABSOLUTO (t_in y t_out por
+    # fps, redondeados), asi que la voz no se desincroniza.
+    "fps": 25,
     "resolucion": [1920, 1080],
     "calidad_video": "alta",       # alta | media | baja
     # Duracion BASE de una transicion. Cada una la multiplica por su factor (un
@@ -118,6 +124,38 @@ CALIDADES = {
 }
 
 
+# ------------------------------------------- en que se guarda cada fotograma
+#
+# EN JPEG Y NO EN PNG (fork, Fase 4, elegido por Enrique el 06-10). El 88 % del
+# render era Edge COMPRIMIENDO el PNG de cada fotograma: medido en el portatil
+# sobre un plano real con rotulo y subtitulo (temp\medir_formatos.py), un PNG
+# de 1920x1080 tardaba 1,48 s y un JPEG de calidad 95, 0,27 s; con 6 procesos,
+# 2,5 fotogramas/s contra 12,3. Y el fotograma no es el producto: despues va a
+# libx264 en 4:2:0, que ya tira mas detalle que el JPEG. Medido contra los PNG
+# originales, el MP4 final da PSNR 50,0 dB por el camino PNG y 47,8 por el
+# JPEG 95 (por encima de ~45 no se distingue), y el texto ampliado x3 se ve
+# igual. ESTUDIO_FOTOGRAMAS=png vuelve al camino de antes, que sigue entero.
+#
+# El PNG que queda (otras capturas, o con la variable) va con
+# `optimizeForSpeed`: menos compresion, los MISMOS pixeles, un 20 % mas rapido.
+
+CALIDAD_JPEG = 95
+
+
+def extension_fotogramas():
+    """'jpg' (lo de siempre desde el 06-10) o 'png' con ESTUDIO_FOTOGRAMAS=png."""
+    pedida = str(os.environ.get("ESTUDIO_FOTOGRAMAS") or "").strip().lower()
+    return "png" if pedida == "png" else "jpg"
+
+
+def _extension_en(carpeta):
+    """La extension de la secuencia que hay en `carpeta` (mira el primero)."""
+    for extension in ("jpg", "png"):
+        if os.path.exists(os.path.join(carpeta, f"f00001.{extension}")):
+            return extension
+    return extension_fotogramas()
+
+
 # ------------------------------------------------------- la huella de un clip
 #
 # UN CLIP QUE NO HA CAMBIADO NO SE VUELVE A DIBUJAR (fork, Fase 4). Cambiar la
@@ -135,7 +173,8 @@ EXT_HUELLA = ".huella"
 
 #: Se sube A MANO cuando cambie COMO se dibuja un clip (el codigo, no sus
 #: datos): con otra version ninguna huella vieja vale y se redibuja todo.
-VERSION_HUELLA = 1
+#: 2 (06-10): fotogramas en JPEG y 25 fps. 3: el JPEG pasa a rango de TV al codificar.
+VERSION_HUELLA = 3
 
 _HUELLAS_FICHERO = {}
 
@@ -158,7 +197,7 @@ def _huella_fichero(ruta):
 
 
 def huella_de_clip(escena, mov, hyper, capa, capa_fija, corte, fps, resolucion,
-                   calidad, paleta=None, huella_anterior=""):
+                   calidad, paleta=None, huella_anterior="", fotogramas="jpg"):
     """Todo lo que decide los fotogramas de un clip, resumido. -> str
 
     El tramo de tiempo, la camara, la imagen (su CONTENIDO, no su nombre), las
@@ -178,7 +217,7 @@ def huella_de_clip(escena, mov, hyper, capa, capa_fija, corte, fps, resolucion,
         "capa": hashlib.sha1((capa or "").encode("utf-8")).hexdigest(),
         "fija": hashlib.sha1((capa_fija or "").encode("utf-8")).hexdigest(),
         "corte": corte or {}, "fps": int(fps), "resolucion": list(resolucion),
-        "calidad": calidad,
+        "calidad": calidad, "fotogramas": fotogramas,
         "paleta": paleta if cuece else None,
         "anterior": huella_anterior if cuece else "",
     }
@@ -383,8 +422,13 @@ class Navegador:
             self.rAF = False
 
     def capturar(self, destino):
-        datos = self.llamar("Page.captureScreenshot", format="png",
-                            captureBeyondViewport=False)
+        # el formato lo dice la extension del destino (ver CALIDAD_JPEG)
+        if destino.lower().endswith((".jpg", ".jpeg")):
+            formato = {"format": "jpeg", "quality": CALIDAD_JPEG}
+        else:
+            formato = {"format": "png", "optimizeForSpeed": True}
+        datos = self.llamar("Page.captureScreenshot", captureBeyondViewport=False,
+                            **formato)
         with open(destino, "wb") as fh:
             fh.write(base64.b64decode(datos["data"]))
         return destino
@@ -566,8 +610,15 @@ def _pagina_de(escena, mov, capa_svg, hyper, p, destino, capa_fija="", fps=30):
 
 def _codificar(dir_frames, destino, fps, calidad):
     ajustes = CALIDADES.get(calidad) or CALIDADES["media"]
+    extension = _extension_en(dir_frames)
+    # UN JPEG ES DE RANGO COMPLETO (0-255) y el video, de rango de TV (16-235),
+    # que es como salia siempre desde los PNG. Sin convertirlo, el MP4 salia
+    # marcado «yuvj420p / pc» y cada reproductor lo pinta a su manera; con esto
+    # sale igual que antes y mas fiel a la imagen (medido: 48,6 dB contra 47,8).
+    rango = (["-vf", "scale=in_range=pc:out_range=tv"] if extension == "jpg" else [])
     orden = [medios.ffmpeg(), "-y", "-loglevel", "error",
-             "-framerate", str(fps), "-i", os.path.join(dir_frames, "f%05d.png"),
+             "-framerate", str(fps), "-i", os.path.join(dir_frames, f"f%05d.{extension}"),
+             *rango,
              "-c:v", "libx264", "-preset", ajustes["preset"], "-crf", ajustes["crf"],
              "-pix_fmt", "yuv420p", "-r", str(fps), destino]
     proceso = subprocess.run(orden, capture_output=True, text=True, timeout=3600,
@@ -946,8 +997,9 @@ def _cocer_transicion(navegador, pagina_trans, anterior, carpeta, total, fps,
     if cuantos <= 0:
         return 0
     navegador.abrir(pagina_trans)
+    extension = _extension_en(carpeta)
     for indice, progreso in enumerate(transiciones.progresos(cuantos)):
-        marco = os.path.join(carpeta, f"f{indice + 1:05d}.png")
+        marco = os.path.join(carpeta, f"f{indice + 1:05d}.{extension}")
         transiciones.componer(navegador, anterior, marco, progreso,
                               corte["shader"], marco)
     return cuantos
@@ -1050,8 +1102,28 @@ def _cuantos_lotes(p, cuantos_planos):
     except ValueError:
         forzado = 0
     if forzado > 0:
-        return max(1, min(forzado, MAX_LOTES, cuantos_planos))
-    return max(1, min(MAX_LOTES, (os.cpu_count() or 2) // 2, cuantos_planos))
+        return _tope_por_memoria(max(1, min(forzado, MAX_LOTES, cuantos_planos)))
+    return _tope_por_memoria(
+        max(1, min(MAX_LOTES, (os.cpu_count() or 2) // 2, cuantos_planos)))
+
+
+#: LA MEMORIA LIBRE MANDA SOBRE EL AUTOMATICO (fork, Fase 4). Medido el 06-10
+#: en el portatil: cada proceso de captura (su Python y su Edge) ocupa ~0,45
+#: GB, y con 6 a la vez y un juego abierto quedaban 2 GB y Windows tiraba de
+#: disco. Se deja RAM_RESERVA_GB para Windows y lo demas, y nunca se baja de
+#: MIN_LOTES_RAM. Un `lotes` puesto a mano en los params no se toca.
+RAM_POR_LOTE_GB = 0.5
+RAM_RESERVA_GB = 2.0
+MIN_LOTES_RAM = 2
+
+
+def _tope_por_memoria(cuantos, libre=None):
+    """`cuantos`, o menos si no caben en la RAM libre de ahora."""
+    libre = memoria_libre_gb() if libre is None else libre
+    if libre is None:
+        return cuantos
+    caben = int((float(libre) - RAM_RESERVA_GB) / RAM_POR_LOTE_GB)
+    return max(1, min(cuantos, max(MIN_LOTES_RAM, caben)))
 
 
 def _repartir_lotes(pendientes, cuantos):
@@ -1158,14 +1230,16 @@ def renderizar_plano(tarea, navegador=None):
                         os.path.join(carpeta, "escena.html"),
                         capa_fija=tarea.get("capa_fija") or "", fps=fps)
 
+    # jpg desde el 06-10 (ver CALIDAD_JPEG); una tarea sin la clave es de antes
+    extension = tarea.get("fotogramas") or "png"
     navegador.abrir(pagina)
     for numero in range(total):
         navegador.pintar(numero / float(fps))
-        navegador.capturar(os.path.join(carpeta, f"f{numero + 1:05d}.png"))
+        navegador.capturar(os.path.join(carpeta, f"f{numero + 1:05d}.{extension}"))
     # El ultimo fotograma se guarda ANTES de la transicion: es el que mira el
     # plano siguiente, y lo que tiene que mirar es este plano limpio, no este
     # plano mezclado con el anterior.
-    _guardar_ultimo(os.path.join(carpeta, f"f{total:05d}.png"), tarea["ultimo"])
+    _guardar_ultimo(os.path.join(carpeta, f"f{total:05d}.{extension}"), tarea["ultimo"])
 
     corte = tarea.get("corte") or {}
     pintados = 0
@@ -1424,6 +1498,7 @@ def ejecutar(proyecto, params, avisar=None, unidades=None, solo_montar=False):
 
     escenas = plan.get("escenas") or []
     fps = int(p["fps"])
+    fotogramas = extension_fotogramas()
     # QUE transicion concreta lleva cada plano. El plan solo trae la RANURA
     # (corte / suave / acento), que es una decision del corte; cual la ocupa se
     # resuelve aqui, al renderizar, contra la paleta elegida en esta pantalla.
@@ -1524,7 +1599,7 @@ def ejecutar(proyecto, params, avisar=None, unidades=None, solo_montar=False):
         previo = escenas[indice - 1]["id"] if indice else None
         huella = huella_de_clip(escena, mov, hyper, svg, fija, cortes.get(sid) or {},
                                 fps, (ancho, alto), p["calidad_video"], paleta,
-                                huellas.get(previo, ""))
+                                huellas.get(previo, ""), fotogramas=fotogramas)
         huellas[sid] = huella
         if pedidas is None and huella_guardada(clip) == huella:
             resultados[uid] = {"clip": os.path.relpath(clip, trabajo),
@@ -1542,13 +1617,14 @@ def ejecutar(proyecto, params, avisar=None, unidades=None, solo_montar=False):
             "hyper": hyper, "frames": total, "fps": fps,
             "resolucion": [ancho, alto], "calidad": p["calidad_video"],
             "carpeta": os.path.join(dir_frames, sid), "clip": clip,
-            "ultimo": os.path.join(dir_ultimo, f"{sid}.png"),
+            "ultimo": os.path.join(dir_ultimo, f"{sid}.{fotogramas}"),
+            "fotogramas": fotogramas,
             # el arranque de ESTA pasada: con el, el ultimo fotograma del plano
             # de antes deja de ser «un fichero que existe» y pasa a ser «un
             # fichero que ha escrito este render» (ver _esperar)
             "desde": arranque_render,
             "anterior": (os.path.join(dir_ultimo,
-                                      f"{escenas[indice - 1]['id']}.png")
+                                      f"{escenas[indice - 1]['id']}.{fotogramas}")
                          if indice else None),
             "previo": escenas[indice - 1]["id"] if indice else None,
             "corte": {k: v for k, v in (cortes.get(sid) or {}).items()},

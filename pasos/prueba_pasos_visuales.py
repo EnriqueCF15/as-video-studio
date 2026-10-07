@@ -1070,7 +1070,8 @@ def probar_render(proyecto, estado, params):
     # : el techo no era el navegador sino lo que hace Python
     # con cada fotograma, y con hilos eso no escala. La promesa de ese cambio es
     # que es una palanca de VELOCIDAD y nada mas -- mismo Edge, misma pagina,
-    # mismo codigo --, asi que el clip tiene que salir byte a byte igual.
+    # mismo codigo --, asi que el clip tiene que salir igual (ver mas abajo: a la
+    # vista, no byte a byte).
     # Se comparan los PIXELES y no el fichero: el muxer de MP4 estampa la hora
     # en las cabeceras, asi que dos clips identicos nunca dan el mismo byte.
     def _huella_video(ruta):
@@ -1089,6 +1090,16 @@ def probar_render(proyecto, estado, params):
     ok(all(h.startswith("MD5=") for h in huellas.values()),
        f"se pueden leer los clips de la version sellada: "
        f"{[h for h in huellas.values() if not h.startswith('MD5=')][:1]}")
+    ultimos = os.listdir(os.path.join(versionado, "ultimo"))
+    ok(ultimos and all(n.endswith(".jpg") for n in ultimos),
+       f"el render captura en JPEG (los ultimos fotogramas: {ultimos[:3]})")
+    un_clip = os.path.join(versionado, next(iter(salidas["clips"].values())))
+    formato = subprocess.run(
+        [medios.ffprobe(), "-v", "error", "-select_streams", "v:0", "-show_entries",
+         "stream=pix_fmt,color_range", "-of", "default=nw=1", un_clip],
+        capture_output=True, text=True, timeout=60, **medios.SIN_VENTANA).stdout
+    ok("pix_fmt=yuv420p" in formato and "color_range=pc" not in formato,
+       f"y el clip sale en rango de TV como con PNG, no en el completo del JPEG: {formato!r}")
     # SIN HUELLAS, para que de verdad se vuelvan a dibujar en fila: con ellas el
     # render las conservaria (ver p8_render.huella_de_clip) y esta comparacion
     # mediria un clip contra si mismo
@@ -1097,12 +1108,31 @@ def probar_render(proyecto, estado, params):
             os.remove(os.path.join(versionado, "clips", nombre))
     en_fila = p8_render.ejecutar(proyecto, dict(params, lotes=1), avisador("p8"))
     trabajo_f = proyecto.ruta_trabajo("render", crear=False)
-    distintos = [sid for sid, ruta in en_fila["salidas"]["clips"].items()
-                 if _huella_video(os.path.join(trabajo_f, ruta))
-                 != huellas.get(sid)]
-    igual(distintos, [],
-          "el video sale identico se reparta en procesos o corra en fila: "
-          "repartir es una palanca de velocidad, no de imagen")
+
+    # IGUAL A LA VISTA, NO BYTE A BYTE (fork, Fase 4). Comparaba el MD5 de los
+    # pixeles y fallaba a ratos (2 de 5 pasadas el 06-10). Medido con 8 procesos
+    # dibujando EL MISMO plano a la vez (temp\comparar_paralelo.py): con el
+    # portatil a plena carga Edge rasteriza ~100 pixeles de 2 millones con 1-3
+    # niveles de diferencia sobre 255 -- invisible, y no se va ni con
+    # --disable-checker-imaging. Lo que esta prueba vigila de verdad es que
+    # repartir no meta OTRA imagen (otro plano, una transicion cocida sobre el
+    # fotograma viejo), y eso da menos de 30 dB; el ruido da bastante mas de 45.
+    def _parecido_db(uno, otro):
+        salida = subprocess.run(
+            [medios.ffmpeg(), "-i", uno, "-i", otro, "-lavfi", "[0:v][1:v]psnr",
+             "-f", "null", "-"],
+            capture_output=True, text=True, timeout=300, **medios.SIN_VENTANA)
+        medidas = re.findall(r"average:(inf|[0-9.]+)", salida.stderr or "")
+        return float(medidas[-1]) if medidas else 0.0
+
+    distintos = {}
+    for sid, ruta in en_fila["salidas"]["clips"].items():
+        parecido = _parecido_db(os.path.join(versionado, ruta), os.path.join(trabajo_f, ruta))
+        if parecido < 45.0:
+            distintos[sid] = round(parecido, 1)
+    igual(distintos, {},
+          "el video sale igual a la vista se reparta en procesos o corra en fila "
+          "(PSNR >= 45 dB por clip): repartir es una palanca de velocidad, no de imagen")
     estado.completar("render", en_fila["salidas"], en_fila["unidades"])
 
     # LA HUELLA DE CADA CLIP (fork, Fase 4): un render entero sin cambiar nada
@@ -1128,6 +1158,24 @@ def probar_render(proyecto, estado, params):
        "otro subtitulo es otra huella")
     ok(p8_render.huella_de_clip(**dict(base_h, escena=dict(escena0, t_out=float(escena0["t_out"]) + 1))) != h0,
        "otro tramo de tiempo es otra huella")
+    ok(p8_render.huella_de_clip(**dict(base_h, fotogramas="png")) != h0,
+       "fotogramas en otro formato son otra huella")
+
+    # LOS FOTOGRAMAS VAN EN JPEG y el reparto lo limita la RAM (fork, Fase 4)
+    igual(p8_render.extension_fotogramas(), "jpg", "los fotogramas del render son JPEG")
+    antes = os.environ.get("ESTUDIO_FOTOGRAMAS")
+    os.environ["ESTUDIO_FOTOGRAMAS"] = "png"
+    try:
+        igual(p8_render.extension_fotogramas(), "png",
+              "y ESTUDIO_FOTOGRAMAS=png vuelve al camino de antes")
+    finally:
+        if antes is None:
+            os.environ.pop("ESTUDIO_FOTOGRAMAS", None)
+        else:
+            os.environ["ESTUDIO_FOTOGRAMAS"] = antes
+    igual([p8_render._tope_por_memoria(8, libre) for libre in (16, 6, 4, 1)], [8, 8, 4, 2],
+          "con poca RAM libre se renderizan menos planos a la vez, nunca menos de 2")
+    igual(p8_render._tope_por_memoria(1, 16), 1, "y uno en fila sigue en fila")
 
     # rehacer un plano no rehace el video entero
     print("      re-render de un solo plano")
