@@ -233,6 +233,19 @@ class Navegador:
         # dentro del perfil, que es temporal y se borra en `cerrar`.
         self.registro = os.path.join(self.perfil, "edge.log")
         self._registro = open(self.registro, "w", encoding="utf-8", errors="replace")
+        # SIN __COMPAT_LAYER (fork, Fase 4). Si el Estudio arranca con esa
+        # variable puesta --Windows pone `DetectorsAppHealth` a los procesos de
+        # algunas aplicaciones, y se hereda--, msedge.exe se RELANZA a si mismo
+        # para quitarsela (`--edge-skip-compat-layer-relaunch`) y el proceso que
+        # lanzamos sale con codigo 0. Dos daños, medidos el 06-10: `cerrar`
+        # mataba al lanzador y el Edge de verdad quedaba vivo -- 1.009 procesos
+        # huerfanos tras una tarde de renders, que se comian la RAM y acabaron
+        # impidiendo que arrancara ninguno --; y si el lanzador salia antes de
+        # que el hijo abriera el puerto, el render moria con «Edge se ha cerrado
+        # solo con codigo 0».
+        entorno = {k: v for k, v in os.environ.items()
+                   if k.upper() != "__COMPAT_LAYER"}
+        self.relanzado = False
         self.proceso = subprocess.Popen(
             [medios.edge(), "--headless=new", "--disable-gpu", "--no-first-run",
              "--disable-extensions", "--hide-scrollbars", "--mute-audio",
@@ -251,7 +264,7 @@ class Navegador:
              "--allow-file-access-from-files",
              f"--remote-debugging-port={self.puerto}",
              f"--window-size={int(ancho)},{int(alto)}", "about:blank"],
-            stdout=subprocess.DEVNULL, stderr=self._registro,
+            stdout=subprocess.DEVNULL, stderr=self._registro, env=entorno,
             **medios.SIN_VENTANA)
         try:
             self.ws = websocket.create_connection(self._url_pestana(), timeout=60)
@@ -285,7 +298,13 @@ class Navegador:
         limite = time.time() + espera
         while time.time() < limite:
             codigo = self.proceso.poll()
-            if codigo is not None:
+            if codigo == 0 and not self.relanzado:
+                # SE HA RELANZADO, no ha muerto: el Edge de verdad es un hijo
+                # que todavia esta abriendo el puerto (ver __COMPAT_LAYER en
+                # __init__). Se le sigue esperando, y `cerrar` lo busca por el
+                # perfil, que es lo unico suyo que conocemos.
+                self.relanzado = True
+            if codigo is not None and not self.relanzado:
                 raise RuntimeError(
                     f"Edge se ha cerrado solo con codigo {codigo} sin abrir el "
                     f"puerto de depuracion (tardo "
@@ -375,16 +394,41 @@ class Navegador:
             self.ws.close()
         except Exception:
             pass
+        # el lanzador ya habia salido solo: el Edge de verdad es otro proceso
+        relanzado = self.relanzado or self.proceso.poll() is not None
         self.proceso.terminate()
         try:
             self.proceso.wait(timeout=10)
         except subprocess.TimeoutExpired:
             self.proceso.kill()
+        if relanzado:
+            _matar_edge_de(self.perfil)
         try:
             self._registro.close()
         except Exception:
             pass
         shutil.rmtree(self.perfil, ignore_errors=True)
+
+
+def _matar_edge_de(perfil):
+    """Cierra los Edge que siguen vivos con ESTE perfil temporal (fork, Fase 4).
+
+    Solo hace falta cuando Edge se relanzo (ver __COMPAT_LAYER en
+    `Navegador.__init__`): el perfil es lo unico que el hijo comparte con el
+    proceso que lanzamos. Nunca toca otro Edge -- el perfil es una carpeta
+    temporal unica de este navegador --, y nunca levanta.
+    """
+    if os.name != "nt" or not perfil or "'" in perfil:
+        return
+    orden = ("Get-CimInstance Win32_Process -Filter \"Name='msedge.exe'\" | "
+             f"Where-Object {{ $_.CommandLine -like '*{perfil}*' }} | "
+             "ForEach-Object { Stop-Process -Id $_.ProcessId -Force "
+             "-ErrorAction SilentlyContinue }")
+    try:
+        subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", orden],
+                       capture_output=True, timeout=60, **medios.SIN_VENTANA)
+    except Exception:                                          # noqa: BLE001
+        pass
 
 
 def _puerto_libre():
