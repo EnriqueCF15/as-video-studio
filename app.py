@@ -9040,7 +9040,25 @@ def _coste_previsto(ctx, pestanas):
         else:
             caracteres = int(round(palabras * 6.1))
     usd_imagenes = round(imagenes * usd_imagen, 3)
-    usd_tts = round(caracteres * usd_caracter, 4)
+    # LA VOZ, CON LA TARIFA DE SU PROVEEDOR (fork, 08-10-2026). Aqui se cobraba
+    # siempre por caracter con la de Cartesia: 23 minutos con Google salian a
+    # 1,32 $ cuando lo medido son ~0,35 $. Es la misma cuenta que /api/estimacion.
+    voz = ctx.estado.params("voz") or {}
+    proveedor_voz = str(voz.get("proveedor") or "cartesia").strip().lower()
+    if caracteres and proveedor_voz == "google":
+        # Gemini cobra el AUDIO: lo que va a durar, la duracion del encargo
+        segundos_voz = float((ctx.estado.params("brief") or {})
+                             .get("duracion_objetivo_s") or 0) or caracteres / 15.0
+        peticiones = max(1, -(-caracteres // 3000))
+        usd_tts, _ = COSTE.coste_google_tts(
+            str(voz.get("modelo") or "gemini-2.5-flash-tts"), caracteres,
+            segundos_voz, caracteres_estilo=400 * peticiones)
+        usd_tts = round(usd_tts or 0.0, 4)
+    elif proveedor_voz == "elevenlabs":
+        # creditos del plan, no dolares: se dicen aparte (como en la estimacion)
+        usd_tts = 0.0
+    else:
+        usd_tts = round(caracteres * usd_caracter, 4)
     # LO QUE YA ESTA HECHO VIAJA AL LADO DEL TECHO, no en su lugar. El total
     # sigue siendo lo que cuesta el video entero --que es lo que hay que pagar
     # si algo aguas arriba cambia y la cache falla-- y `por_generar` es lo que
