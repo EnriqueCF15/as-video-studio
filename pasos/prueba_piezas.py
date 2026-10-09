@@ -1422,6 +1422,43 @@ def prueba_espaciar():
     igual(voz.espaciar(wav, palabras, sin_falta, escenas, 1.0)[1], [],
           "si la pausa ya es mayor que el minimo no se toca nada")
 
+    # EL DISCO RAYADO (09-10-2026, voz de Google): el alineador da la palabra por
+    # acabada en 1,0 s pero su cola («k») sigue sonando 150 ms. Antes la muestra
+    # salia del centro de la pausa, cogia la cola y la repetia: «break-k-k-k».
+    muestras = []
+    for i in range(total):
+        t = i / float(sr)
+        if 1.0 <= t < 1.15:
+            muestras.append(3000 if i % 4 < 2 else -3000)  # cola de la palabra
+        elif 1.15 <= t < 1.4:
+            muestras.append(40 if i % 2 else -40)          # ruido de sala
+        else:
+            muestras.append(9000 if i % 3 else -9000)      # voz
+    wav = _wav(muestras)
+    reparto = {"B01": [{"s": 0.0, "e": 1.0}], "B02": [{"s": 1.4, "e": 4.0}]}
+    palabras = reparto["B01"] + reparto["B02"]
+    nuevo, desplazamientos = voz.espaciar(wav, palabras, reparto, escenas, hueco_minimo=1.0)
+    ok(abs(desplazamientos[0]["retardo"] - 0.6) < 0.02, "con cola: se insertan los 0,6 s que faltan")
+    ok(desplazamientos[0]["desde"] >= 1.15,
+       f"el corte cae en el silencio de la pausa, no en la cola ({desplazamientos[0]['desde']}s)")
+    pcm = voz._pcm_de_wav(nuevo)
+    corte = int(desplazamientos[0]["desde"] * sr)
+    trozo = [struct.unpack("<h", pcm[i * 2:i * 2 + 2])[0]
+             for i in range(corte, corte + int(0.6 * sr))]
+    ok(max(abs(v) for v in trozo) < 500,
+       f"lo insertado NO repite la cola: pico {max(abs(v) for v in trozo)} (la cola es 3000)")
+    ok(sum(1 for v in trozo if v == 0) < len(trozo) * 0.2,
+       "y sigue siendo ruido de sala, no ceros")
+
+    # Si la pausa entera lleva voz, se usa el trozo mas callado de OTRA pausa
+    sucio = b"".join(struct.pack("<h", 2000 if i % 2 else -2000) for i in range(sr))
+    limpio = b"".join(struct.pack("<h", 30 if i % 2 else -30) for i in range(int(0.1 * sr)))
+    relleno = voz._relleno_de_sala(sucio + limpio, 0.2, 0.6, 0.5,
+                                   (sr, sr + int(0.1 * sr), 30.0))
+    valores = [struct.unpack("<h", relleno[i:i + 2])[0] for i in range(0, len(relleno), 2)]
+    ok(max(abs(v) for v in valores) <= 30,
+       "una pausa con voz dentro se rellena con la reserva, no consigo misma")
+
 
 # --------------------------------------------------- 6. p6._capa_vectorial
 

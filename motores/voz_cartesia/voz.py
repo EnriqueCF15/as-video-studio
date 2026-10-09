@@ -15,6 +15,7 @@ Escribe <out>/<id>.wav y <out>/audio_meta.json.
 import argparse
 import base64
 import json
+import math
 import os
 import re
 import struct
@@ -207,7 +208,86 @@ def _pcm_de_wav(wav: bytes) -> bytes:
 FUNDIDO_MS = 12
 
 
-def _relleno_de_sala(pcm, desde_seg, hasta_seg, duracion):
+#: Ventana con la que se mide la energia dentro de una pausa (segundos).
+VENTANA_SALA_S = 0.01
+
+#: Lo que se repite para ensanchar una pausa tiene que ser RUIDO DE SALA. Si la
+#: muestra elegida suena mas que el suelo de la toma por encima de este margen,
+#: lo que lleva dentro es el final de la palabra --la cola de una consonante, una
+#: respiracion-- y repetirlo suena a disco rayado: «break-k-k-k». Paso con la voz
+#: de Google el 09-10-2026: 45 de 113 pausas de un video de 23 min lo tenian,
+#: porque la muestra salia del CENTRO de la pausa y el alineador da por acabada
+#: la palabra antes de que se apague. Factor de amplitud: 3,16 = 10 dB.
+MARGEN_SALA = 3.16
+
+#: Por debajo de esto (-60 dBFS) nada se oye: se acepta aunque pase del margen.
+SILENCIO_SALA = 33
+
+#: Y por encima de esto (-40 dBFS) nunca es ruido de sala, sea cual sea el suelo.
+TECHO_SALA = 328
+
+
+def _muestras(pcm):
+    """Las muestras de 16 bits del PCM sin copiarlo (memoryview). -> secuencia de int"""
+    if len(pcm) % 2:
+        pcm = pcm[:-1]               # solo si sobra un byte: copiar 120 MB por pausa no
+    if sys.byteorder == "little":
+        return memoryview(pcm).cast("h")
+    import array
+    muestras = array.array("h", pcm)
+    muestras.byteswap()
+    return muestras
+
+
+def _tramo_quieto(muestras, desde_seg, hasta_seg, largo_seg):
+    """El tramo de `largo_seg` con MENOS energia dentro de [desde, hasta].
+
+    -> (inicio, fin, rms) en muestras, o None si no cabe ni una ventana.
+    """
+    paso = max(1, int(SR * VENTANA_SALA_S))
+    a = max(0, int(desde_seg * SR))
+    b = min(len(muestras), int(hasta_seg * SR))
+    n = max(1, int(round(largo_seg / VENTANA_SALA_S)))
+    energias = [sum(v * v for v in muestras[i:i + paso])
+                for i in range(a, b - paso + 1, paso)]
+    if len(energias) < n:
+        return None
+    suma = sum(energias[:n])
+    mejor, donde = suma, 0
+    for i in range(n, len(energias)):
+        suma += energias[i] - energias[i - n]
+        if suma < mejor:
+            mejor, donde = suma, i - n + 1
+    inicio = a + donde * paso
+    return inicio, inicio + n * paso, math.sqrt(mejor / float(n * paso))
+
+
+def _semilla_de_sala(muestras, desde_seg, hasta_seg):
+    """El trozo mas callado de una pausa, para repetirlo. -> (inicio, fin, rms) o None
+
+    Hasta 200 ms y como mucho la mitad de la pausa: una muestra larga en una
+    pausa corta acaba cogiendo la cola de la palabra aunque se elija la ventana
+    mas quieta.
+    """
+    ancho = max(0.0, hasta_seg - desde_seg)
+    if ancho < 0.04:
+        return None                          # no hay pausa de la que sacar nada
+    return _tramo_quieto(muestras, desde_seg, hasta_seg, max(0.02, min(0.2, ancho * 0.5)))
+
+
+def _punto_de_corte(muestras, desde_seg, hasta_seg):
+    """Donde se mete el relleno: en el momento mas callado de la pausa. -> segundos
+
+    En el centro, como antes, el corte podia caer en mitad de la cola de la
+    palabra y partirla en dos con un segundo de relleno en medio.
+    """
+    tramo = _tramo_quieto(muestras, desde_seg, hasta_seg, VENTANA_SALA_S)
+    if tramo is None:
+        return desde_seg + max(0.0, hasta_seg - desde_seg) / 2.0
+    return (tramo[0] + tramo[1]) / 2.0 / SR
+
+
+def _relleno_de_sala(pcm, desde_seg, hasta_seg, duracion, reserva=None, muestras=None):
     """Ruido de sala para rellenar un hueco, sacado de la PROPIA pausa.
 
     Antes se insertaban ceros. Una toma continua tiene su suelo de ruido, y
@@ -216,24 +296,27 @@ def _relleno_de_sala(pcm, desde_seg, hasta_seg, duracion):
     vacio digital en un video de 15 minutos, uno en cada frontera de bloque.
 
     La mejor muestra de ruido de sala es la de la pausa que se esta ensanchando,
-    asi que se toma de ahi y se repite. Se alterna con su reverso para que la
-    repeticion no cree un patron audible.
+    asi que se toma de ahi (su trozo mas callado) y se repite. Se alterna con su
+    reverso para que la repeticion no cree un patron audible. Si ese trozo suena
+    demasiado (ver MARGEN_SALA) se usa `reserva` --(inicio, fin, rms) en
+    muestras: el trozo mas callado de toda la toma--, y si tampoco vale, ceros.
     """
     bytes_por_seg = SR * 2
     necesarios = int(duracion * bytes_por_seg) & ~1
     if necesarios <= 0:
         return b""
-    # semilla: el centro de la pausa natural, hasta 200 ms
-    ancho = max(0.0, hasta_seg - desde_seg)
-    if ancho < 0.04:
-        return b"\x00" * necesarios          # no hay pausa de la que sacar nada
-    toma = min(0.2, ancho * 0.8)
-    centro = (desde_seg + hasta_seg) / 2.0
-    ini = int((centro - toma / 2) * bytes_por_seg) & ~1
-    fin = (ini + (int(toma * bytes_por_seg) & ~1))
-    semilla = pcm[max(0, ini):min(len(pcm), fin)]
-    if len(semilla) < 4:
+    muestras = muestras if muestras is not None else _muestras(pcm)
+    propia = _semilla_de_sala(muestras, desde_seg, hasta_seg)
+    piso = reserva[2] if reserva else (propia[2] if propia else 0.0)
+    aceptable = min(TECHO_SALA, max(piso * MARGEN_SALA, SILENCIO_SALA))
+    elegida = None
+    for candidata in (propia, reserva):
+        if candidata and candidata[2] <= aceptable and candidata[1] - candidata[0] >= 2:
+            elegida = candidata
+            break
+    if elegida is None:
         return b"\x00" * necesarios
+    semilla = pcm[elegida[0] * 2:elegida[1] * 2]
 
     reverso = semilla[::-1]
     # el reverso de un buffer de bytes invierte tambien los dos bytes de cada
@@ -274,6 +357,7 @@ def espaciar(wav, palabras, reparto, escenas, hueco_minimo=1.0):
     """
     pcm = _pcm_de_wav(wav)
     bytes_por_seg = SR * 2
+    muestras = _muestras(pcm)
 
     # Cortes: (instante original, silencio a insertar, pausa natural)
     cortes = []
@@ -283,10 +367,15 @@ def espaciar(wav, palabras, reparto, escenas, hueco_minimo=1.0):
         inicio = reparto[siguiente["id"]][0]["s"]
         falta = hueco_minimo - (inicio - fin)
         if falta > 0.01:
-            cortes.append((fin + (inicio - fin) / 2, falta, fin, inicio))
+            cortes.append((_punto_de_corte(muestras, fin, inicio), falta, fin, inicio))
 
     if not cortes:
         return wav, []
+
+    # el trozo mas callado de TODAS las pausas: el suelo de la toma, y la muestra
+    # de reserva para las pausas cuyo trozo mas callado aun lleva voz
+    semillas = [s for s in (_semilla_de_sala(muestras, d, h) for _, _, d, h in cortes) if s]
+    reserva = min(semillas, key=lambda s: s[2]) if semillas else None
 
     trozos = []
     anterior_byte = 0
@@ -295,7 +384,7 @@ def espaciar(wav, palabras, reparto, escenas, hueco_minimo=1.0):
     for instante, silencio, desde, hasta in cortes:
         corte_byte = int(instante * bytes_por_seg) & ~1        # alineado a muestra
         trozos.append(pcm[anterior_byte:corte_byte])
-        trozos.append(_relleno_de_sala(pcm, desde, hasta, silencio))
+        trozos.append(_relleno_de_sala(pcm, desde, hasta, silencio, reserva, muestras))
         anterior_byte = corte_byte
         acumulado += silencio
         desplazamientos.append({"desde": instante, "retardo": round(acumulado, 3)})
