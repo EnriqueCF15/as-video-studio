@@ -503,8 +503,63 @@ def extraer_json(texto, que="la respuesta"):
         try:
             return json.loads(texto[principio:final + 1])
         except ValueError as fallo:
-            raise RuntimeError(f"{que} no es un JSON legible: {fallo}")
-    raise RuntimeError(f"{que} no trae ningun objeto JSON: {texto[:300]}")
+            # Un objeto suelto delante o detras del bueno («Extra data»): se
+            # rescata el bueno. Fork, 09-10-2026: el catalogo de un video de 23
+            # min tiro 16 min de Opus por esto, y la respuesta no se guardaba.
+            rescatado = _objeto_principal(texto[principio:final + 1])
+            if rescatado is not None:
+                return rescatado
+            raise RuntimeError(f"{que} no es un JSON legible: {fallo}"
+                               + _guardar_ilegible(texto, que))
+    raise RuntimeError(f"{que} no trae ningun objeto JSON: {texto[:300]}"
+                       + _guardar_ilegible(texto, que))
+
+
+#: Para rescatar un objeto de entre varios, tiene que ser casi toda la
+#: respuesta. Si el bueno vino roto y lo que queda es un objeto pequeno de al
+#: lado, devolverlo daria un catalogo vacio sin avisar: mejor el error.
+PARTE_MINIMA_RESCATE = 0.6
+
+
+def _objeto_principal(texto):
+    """El objeto JSON mas largo de `texto`, si ocupa casi toda la respuesta."""
+    lector = json.JSONDecoder()
+    mejor, largo_mejor, i = None, 0, texto.find("{")
+    while i >= 0:
+        try:
+            objeto, fin = lector.raw_decode(texto, i)
+        except ValueError:
+            i = texto.find("{", i + 1)
+            continue
+        if isinstance(objeto, dict) and fin - i > largo_mejor:
+            mejor, largo_mejor = objeto, fin - i
+        # lo de dentro de un objeto leido es mas corto: se salta entero
+        i = texto.find("{", fin)
+    if mejor is not None and largo_mejor >= PARTE_MINIMA_RESCATE * len(texto):
+        return mejor
+    return None
+
+
+def _guardar_ilegible(texto, que):
+    """Guarda la respuesta que no se pudo leer y dice donde, para no perderla.
+
+    Una respuesta de Opus de veinte minutos que se tira sin mirarla obliga a
+    pagarla otra vez para saber que fallo.
+    """
+    import tempfile                                            # noqa: PLC0415
+    import time                                                # noqa: PLC0415
+    try:
+        carpeta = os.path.join(tempfile.gettempdir(), "respuestas_ilegibles")
+        os.makedirs(carpeta, exist_ok=True)
+        nombre = unicodedata.normalize("NFKD", str(que)).encode("ascii", "ignore")
+        nombre = re.sub(r"[^a-z0-9]+", "_", nombre.decode("ascii").lower()).strip("_")
+        ruta = os.path.join(carpeta, f"{time.strftime('%Y%m%d_%H%M%S')}_"
+                                     f"{nombre or 'respuesta'}.txt")
+        with open(ruta, "w", encoding="utf-8") as fh:
+            fh.write(texto)
+        return f" (respuesta guardada en {ruta})"
+    except OSError:
+        return ""
 
 
 # ------------------------------------------------------------ la correccion

@@ -2972,6 +2972,45 @@ def prueba_feedback_en_prompts():
           "y la ficha de la hoja recoge la nota de la unidad")
 
 
+def prueba_rescate_json():
+    """UN OBJETO DE MAS NO TIRA LA RESPUESTA (fork, 09-10-2026).
+
+    El catalogo de un video de 23 min fallo con «Extra data» tras 16 min de
+    Opus, y la respuesta no se guardaba: habia que pagarla otra vez.
+    """
+    titulo("extraer_json: rescata el objeto bueno y guarda lo ilegible")
+    bueno = {"reparto": {"tu": {"nombre": "You", "palabras": ["you"]}},
+             "sets": {"oficina": {"descripcion": "an office {at night}"}},
+             "beats": [{"bloque": "B%03d" % n, "set": "oficina"} for n in range(40)]}
+    nota = '{"nota": "first a short draft"}'
+    texto = json.dumps(bueno)
+    igual(comun.extraer_json(nota + "\n" + texto), bueno,
+          "un objeto pequeno DELANTE: se queda el grande")
+    igual(comun.extraer_json(texto + "\nNote: " + nota), bueno,
+          "un objeto pequeno DETRAS: igual")
+    igual(comun.extraer_json("```json\n" + texto + "\n```"), bueno,
+          "lo de siempre sigue igual")
+    viejo = tempfile.tempdir
+    tempfile.tempdir = tempfile.mkdtemp(prefix="prueba_ilegible_")
+    try:
+        roto = nota + "\n" + texto[:len(texto) // 2] + "}"
+        try:
+            comun.extraer_json(roto, "el catalogo")
+            ok(False, "si el grande viene roto no se devuelve el pequeno")
+        except RuntimeError as fallo:
+            ok("no es un JSON legible" in str(fallo)
+               and "respuesta guardada en" in str(fallo),
+               "si el grande viene roto: error, y dice donde quedo la respuesta")
+            guardadas = os.listdir(os.path.join(tempfile.tempdir, "respuestas_ilegibles"))
+            ok(len(guardadas) == 1 and guardadas[0].endswith("_el_catalogo.txt"),
+               "la respuesta se guarda con el nombre de lo que era")
+            with open(os.path.join(tempfile.tempdir, "respuestas_ilegibles",
+                                   guardadas[0]), encoding="utf-8") as fh:
+                igual(fh.read(), roto, "entera, tal cual llego")
+    finally:
+        shutil.rmtree(tempfile.tempdir, ignore_errors=True)
+        tempfile.tempdir = viejo
+
 
 def prueba_ideas_del_autor():
     """LAS IDEAS DE IMAGEN DEL AUTOR (fork, 08-10-2026).
@@ -4485,6 +4524,7 @@ def main():
     prueba_cartelas()
     prueba_direccion()
     prueba_ideas_del_autor()
+    prueba_rescate_json()
     prueba_subtitulos()
     prueba_encajar_mide_el_ancho()
     prueba_cartelas_composicion()
