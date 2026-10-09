@@ -362,6 +362,15 @@ def prueba_las_imagenes_del_autor_llegan_a_la_lamina():
               else "el tope de la casa"))
 
     fuente = _fuente("app.py")
+    # UNA VOZ DE GOOGLE ELEGIDA A MANO NO SE BUSCA EN CARTESIA (08-10-2026):
+    # crear «Historia EN – doodle» con voz_id «Orus» murio en la tarea de voz.
+    tarea_voz = fuente[fuente.index("def _correr_light_voz"):]
+    tarea_voz = tarea_voz[:tarea_voz.index("\ndef ")]
+    ok(tarea_voz.index("google.VOCES_MASCULINAS")
+       < tarea_voz.index("voz_descrita.proponer("),
+       "la tarea de voz del estilo mira ANTES si la voz elegida es de Google")
+    ok('"proveedor": "google"' in tarea_voz and "return dict(cambios" in tarea_voz,
+       "y entonces la escribe directa, sin pasar por el catálogo de Cartesia")
     ok("referencias=_aportadas_del_taller(ctx)" in fuente,
        "y app.py le pasa las imágenes que subiste con la descripción")
 

@@ -1259,6 +1259,12 @@ CLAVES_AJUSTE = {
     "esfuerzo": False, "esfuerzo_texto": False,
 }
 
+#: Claves que se llaman como un ajuste del CLI y NO lo son (fork, 08-10-2026).
+#: En el paso de voz, `modelo` es el modelo de VOZ (gemini-2.5-flash-tts,
+#: sonic-2, eleven_flash_v2_5): validarlo como un modelo de Claude rechazaba con
+#: un 400 guardar la voz de Google a mano. `modelo_texto` si es del CLI.
+NO_SON_DEL_CLI = {"voz": ("modelo",)}
+
 
 
 
@@ -1280,6 +1286,8 @@ def _validar_params(paso_id, nuevos, ctx=None):
     """
     for clave, es_modelo in CLAVES_AJUSTE.items():
         if clave not in (nuevos or {}):
+            continue
+        if clave in NO_SON_DEL_CLI.get(paso_id, ()):
             continue
         valor = nuevos[clave]
         if valor in (None, ""):
@@ -7683,6 +7691,27 @@ def _correr_light_voz(avisar, ctx, encargo):
     """
     light = _light()
     ficha_ritmo = light.ritmo_de(encargo.get("ritmo"))
+    # UNA VOZ DE GOOGLE ELEGIDA A MANO (fork, 08-10-2026). `voz_descrita` elige
+    # del catalogo de CARTESIA, y con «Orus» la tarea moria («no esta en el
+    # catalogo de esta cuenta de Cartesia») despues de haber escrito ya la guia
+    # y el tono. Una voz de Google no tiene mandos que elegir: el caracter va en
+    # su instruccion de estilo --la descripcion que escribiste-- y el aire lo
+    # pone el ritmo. Se escribe directa, sin llamar a nadie.
+    google = PASOS_MODULOS.p4_voz.motor_google
+    voz_fija = str(encargo.get("voz_id") or "").strip()
+    if voz_fija in google.VOCES_MASCULINAS + google.VOCES_FEMENINAS:
+        estilo_voz = f"Voice and delivery: {encargo['voz_prompt']}"
+        cambios = {"proveedor": "google", "modelo": google.MODELO_POR_DEFECTO,
+                   "voz_id": voz_fija, "voz_nombre": voz_fija,
+                   "idioma": encargo["idioma"],
+                   "hueco_minimo": ficha_ritmo["hueco_minimo"],
+                   "estilos": {"intro": estilo_voz, "cuerpo": estilo_voz}}
+        ctx.estado.actualizar_params("voz", cambios)
+        ctx.bitacora.anotar("voz_descrita", "voz", {
+            "encargo": encargo["voz_prompt"][:200], "voz": voz_fija,
+            "proveedor": "google", "ritmo": ficha_ritmo["id"]})
+        return dict(cambios, por_que="voz de Google elegida a mano: su "
+                                     "caracter va en la instruccion de estilo")
     peticion = (encargo.get("feedback") or {}).get("voz") or ""
     elegido = PASOS_MODULOS.voz_descrita.proponer(
         encargo["voz_prompt"], idioma=encargo["idioma"], avisar=avisar,

@@ -3081,6 +3081,18 @@ def probar_video_light(cliente):
           "unas ideas que no caben se rechazan ANTES de crear el vídeo: no "
           "queda uno a medias en la lista")
 
+    # ---- EN LA VOZ, «modelo» ES EL MODELO DE VOZ (fork, 08-10-2026): validarlo
+    # como uno de Claude impedia guardar a mano la voz de Google
+    respuesta, _ = cliente.put(f"/api/proyectos/{vid}/pasos/guion/params",
+                               {"params": {"modelo": "gemini-2.5-flash-tts"}})
+    igual(respuesta.status_code, 400,
+          "en el guion, «modelo» es de Claude: uno de voz se rechaza")
+    respuesta, voz_p = cliente.put(f"/api/proyectos/{vid}/pasos/voz/params",
+                                   {"params": {"modelo": "gemini-2.5-flash-tts"}})
+    igual((respuesta.status_code, (voz_p.get("params") or {}).get("modelo")),
+          (200, "gemini-2.5-flash-tts"),
+          "en la voz, «modelo» es el modelo de voz y se guarda")
+
     # ---- el guion NO esta bloqueado por no tener video de referencia
     respuesta, pasos = cliente.get(f"/api/proyectos/{vid}/pasos")
     por_id = {p["id"]: p for p in pasos["pasos"]}
