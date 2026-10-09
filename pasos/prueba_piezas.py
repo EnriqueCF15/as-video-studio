@@ -1459,6 +1459,52 @@ def prueba_espaciar():
     ok(max(abs(v) for v in valores) <= 30,
        "una pausa con voz dentro se rellena con la reserva, no consigo misma")
 
+    def _toma(tramos):
+        """[(desde, hasta, amplitud)] -> wav; amplitud 0 es silencio digital."""
+        muestras = [0] * int(sr * tramos[-1][1])
+        for desde, hasta, amp in tramos:
+            for i in range(int(desde * sr), int(hasta * sr)):
+                muestras[i] = amp if i % 2 else -amp
+        return _wav(muestras)
+
+    def _valores(wav_, desde, hasta):
+        pcm_ = voz._pcm_de_wav(wav_)
+        return [struct.unpack("<h", pcm_[i * 2:i * 2 + 2])[0]
+                for i in range(int(desde * sr), int(hasta * sr))]
+
+    # LA ESTATICA (09-10-2026): Gemini calla con ceros digitales. Repetir un
+    # trocito casi mudo de esa toma era un zumbido; ahora, silencio puro.
+    wav = _toma([(0.0, 1.0, 9000), (1.0, 1.3, 0), (1.3, 4.0, 9000)])
+    reparto = {"B01": [{"s": 0.0, "e": 1.0}], "B02": [{"s": 1.3, "e": 4.0}]}
+    nuevo, desplazamientos = voz.espaciar(wav, palabras, reparto, escenas, hueco_minimo=1.0)
+    corte = desplazamientos[0]["desde"]
+    ok(all(v == 0 for v in _valores(nuevo, corte, corte + 0.7)),
+       "voz que calla con ceros (Google): el aire es silencio puro, sin estatica")
+
+    # «p- people»: el alineador da la frase por acabada en 1,0 s pero la voz sigue
+    # («worked») tras el cierre de la «p» (60 ms mudos); la pausa de verdad va de
+    # 1,5 a 1,9, y luego la respiracion antes de la frase siguiente.
+    wav = _toma([(0.0, 1.0, 9000), (1.0, 1.06, 0), (1.06, 1.5, 9000), (1.5, 1.9, 0),
+                 (1.9, 2.1, 400), (2.1, 4.0, 9000)])
+    reparto = {"B01": [{"s": 0.0, "e": 1.0}], "B02": [{"s": 2.1, "e": 4.0}]}
+    nuevo, desplazamientos = voz.espaciar(wav, palabras, reparto, escenas, hueco_minimo=1.6)
+    corte = desplazamientos[0]["desde"]
+    ok(1.5 <= corte < 1.6,
+       f"el aire entra cuando la voz se calla de verdad, no en el cierre de la «p» ({corte}s)")
+    respiracion = _valores(nuevo, 1.9 + 0.5, 2.1 + 0.5)
+    ok(sum(1 for v in respiracion if abs(v) == 400) > len(respiracion) * 0.95,
+       "y la respiracion queda entera, pegada a la frase siguiente")
+
+    # Una union sin silencio claro (solo una respiracion) se queda como esta
+    wav = _toma([(0.0, 1.0, 9000), (1.0, 1.3, 400), (1.3, 2.5, 9000), (2.5, 3.0, 0),
+                 (3.0, 4.0, 9000)])
+    tres = [{"id": "B01"}, {"id": "B02"}, {"id": "B03"}]
+    reparto = {"B01": [{"s": 0.0, "e": 1.0}], "B02": [{"s": 1.3, "e": 2.5}],
+               "B03": [{"s": 3.0, "e": 4.0}]}
+    nuevo, desplazamientos = voz.espaciar(wav, palabras, reparto, tres, hueco_minimo=1.0)
+    igual(len(desplazamientos), 1, "sin silencio claro en la union no se mete aire")
+    ok(desplazamientos[0]["desde"] >= 2.5, "y en la otra union, si")
+
 
 # --------------------------------------------------- 6. p6._capa_vectorial
 

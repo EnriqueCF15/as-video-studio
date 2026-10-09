@@ -226,6 +226,29 @@ SILENCIO_SALA = 33
 #: Y por encima de esto (-40 dBFS) nunca es ruido de sala, sea cual sea el suelo.
 TECHO_SALA = 328
 
+#: Si el trozo mas callado de la toma no pasa de esto (-78 dBFS), la voz calla
+#: con CEROS DIGITALES --Gemini lo hace asi-- y el relleno es silencio puro: no
+#: hay ruido de sala que imitar. Repetir un trocito casi mudo de esa toma sonaba
+#: a ESTATICA (09-10-2026: semillas de 20 ms a -60 dB repetidas cientos de veces
+#: son un zumbido), y Enrique pidio las uniones «como la del 1:30», que era
+#: silencio puro.
+SILENCIO_DIGITAL = 4
+
+#: Una semilla de ruido de sala mas corta que esto, repetida, deja de sonar a
+#: sala y suena a zumbido (su periodo se oye como un tono).
+SEMILLA_MIN_S = 0.1
+
+#: La voz «se ha callado» por debajo de esto (-50 dBFS), o de 12 dB sobre el
+#: suelo de la toma si es mas alto. Una respiracion ronda los -35/-50 dB.
+CALLADO = 103
+
+#: Un silencio mas corto que esto no es la pausa entre dos frases sino el cierre
+#: de una consonante («p», «t», «k» callan 50-100 ms). Si la union no tiene un
+#: silencio asi de largo, NO se mete aire: el 09-10-2026 el alineador dio
+#: «people worked» por dichas medio segundo antes de tiempo, el relleno cayo en
+#: el cierre de la «p» y se oia «p- people».
+PAUSA_MIN_S = 0.12
+
 
 def _muestras(pcm):
     """Las muestras de 16 bits del PCM sin copiarlo (memoryview). -> secuencia de int"""
@@ -270,21 +293,42 @@ def _semilla_de_sala(muestras, desde_seg, hasta_seg):
     mas quieta.
     """
     ancho = max(0.0, hasta_seg - desde_seg)
-    if ancho < 0.04:
+    if ancho < SEMILLA_MIN_S:
         return None                          # no hay pausa de la que sacar nada
-    return _tramo_quieto(muestras, desde_seg, hasta_seg, max(0.02, min(0.2, ancho * 0.5)))
+    return _tramo_quieto(muestras, desde_seg, hasta_seg,
+                         max(SEMILLA_MIN_S, min(0.2, ancho * 0.5)))
 
 
-def _punto_de_corte(muestras, desde_seg, hasta_seg):
-    """Donde se mete el relleno: en el momento mas callado de la pausa. -> segundos
+def _punto_de_corte(muestras, desde_seg, hasta_seg, callado=CALLADO):
+    """Donde se mete el relleno: justo cuando la voz se calla. -> segundos o None
 
-    En el centro, como antes, el corte podia caer en mitad de la cola de la
-    palabra y partirla en dos con un segundo de relleno en medio.
+    Se busca el SILENCIO SEGUIDO MAS LARGO de la union (ventanas de 10 ms por
+    debajo de `callado`), medido en el sonido y no en las marcas del alineador,
+    que a veces se adelantan medio segundo. El aire entra al principio de ese
+    silencio: la frase se apaga, llega el aire, y la respiracion --que va al
+    final de la pausa-- queda entera y pegada a la frase siguiente. Antes iba al
+    centro de la pausa, o a su ventana mas callada, y partia respiraciones y
+    palabras. None si no hay un silencio de PAUSA_MIN_S: mejor una union corta
+    que aire en mitad de una palabra.
     """
-    tramo = _tramo_quieto(muestras, desde_seg, hasta_seg, VENTANA_SALA_S)
-    if tramo is None:
-        return desde_seg + max(0.0, hasta_seg - desde_seg) / 2.0
-    return (tramo[0] + tramo[1]) / 2.0 / SR
+    paso = max(1, int(SR * VENTANA_SALA_S))
+    a = max(0, int(desde_seg * SR))
+    b = min(len(muestras), int(hasta_seg * SR))
+    umbral = callado * callado * paso
+    mejor, mejor_ini, actual, actual_ini = 0, a, 0, a
+    for i in range(a, b - paso + 1, paso):
+        if sum(v * v for v in muestras[i:i + paso]) <= umbral:
+            if actual == 0:
+                actual_ini = i
+            actual += 1
+            if actual > mejor:
+                mejor, mejor_ini = actual, actual_ini
+        else:
+            actual = 0
+    largo = mejor * paso / float(SR)
+    if largo < PAUSA_MIN_S:
+        return None
+    return mejor_ini / float(SR) + min(0.03, largo / 3.0)
 
 
 def _relleno_de_sala(pcm, desde_seg, hasta_seg, duracion, reserva=None, muestras=None):
@@ -300,6 +344,7 @@ def _relleno_de_sala(pcm, desde_seg, hasta_seg, duracion, reserva=None, muestras
     reverso para que la repeticion no cree un patron audible. Si ese trozo suena
     demasiado (ver MARGEN_SALA) se usa `reserva` --(inicio, fin, rms) en
     muestras: el trozo mas callado de toda la toma--, y si tampoco vale, ceros.
+    Si la toma calla con ceros digitales (SILENCIO_DIGITAL), ceros siempre.
     """
     bytes_por_seg = SR * 2
     necesarios = int(duracion * bytes_por_seg) & ~1
@@ -308,10 +353,13 @@ def _relleno_de_sala(pcm, desde_seg, hasta_seg, duracion, reserva=None, muestras
     muestras = muestras if muestras is not None else _muestras(pcm)
     propia = _semilla_de_sala(muestras, desde_seg, hasta_seg)
     piso = reserva[2] if reserva else (propia[2] if propia else 0.0)
+    if piso <= SILENCIO_DIGITAL:
+        return b"\x00" * necesarios
     aceptable = min(TECHO_SALA, max(piso * MARGEN_SALA, SILENCIO_SALA))
     elegida = None
     for candidata in (propia, reserva):
-        if candidata and candidata[2] <= aceptable and candidata[1] - candidata[0] >= 2:
+        if (candidata and candidata[2] <= aceptable
+                and candidata[1] - candidata[0] >= int(SEMILLA_MIN_S * SR)):
             elegida = candidata
             break
     if elegida is None:
@@ -349,8 +397,10 @@ def espaciar(wav, palabras, reparto, escenas, hueco_minimo=1.0):
     conserva la toma tal cual y solo se estira el silencio en los cortes, asi que
     la prosodia dentro de cada frase queda intacta.
 
-    Lo que se inserta es RUIDO DE SALA de la propia pausa, no ceros: ver
-    _relleno_de_sala.
+    Lo que se inserta es RUIDO DE SALA de la propia pausa (o silencio puro si la
+    voz calla con ceros digitales, como Gemini): ver _relleno_de_sala. Entra
+    donde la voz se calla de verdad, y no entra si la union no tiene un silencio
+    claro: ver _punto_de_corte.
 
     Devuelve (wav_nuevo, desplazamientos) donde desplazamientos es el retardo
     acumulado a aplicar a cada marca segun el instante en que caiga.
@@ -359,23 +409,34 @@ def espaciar(wav, palabras, reparto, escenas, hueco_minimo=1.0):
     bytes_por_seg = SR * 2
     muestras = _muestras(pcm)
 
-    # Cortes: (instante original, silencio a insertar, pausa natural)
-    cortes = []
+    # Uniones que necesitan aire: (silencio a insertar, fin de la frase, inicio de la siguiente)
+    uniones = []
     con_voz = [e for e in escenas if reparto.get(e["id"])]
     for anterior, siguiente in zip(con_voz, con_voz[1:]):
         fin = reparto[anterior["id"]][-1]["e"]
         inicio = reparto[siguiente["id"]][0]["s"]
         falta = hueco_minimo - (inicio - fin)
         if falta > 0.01:
-            cortes.append((_punto_de_corte(muestras, fin, inicio), falta, fin, inicio))
+            uniones.append((falta, fin, inicio))
 
-    if not cortes:
+    if not uniones:
         return wav, []
 
     # el trozo mas callado de TODAS las pausas: el suelo de la toma, y la muestra
     # de reserva para las pausas cuyo trozo mas callado aun lleva voz
-    semillas = [s for s in (_semilla_de_sala(muestras, d, h) for _, _, d, h in cortes) if s]
+    semillas = [s for s in (_semilla_de_sala(muestras, d, h) for _, d, h in uniones) if s]
     reserva = min(semillas, key=lambda s: s[2]) if semillas else None
+    callado = max(CALLADO, (reserva[2] if reserva else 0.0) * 4.0)
+
+    # Cortes: (instante original, silencio a insertar, pausa natural). Una union
+    # sin silencio claro se queda como esta (ver _punto_de_corte).
+    cortes = []
+    for falta, fin, inicio in uniones:
+        instante = _punto_de_corte(muestras, fin, inicio, callado)
+        if instante is not None:
+            cortes.append((instante, falta, fin, inicio))
+    if not cortes:
+        return wav, []
 
     trozos = []
     anterior_byte = 0

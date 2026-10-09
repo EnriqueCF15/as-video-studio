@@ -117,6 +117,10 @@ INTRO_MAXIMO_S = 60.0
 HUECO_POR_DEFECTO = 1.0
 NOMBRE_PISTA = "narracion.wav"
 NOMBRE_META = "audio_meta.json"
+#: La toma sin el aire entre bloques y sus marcas: para cambiar las pausas sin
+#: volver a pagar la voz.
+NOMBRE_TOMA_CRUDA = "narracion_cruda.wav"
+NOMBRE_MARCAS_CRUDAS = "toma_cruda.json"
 
 # CUANTO DURA LO ESCRITO: vive en `cadencia` y aqui solo se re-exporta.
 #
@@ -1615,6 +1619,17 @@ def sintetizar_bloques(bloques, destino, cfg, avisar=None,
 
     hueco = float(cfg.get("hueco_minimo") or 0.0)
     silencio_anadido = 0.0
+    # LA TOMA CRUDA, tal cual la devolvio la voz y antes del aire entre bloques:
+    # con ella, cambiar el largo de las pausas no obliga a volver a pagar la voz
+    # (09-10-2026: un video de 23 min se regrabo dos veces por las pausas). Se
+    # escribe YA porque `espaciar` mueve las marcas del reparto en su sitio.
+    if hueco > 0 and len(anotados) > 1:
+        os.makedirs(destino, exist_ok=True)
+        with open(os.path.join(destino, NOMBRE_TOMA_CRUDA), "wb") as fh:
+            fh.write(wav)
+        comun.escribir_json(os.path.join(destino, NOMBRE_MARCAS_CRUDAS), {
+            "hueco_minimo": hueco, "palabras": palabras,
+            "reparto": {e["id"]: reparto.get(e["id"]) or [] for e in escenas}})
     if hueco > 0 and len(anotados) > 1:
         wav, desplazamientos = motor.espaciar(wav, palabras, reparto, escenas, hueco)
         if desplazamientos:
