@@ -775,6 +775,32 @@ def prueba_movimiento():
     igual(cartela[:2], (1.0, 1.0526), "una cartela no cambia su zoom")
 
 
+def prueba_guion_propio():
+    """Con «Esto YA es el guion» el texto vuelve palabra por palabra o se devuelve
+    al modelo (09-10-2026: una pasada reescribio 89 sitios sin decir nada)."""
+    print("\n[5d] guion propio: fidelidad palabra por palabra")
+    material = ("It's three forty-seven in the afternoon. And the first people in Britain "
+                "to get an eight-hour workday by law... were nine years old. Here's the thing. "
+                "In 1833, Parliament passed a Factory Act.")
+    fiel = [{"id": "B01", "texto": "It's three forty-seven in the afternoon."},
+            {"id": "B02", "texto": 'And the first people in Britain to get an eight-hour '
+                                   'workday by law<break time="400ms"/> were nine years old.'},
+            {"id": "B03", "texto": "Here's the thing. In eighteen thirty-three, Parliament "
+                                   "passed a Factory Act."}]
+    opciones = {"guion_propio": True}
+    igual(p3_guion._problemas_guion_propio(fiel, material, opciones), [],
+          "pausas, puntuacion y cifras en letras no cuentan como cambios")
+    infiel = [dict(fiel[0]), dict(fiel[1]),
+              {"id": "B03", "texto": "No study, no experiment, nobody with a stopwatch. In "
+                                     "eighteen thirty-three, Parliament passed a Factory Act."}]
+    motivos = p3_guion._problemas_guion_propio(infiel, material, opciones)
+    comprobar(len(motivos) == 1 and "GUION PROPIO CAMBIADO" in motivos[0]
+              and "stopwatch" in motivos[0],
+              "una frase inventada se devuelve al modelo, con el ejemplo")
+    igual(p3_guion._problemas_guion_propio(infiel, material, {"guion_propio": False}), [],
+          "sin guion propio el modelo redacta a su aire")
+
+
 def principal():
     base = tempfile.mkdtemp(prefix="prueba_p3_")
     # el historico de tiempos de verdad no se toca: aqui los pasos corren
@@ -790,6 +816,7 @@ def principal():
         prueba_instruccion()
         prueba_estructura()
         prueba_movimiento()
+        prueba_guion_propio()
         prueba_fallos_cli()
         prueba_reintento()
         # La redaccion REAL es opt-in, con el mismo flag que prueba_pasos_voz:

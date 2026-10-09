@@ -1231,6 +1231,53 @@ def _aire_entre_secciones(bloques, opciones):
     return puestas
 
 
+#: Con «Esto YA es el guion», cuantas palabras puede tocar el modelo antes de que
+#: se le devuelva el trabajo. Las cifras pasadas a letras no cuentan.
+TOLERANCIA_GUION_PROPIO = 3
+
+
+def _palabras_comparables(texto):
+    """Las palabras que se locutan, sin marcas, mayusculas ni puntuacion."""
+    limpio = marcas_tts.limpiar(str(texto or "")).replace("’", "'")
+    palabras = (re.sub(r"[^\w'-]+", "", w).strip("-'").lower() for w in limpio.split())
+    return [p for p in palabras if p]
+
+
+def _infidelidades(bloques, material):
+    """Donde el guion se aparta del texto del autor. -> (palabras tocadas, ejemplos)
+
+    Lo hace falta porque la regla no basta: el 09-10-2026, en el video de las 8
+    horas, la misma instruccion que una hora antes copio 3.544 palabras exactas
+    devolvio 3.222 y frases inventadas («No study, no experiment, nobody with a
+    stopwatch.»), y nada lo dijo. Las cifras que el guion pasa a letras no
+    cuentan: es lo unico que la regla le deja cambiar.
+    """
+    import difflib
+    autor = _palabras_comparables(material)
+    guion = _palabras_comparables(" ".join(b.get("texto", "") for b in bloques))
+    tocadas, ejemplos = 0, []
+    for etiqueta, i1, i2, j1, j2 in difflib.SequenceMatcher(
+            None, autor, guion, autojunk=False).get_opcodes():
+        if etiqueta == "equal" or any(re.search(r"\d", p) for p in autor[i1:i2]):
+            continue
+        tocadas += max(i2 - i1, j2 - j1)
+        if len(ejemplos) < 4:
+            ejemplos.append(f"«{' '.join(autor[i1:i2])[:60]}» -> «{' '.join(guion[j1:j2])[:60]}»")
+    return tocadas, ejemplos
+
+
+def _problemas_guion_propio(bloques, material, opciones):
+    """Motivo para volver a pedirlo si un guion propio no viene palabra por palabra."""
+    if not opciones.get("guion_propio") or not material:
+        return []
+    tocadas, ejemplos = _infidelidades(bloques, material)
+    if tocadas <= TOLERANCIA_GUION_PROPIO:
+        return []
+    return [f"¡OJO! GUION PROPIO CAMBIADO: has tocado {tocadas} palabras del texto del "
+            f"autor ({'; '.join(ejemplos)}). Es SU guion: devuelvelo palabra por palabra, "
+            f"solo partido en bloques, con las cifras en letras y las anotaciones de voz."]
+
+
 def _problemas(bloques, palabras, brief, opciones, idioma):
     """Motivos por los que merece la pena volver a pedir el guion."""
     _, minimo, maximo = _horquilla(brief, idioma)
@@ -1567,8 +1614,10 @@ def _redactar(proyecto, params, avisar):
         datos["_bloques"] = bloques
         datos["_avisos"] = propios
         palabras = sum(marcas_tts.contar_palabras(b["texto"]) for b in bloques)
-        return _problemas(bloques, palabras, brief_doc, opciones, idioma)
+        return (_problemas(bloques, palabras, brief_doc, opciones, idioma)
+                + _problemas_guion_propio(bloques, material, opciones))
 
+    material = " ".join(t.get("texto", "") for t in transcript)
     datos, sobre, intentos, pendientes = _pedir(
         lambda correcciones, previo: _instruccion(transcript, metadatos,
                                                   brief_doc, anterior, opciones,
