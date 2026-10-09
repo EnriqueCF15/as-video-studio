@@ -812,7 +812,14 @@ def _sembrar_ficheros(tipo, pid, datos, miniatura, anterior):
     referencia_miniatura = str(miniatura or "").strip() or rutas[0]
     try:
         for indice, origen in enumerate(rutas):
-            nombre = f"{indice:02d}_{os.path.basename(origen)}"
+            nombre = os.path.basename(origen)
+            # Ya en el banco de ESTE preset (se guarda otra vez al cambiarle la
+            # voz o el guion): se queda con su nombre. Con prefijo otra vez,
+            # «00_cara» pasaba a «00_00_cara» y los videos hechos con el estilo
+            # apuntaban a ficheros borrados (fork, 09-10-2026).
+            if (os.path.normcase(os.path.dirname(os.path.abspath(origen)))
+                    != os.path.normcase(os.path.abspath(destino))):
+                nombre = f"{indice:02d}_{nombre}"
             final = os.path.join(trabajo, nombre)
             shutil.copyfile(origen, final)
             copiadas.append(final)

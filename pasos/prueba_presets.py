@@ -176,6 +176,15 @@ def prueba_estilo():
        "las referencias guardadas apuntan al banco, no al proyecto de origen")
     ok(all(os.path.exists(r) for r in guardado["datos"]["referencias"]),
        "y los ficheros estan de verdad ahi")
+    # guardarlo OTRA VEZ (cambiar la voz de un canal lo hace) no puede
+    # renombrarlos: los videos hechos con el estilo apuntan a esas rutas
+    presets.guardar("estilo", "Cartoon plano", dict(guardado["datos"]),
+                    miniatura=guardado["datos"]["referencias"][2], pid=ficha["id"])
+    otra_vez = presets.leer(ficha["id"])["datos"]["referencias"]
+    igual(otra_vez, guardado["datos"]["referencias"],
+          "guardar de nuevo deja las mismas rutas (antes: 00_ -> 00_00_)")
+    ok(all(os.path.exists(r) for r in otra_vez),
+       "y siguen en el disco: un video hecho con el estilo las encuentra")
     ok(os.path.basename(ficha["miniatura"]).endswith("f2.png"),
        "la miniatura es el fotograma que se eligio, no siempre el primero")
     ok(ficha["hay_miniatura"], "y la interfaz sabe que la hay")
