@@ -880,6 +880,10 @@ def reportar_imagen_gemini(meta, operacion="imagen", unidad=None):
                             "resolucion": meta.get("resolucion"),
                             "uso": meta.get("uso"), "refs": meta.get("refs"),
                             "segundos": meta.get("segundos"),
+                            # flex | estandar y lo que dijo Vertex (fork,
+                            # 08-10-2026): con Flex el importe ya va a la mitad
+                            "cobro": meta.get("cobro"),
+                            "trafico": meta.get("trafico"),
                             "simulado": bool(meta.get("simulado"))})
 
 

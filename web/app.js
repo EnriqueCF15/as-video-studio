@@ -2388,6 +2388,18 @@ function proveedorDeImagen(datos) {
       MODELOS_IMAGEN_GOOGLE, valor => guardarModelo('modelo_planos', valor)));
     caja.appendChild(campoSelect('Modelo de las hojas de personaje', g.modelo_reparto || '',
       MODELOS_IMAGEN_GOOGLE, valor => guardarModelo('modelo_reparto', valor)));
+    /* CÓMO SE PAGAN (fork, 08-10-2026): Flex PayGo de Vertex, la misma imagen
+       a mitad de precio con más espera. Lo que se anota sale de lo que Vertex
+       dice haber cobrado en cada imagen, no de lo elegido aquí. */
+    caja.appendChild(campoSelect('Cómo se pagan las imágenes', g.cobro_imagen || 'flex', [
+      { valor: 'flex', nombre: 'Flex — mitad de precio, la misma imagen; tarda algo más' },
+      { valor: 'estandar', nombre: 'Estándar — precio normal, lo más rápido' },
+    ], valor => guardarModelo('cobro_imagen', valor)));
+    caja.appendChild(h('div', { clase: 'pista' }, (g.cobro_imagen || 'flex') === 'flex'
+      ? 'Con Flex Google atiende las imágenes cuando tiene hueco: una tanda larga '
+        + 'tarda más y verás más esperas («429») que el estudio reintenta solo. '
+        + 'No canceles la tanda por eso.'
+      : 'Estándar cuesta el doble que Flex por la misma imagen.'));
     caja.appendChild(h('div', { clase: 'caja-aviso' },
       'Gemini va siempre por Vertex AI con la sesión de gcloud. NO uses una API key de '
       + 'AI Studio: la prueba gratuita de Google Cloud no la cubre y se cobraría a tu tarjeta.'));

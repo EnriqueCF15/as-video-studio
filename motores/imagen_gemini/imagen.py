@@ -34,7 +34,8 @@ posicion, y quitar una a ciegas haria que «la imagen 3» fuera otra. Si un
 modelo admite menos de las que llegan, se dice (ValueError) en vez de adivinar.
 
 Contrato: no importa nada de la aplicacion. Lee `secretos/claves.json` (bloque
-"google": proyecto, ubicacion, cuenta_servicio, modelo_planos, modelo_reparto).
+"google": proyecto, ubicacion, cuenta_servicio, modelo_planos, modelo_reparto y
+cobro_imagen -- flex | estandar, ver COBROS --).
 """
 import importlib.util
 import io
@@ -87,6 +88,24 @@ ASPECTOS = {"apaisado": "3:2", "cuadrado": "1:1", "vertical": "2:3"}
 #: imagen_openai: es lo que se ensena antes de generar. Lo que se anota sale de
 #: los tokens que devuelve la API.
 PRECIO = {"low": 0.067, "medium": 0.101, "high": 0.151}
+
+#: COMO SE PAGA CADA IMAGEN (fork, 08-10-2026). «flex» es Flex PayGo de Vertex:
+#: el MISMO modelo y la misma imagen a la MITAD de precio, a cambio de mas
+#: espera y mas 429 (que ya se reintentan). Solo existe en la ubicacion
+#: `global`, que es la de siempre aqui. Esta en preview («as is») y por eso se
+#: puede volver a «estandar» desde Configuracion (bloque google, `cobro_imagen`)
+#: o con ESTUDIO_COBRO_IMAGEN. Lo que se ANOTA no se fia de lo pedido: sale del
+#: `traffic_type` que devuelve Vertex en cada respuesta (ON_DEMAND_FLEX). Docs:
+#: https://docs.cloud.google.com/vertex-ai/generative-ai/docs/flex-paygo
+COBROS = ("flex", "estandar")
+COBRO_POR_DEFECTO = "flex"
+#: las dos cabeceras: solo Flex, sin pasar antes por un Provisioned Throughput
+CABECERAS_FLEX = {"X-Vertex-AI-LLM-Request-Type": "shared",
+                  "X-Vertex-AI-LLM-Shared-Request-Type": "flex"}
+DESCUENTO_FLEX = 0.5
+#: Flex tarda mas; la API admite hasta 30 min por peticion. Quince: una imagen
+#: que no llega en quince minutos no va a llegar.
+TIEMPO_FLEX_MS = 15 * 60 * 1000
 
 #: Llamadas a la vez. Vertex reparte una cuota dinamica compartida; la prueba
 #: gratuita no deja pedir mas, asi que se va despacio y se espera ante un 429.
@@ -150,6 +169,25 @@ def modelo_para(quality="low", uso="plano"):
         raise ValueError(f"modelo de imagen de Vertex desconocido: {modelo!r}. "
                          f"Validos: {', '.join(MODELOS)}")
     return modelo, resolucion
+
+
+def cobro():
+    """«flex» o «estandar»: como se van a PEDIR las imagenes. -> str"""
+    valor = str(os.environ.get("ESTUDIO_COBRO_IMAGEN")
+                or ficha_google().get("cobro_imagen") or COBRO_POR_DEFECTO)
+    valor = valor.strip().lower()
+    return valor if valor in COBROS else COBRO_POR_DEFECTO
+
+
+def factor_de_cobro(modo=None):
+    """Lo que se paga de la tarifa estandar con ese modo: 0,5 con Flex. -> float"""
+    return DESCUENTO_FLEX if (modo or cobro()) == "flex" else 1.0
+
+
+def _trafico(uso_tokens):
+    """El tipo de trafico que Vertex dice haber cobrado, en texto. -> str"""
+    valor = getattr(uso_tokens, "traffic_type", None)
+    return str(getattr(valor, "value", valor) or "")
 
 
 def max_referencias(quality="low", uso="plano"):
@@ -354,12 +392,21 @@ def generar(prompt, referencias, *, quality="low", tamano="apaisado", api_key=No
     configuracion_imagen = {"aspect_ratio": ASPECTOS[tamano]}
     if ficha["resoluciones"]:
         configuracion_imagen["image_size"] = resolucion
+    # FLEX: las cabeceras viajan en ESTA peticion y no en el cliente, que se
+    # comparte y se guarda: cambiar el modo en Configuracion vale desde la
+    # siguiente imagen sin reiniciar nada
+    modo = cobro()
+    extra = {}
+    if modo == "flex":
+        extra["http_options"] = types.HttpOptions(headers=dict(CABECERAS_FLEX),
+                                                  timeout=TIEMPO_FLEX_MS)
     configuracion = types.GenerateContentConfig(
         response_modalities=["IMAGE"],
         image_config=types.ImageConfig(**configuracion_imagen),
         # sin herramientas: es una imagen, no una conversacion (y el SDK avisa
         # en cada llamada si esto se queda puesto)
-        automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True))
+        automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
+        **extra)
 
     ultimo = None
     for intento in range(reintentos + 1):
@@ -409,7 +456,16 @@ def generar(prompt, referencias, *, quality="low", tamano="apaisado", api_key=No
         uso_tokens = respuesta.usage_metadata
         entrada = int(getattr(uso_tokens, "prompt_token_count", 0) or 0)
         salida = int(getattr(uso_tokens, "candidates_token_count", 0) or 0)
-        usd = coste_de(modelo, resolucion, entrada, salida or None)
+        # LO COBRADO, NO LO PEDIDO: la mitad solo si Vertex dice que fue Flex.
+        # Si se pidio Flex y no lo fue, se anota entero y se dice.
+        trafico = _trafico(uso_tokens)
+        cobrado_flex = "FLEX" in trafico.upper()
+        if modo == "flex" and not cobrado_flex:
+            print(f"[imagen-gemini] se pidio Flex y Vertex cobro "
+                  f"«{trafico or 'sin decir'}»: se anota a precio estandar",
+                  flush=True)
+        usd = coste_de(modelo, resolucion, entrada, salida or None) * (
+            DESCUENTO_FLEX if cobrado_flex else 1.0)
         png = _a_png(datos, tamano)
         with _GASTO_LOCK:
             _gasto["usd"] += usd
@@ -418,6 +474,8 @@ def generar(prompt, referencias, *, quality="low", tamano="apaisado", api_key=No
                      "refs": len(referencias), "coste": round(usd, 6),
                      "modelo": modelo, "resolucion": resolucion,
                      "tamano": TAMANOS[tamano], "proveedor": PROVEEDOR, "uso": uso,
+                     "cobro": "flex" if cobrado_flex else "estandar",
+                     "trafico": trafico,
                      "usage": {"input_tokens": entrada, "output_tokens": salida,
                                "total_tokens": int(getattr(uso_tokens,
                                                            "total_token_count", 0) or 0)}}

@@ -211,6 +211,68 @@ def prueba_generar():
           "una referencia que no existe se dice antes de pagar", ValueError)
 
 
+def con_trafico(datos, trafico):
+    """Una respuesta que dice que tipo de trafico cobro Vertex."""
+    salida = respuesta(datos)
+    salida.usage_metadata.traffic_type = trafico
+    return salida
+
+
+def prueba_flex():
+    """FLEX PAYGO (fork, 08-10-2026): la misma imagen a mitad de precio.
+
+    Se PIDE con dos cabeceras y se ANOTA con lo que Vertex dice haber cobrado:
+    si se pidio Flex y no lo fue, se paga y se apunta entero.
+    """
+    print("\n[3b] Flex: la mitad de precio, pedido y comprobado")
+    from google.genai import types as gtypes
+    import ajustes
+    import claves
+    ref = referencia()
+    os.environ.pop("ESTUDIO_COBRO_IMAGEN", None)
+    igual(gem.cobro(), "flex", "sin decir nada, las imagenes se piden con Flex")
+    igual(gem.factor_de_cobro(), 0.5, "que es la mitad de la tarifa")
+    entero = gem.coste_de("gemini-3.1-flash-image", "1K", 15680, 1120)
+
+    doble = _ClienteDoble([con_trafico(png(1264, 848), gtypes.TrafficType.ON_DEMAND_FLEX)])
+    _img, meta = con_cliente(doble, lambda: gem.generar("x", [ref]))
+    cabeceras = doble.llamadas[0]["config"].http_options.headers
+    igual((cabeceras.get("X-Vertex-AI-LLM-Request-Type"),
+           cabeceras.get("X-Vertex-AI-LLM-Shared-Request-Type")), ("shared", "flex"),
+          "la peticion lleva las dos cabeceras de Flex")
+    comprobar(doble.llamadas[0]["config"].http_options.timeout == gem.TIEMPO_FLEX_MS,
+              "y una espera larga: Flex tarda mas")
+    comprobar(abs(meta["coste"] - entero * 0.5) < 1e-9 and meta["cobro"] == "flex",
+              "si Vertex dice ON_DEMAND_FLEX, se anota la mitad")
+    igual(meta["trafico"], "ON_DEMAND_FLEX", "y queda dicho lo que cobro Vertex")
+
+    doble = _ClienteDoble([con_trafico(png(1264, 848), "ON_DEMAND")])
+    _img, meta = con_cliente(doble, lambda: gem.generar("x", [ref]))
+    comprobar(abs(meta["coste"] - entero) < 1e-9 and meta["cobro"] == "estandar",
+              "si se pidio Flex y Vertex cobro estandar, se anota ENTERO")
+
+    mitad = ajustes.coste_por_imagen("low", proveedor="vertex_gemini")
+    os.environ["ESTUDIO_COBRO_IMAGEN"] = "estandar"
+    try:
+        doble = _ClienteDoble([respuesta(png(1264, 848))])
+        _img, meta = con_cliente(doble, lambda: gem.generar("x", [ref]))
+        comprobar(doble.llamadas[0]["config"].http_options is None,
+                  "en estandar no viaja ninguna cabecera de Flex")
+        igual(gem.factor_de_cobro(), 1.0, "y se paga la tarifa entera")
+        entera = ajustes.coste_por_imagen("low", proveedor="vertex_gemini")
+    finally:
+        os.environ.pop("ESTUDIO_COBRO_IMAGEN", None)
+    comprobar(abs(mitad["usd_total"] - entera["usd_total"] / 2) < 1e-3
+              and mitad["cobro"] == "flex",
+              f"y lo que se ensena ANTES de generar tambien baja a la mitad "
+              f"({entera['usd_total']} -> {mitad['usd_total']} $ por imagen)")
+    falla(lambda: claves._google_pedido({"cobro_imagen": "gratis"}),
+          "el almacen de claves no guarda una forma de pago que no existe",
+          claves.ErrorClaves)
+    igual(claves._google_pedido({"cobro_imagen": "Estandar"}),
+          {"cobro_imagen": "estandar"}, "y acepta las dos, sin mirar mayusculas")
+
+
 def prueba_simulado():
     print("\n[4] modo simulado: no sale a Vertex")
     os.environ["ESTUDIO_SIMULAR"] = "1"
@@ -290,6 +352,7 @@ def main():
         prueba_modelos()
         prueba_tamanos()
         prueba_generar()
+        prueba_flex()
         prueba_simulado()
         prueba_estudio()
     finally:
