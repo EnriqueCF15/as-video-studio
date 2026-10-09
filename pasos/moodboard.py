@@ -320,6 +320,11 @@ def _montar(rutas, destino):
 #: Lado del tile. La misma proporcion en la que se generan los planos.
 TAMANO = (1536, 1024)
 
+#: Cuantas imagenes del autor viajan con cada lamina de un estilo descrito
+#: (fork, 08-10-2026; ver `dibujar_desde_guia`). Ocho: las que caben de sobra en
+#: Nano Banana 2 y en gpt-image, y mas no aportan estilo, solo escenas.
+MAX_REFERENCIAS_AUTOR = 8
+
 
 def _nombre_en(idioma):
     """Codigo de idioma -> nombre EN INGLES para el prompt, o "".
@@ -363,7 +368,8 @@ def prompt_de_eje(eje, estilo, peticion="", guia_escrita=None, reglas=None,
 
 
 def prompt_de_dibujo(descripcion, estilo, peticion="", guia_escrita=None,
-                     reglas=None, con_lamina=True, encabezado=None, idioma=""):
+                     reglas=None, con_lamina=True, encabezado=None, idioma="",
+                     de_autor=0):
     """El prompt de UNA ilustracion suelta en el estilo del canal.
 
     Es el cuerpo de `prompt_de_eje`, sacado a una funcion porque lo necesita
@@ -373,10 +379,30 @@ def prompt_de_dibujo(descripcion, estilo, peticion="", guia_escrita=None,
     casa-- y con dos constructores uno de los dos se quedaria sin las reglas,
     que es exactamente el fallo que salio la primera vez (los tres cuerpos
     SONRIENDO con la regla que lo prohibe escrita y sin llegar).
+
+    `de_autor` es CUANTAS imagenes del autor van adjuntas (fork, 08-10-2026):
+    las que subio con la descripcion del estilo, que ya estan dibujadas EN el
+    estilo de salida. Con ellas la frase cambia: lo que hay que copiar no es
+    solo el trazo y la paleta, es como se construye una cabeza, una mano, un
+    cuerpo -- en un estilo de personajes eso ES el estilo --, y lo que no hay
+    que copiar es la maqueta (una hoja de personaje, una fila de muestras de
+    color), que es lo que suelen traer.
     """
     lineas = [encabezado
               or "Draw one single illustration for a style reference sheet."]
-    if con_lamina:
+    if de_autor:
+        lineas.append(
+            ("The reference image is an example illustration" if de_autor == 1
+             else f"The {de_autor} reference images are example illustrations")
+            + " made for this production by its author. Match their drawing "
+              "style as closely as possible: line weight and outline, palette, "
+              "paper texture, shading, and exactly how heads, faces, hands and "
+              "bodies are built and proportioned. Copy the STYLE, never their "
+              "layout or their scenes: no character sheet, no lineup, no grid "
+              "and no row of colour swatches -- draw only the subject described "
+              "below. Your output is ONE single full-bleed illustration, never "
+              "a grid or a collage.")
+    elif con_lamina:
         lineas.append("Reference image 1 is a STYLE SHEET: copy the drawing style it "
                       "shows -- line weight, palette, shapes, proportions, how faces "
                       "and volumes are resolved -- and never its content, its "
@@ -670,7 +696,8 @@ def importar(carpeta, clave, raiz=None):
 # de las palabras del canal y las laminas salen de la guia, en ese orden.
 
 def dibujar_desde_guia(estilo, destino, ejes=None, calidad="medium",
-                       avisar=None, idioma="", peticiones=None):
+                       avisar=None, idioma="", peticiones=None,
+                       referencias=None):
     """Dibuja las laminas de un estilo DESCRITO. -> {rutas, ejes, coste_usd}.
 
     Sin fotogramas de entrada y sin tocar el banco de moodboards: las laminas se
@@ -684,6 +711,14 @@ def dibujar_desde_guia(estilo, destino, ejes=None, calidad="medium",
     descripcion. Sin esto, el estilo descrito aceptaba el encargo, redibujaba esa
     lamina con su descripcion generica de siempre, pagaba la imagen y devolvia
     otra vez lo mismo, con la correccion dada por aplicada.
+
+    'referencias' son las IMAGENES DEL AUTOR que acompanaron a la descripcion
+    (fork, 08-10-2026). Hasta aqui solo las leia Claude para escribir la guia, y
+    las laminas se dibujaban con ese texto y nada mas: se parecian, pero lo que
+    una frase no dice --el grosor exacto del trazo, como es una cabeza-- se
+    perdia. Ahora van tambien al generador, SUELTAS y no en un mosaico: son
+    pocas (`MAX_REFERENCIAS_AUTOR`), cada una a 1024 px se paga a centimos de
+    centimo, y en un mosaico de cinco cada una se quedaba en 600 px.
     """
     # el proveedor de Configuracion: un taller no es un video y no tiene el suyo
     imagen = medios.motor_imagen()
@@ -704,6 +739,25 @@ def dibujar_desde_guia(estilo, destino, ejes=None, calidad="medium",
             "lo unico que describe el dibujo: sin ella las laminas saldrian con "
             "el estilo por defecto del generador")
     bloque = reglas.bloque_prompt("prompt_imagen")
+    # LAS DEL AUTOR, preparadas una vez para todas las laminas. La carpeta va
+    # junto a `destino` y no dentro: dentro, una lista de lo dibujado se
+    # llevaria tambien las copias de las referencias.
+    #
+    # CON TOPE: se pueden subir hasta `REFERENCIAS_A_ELEGIR` (24) y un generador
+    # admite menos (14 Nano Banana 2, 3 el viejo). Pasarse no recortaria nada:
+    # el motor se niega entero y se perderian las seis laminas. El motor que
+    # sabe decir su tope lo dice (`imagen_gemini.max_referencias`).
+    tope = MAX_REFERENCIAS_AUTOR
+    if hasattr(imagen, "max_referencias"):
+        tope = max(1, min(tope, int(imagen.max_referencias(calidad))))
+    rutas_autor = [r for r in (referencias or [])
+                   if r and os.path.isfile(r)][:tope]
+    refs = []
+    if rutas_autor:
+        cache = os.path.join(os.path.dirname(os.path.abspath(destino)),
+                             "_refs_autor")
+        os.makedirs(cache, exist_ok=True)
+        refs = [imagen.normalizar(r, cache) for r in rutas_autor]
 
     resultados = [None] * len(pedidos)
     hechas = [0]
@@ -722,10 +776,11 @@ def dibujar_desde_guia(estilo, destino, ejes=None, calidad="medium",
                        "reference sheet.",
             # sin el idioma, la regla de rotulos dice «el ingles NO es el idioma»
             # y no dice cual es: un canal en ingles saco el diagrama en espanol
-            idioma=idioma)
-        # SIN referencias: no hay ninguna que mandar, y mandar una lamina vacia
-        # es lo que provoca el "Unsupported content type" que no dice nada.
-        png, meta = imagen.generar(prompt, [], quality=calidad,
+            idioma=idioma,
+            de_autor=len(refs))
+        # SIN referencias si no las hay: mandar una lamina vacia es lo que
+        # provoca el "Unsupported content type" que no dice nada.
+        png, meta = imagen.generar(prompt, refs, quality=calidad,
                                    tamano="apaisado")
         ruta = os.path.join(destino, f"{eje}.png")
         with open(ruta, "wb") as fh:
@@ -738,6 +793,7 @@ def dibujar_desde_guia(estilo, destino, ejes=None, calidad="medium",
 
     cadenas = max(1, min(len(pedidos), p6_assets.MAX_CADENAS))
     avisar(0.02, f"dibujando {len(pedidos)} referencias a partir de la guia"
+                 + (f" y de tus {len(refs)} imagenes" if refs else "")
                  + (f", {cadenas} a la vez" if cadenas > 1 else ""))
     if cadenas <= 1:
         for indice, eje in enumerate(pedidos):

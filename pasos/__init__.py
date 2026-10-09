@@ -43,6 +43,9 @@ from . import catalogo_visual, estilo  # noqa: E402,F401
 # y una promesa que se cumple por un efecto lateral se rompe el dia que alguien
 # reordene los imports de p3.
 from . import cadencia, fuentes  # noqa: E402,F401
+# ideas_visuales (las notas de imagen que el autor deja junto a su guion) las
+# leen direccion y catalogo_visual por medio de app.py: solo biblioteca estandar
+from . import ideas_visuales  # noqa: E402,F401
 # cta (las llamadas a la accion del video: cuantas, donde y a que producto) solo
 # depende de la biblioteca estandar. Va DECLARADO por lo mismo que fuentes: lo
 # usan p3_guion y app.py, y `PASOS_MODULOS.cta` no puede depender de que p3 lo
@@ -91,7 +94,7 @@ __all__ = ["catalogo_visual", "conservar", "repaso",
            "enrutar_estilo", "redactor",
            "login_cli", "asistente", "salud_cli", "comprobar_claves", "mcp_estudio",
            "encuadres", "estadisticas", "estilo",
-           "cadencia", "fuentes",
+           "cadencia", "fuentes", "ideas_visuales",
            "marcas_tts", "medios", "moodboard",
            "p1_ingesta", "p2_brief", "p3_guion",
            "p4_voz", "p5_revision_audio", "presets_voz", "presets_canal",

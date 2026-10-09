@@ -317,7 +317,7 @@ Lee el guion ENTERO y devuelve su catalogo visual.
 
 TITULO: {titulo}
 TEMA: {tema}
-{peticion}
+{peticion}{ideas}
 {especie}
 {criterio}
 
@@ -399,6 +399,29 @@ Va por delante del criterio general. No cambia las reglas duras.
 {texto}
 >>>
 """
+
+#: LAS IDEAS DE IMAGEN DEL AUTOR (fork, 08-10-2026; ver `ideas_visuales`). Lo
+#: que sirve aqui es QUIEN SALE: un guion en segunda persona («tu estas en tu
+#: mesa») no nombra a su protagonista, y sin las notas el reparto se queda sin
+#: el personaje que mas sale. Sin ideas el hueco queda vacio y el encargo sale
+#: exactamente como salia.
+IDEAS = """
+LAS IDEAS DE IMAGEN DEL AUTOR
+Quien escribio el guion apunto lo que quiere ver junto a cada frase. Usalas
+para decidir QUIEN SALE y DONDE: un personaje que se repite en esas notas es
+del reparto aunque la narracion lo llame «tu» o «el», y los lugares que
+describen son los sitios. No cambian las reglas duras. Las notas de musica o
+sonido no son tuyas.
+<<<
+{texto}
+>>>
+"""
+
+
+def ideas_legibles(texto):
+    """El bloque de ideas del autor para el encargo, o "" si no hay. -> str"""
+    limpio = str(texto or "").strip()
+    return IDEAS.format(texto=limpio) if limpio else ""
 
 #: El motor de mapas solo sabe encuadrar unas regiones concretas, y se leen de
 #: el por lo mismo que los sets: una region inventada revienta con KeyError
@@ -826,7 +849,7 @@ def _especie_legible(regla):
 
 def proponer(bloques, brief=None, ajuste=None, avisar=None, proyecto_id=None,
              cwd=None, peticion="", planos=0, min_s=None, max_s=None,
-             regla_personajes=""):
+             regla_personajes="", ideas=""):
     """Propone el catalogo visual del video. NO lo guarda: eso lo hace una persona.
 
     'bloques' son los del guion, con id y texto, EN ORDEN. Se manda el guion
@@ -855,6 +878,7 @@ def proponer(bloques, brief=None, ajuste=None, avisar=None, proyecto_id=None,
         titulo=(brief or {}).get("titulo") or "sin titulo",
         tema=(brief or {}).get("resumen") or (brief or {}).get("tema") or "sin brief",
         peticion=PETICION.format(texto=peticion) if peticion else "",
+        ideas=ideas_legibles(ideas),
         especie=_especie_legible(regla_personajes),
         criterio=CRITERIO.format(planos_por_set=PLANOS_POR_SET,
                                  cuantos_planos=_cuantos_planos(planos, min_s,

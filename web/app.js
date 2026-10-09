@@ -6305,6 +6305,9 @@ function encargoVideoLight() {
       material: '',
       // si lo pegado YA es el guion, el redactor no reescribe: respeta
       guion_propio: false,
+      // LO QUE QUIERES VER (fork, 08-10-2026): las notas de imagen de tu
+      // guion. No van a ningun paso: ver `ideasVisualesLight`
+      ideas_visuales: '',
       // COMO contarlo, aparte de los hechos: «no fuerces una historia de
       // personaje», «no incluyas la entrevista»
       indicaciones: '',
@@ -6652,6 +6655,11 @@ function vistaElegidoLight() {
     'de dónde salen los hechos que se van a contar',
     materialLight(e)));
 
+  caja.appendChild(bloqueLight('Lo que quieres ver',
+    'las notas de imagen de tu guion (opcional)',
+    ideasVisualesLight(e.ideas_visuales, valor => { e.ideas_visuales = valor; },
+      'encargo-ideas')));
+
   /* LAS INDICACIONES, detrás del material y en su propio bloque: los hechos son
      una cosa y CÓMO contarlos es otra. Cuando iban en la misma caja, lo escrito
      detrás del material lo leía el documentalista y no el guionista: salía un
@@ -6876,6 +6884,82 @@ function materialLight(e) {
   return caja;
 }
 
+/* LO QUE QUIERES VER (fork, 08-10-2026). Las notas de imagen de un guion
+ * escrito a mano —«[VISUAL: pantalla partida…]»—, cada una junto a la frase que
+ * acompaña. No se locutan: las leen quien decide qué personajes y sitios salen
+ * (el reparto) y quien decide qué se ve en cada plano (la dirección).
+ *
+ * NO SON UN PARAM, y es a propósito (`pasos/ideas_visuales.py`): un param de
+ * las imágenes entra en la firma de cada plano, y retocar una coma dejaría
+ * obsoletos los doscientos y el siguiente «Generar» los volvería a pagar. Aquí
+ * cambiarlas no rehace nada: valen la próxima vez que se dirijan los planos.
+ *
+ * El `input` no sube: en el encargo de un vídeo abierto, la caja de fuera
+ * programa un volcado de los params con cada tecla, y esto no es un param. */
+function ideasVisualesLight(valor, alCambiar, foco, pie) {
+  const caja = h('div', { clase: 'campo' });
+  const area = h('textarea', {
+    rows: 6,
+    placeholder: 'Pega aquí las notas de imagen de tu guion, cada una junto a '
+      + 'la frase que acompaña. Por ejemplo:\n'
+      + 'NARRATION: It\'s three forty-seven in the afternoon.\n'
+      + '[VISUAL: a doodle character slumps at a desk; the clock reads 3:47 PM]',
+    oninput: ev => { ev.stopPropagation(); alCambiar(ev.target.value); },
+  });
+  area.dataset.foco = foco;
+  area.value = valor || '';
+  caja.appendChild(h('div', { clase: 'fuente-light' }, h('div', { clase: 'area' }, area)));
+  caja.appendChild(h('div', { clase: 'pista' },
+    'Esto NO se locuta: lo que se graba va en «El material». Copia aquí cada '
+    + 'nota de imagen junto a la frase que acompaña; el plano que dice esa frase '
+    + 'dibuja tu idea, y los planos sin nota los decide el estudio, como siempre.'));
+  if (pie) caja.appendChild(pie);
+  return caja;
+}
+
+/* Las del vídeo abierto: se leen del servidor una vez por vídeo y se guardan
+   solas, con su propio reloj y su propio aviso de «guardando». */
+function ideasDelVideoLight() {
+  const v = APP.light.video;
+  if (!v.ideas || v.ideas.pid !== v.pid) {
+    const ideas = { pid: v.pid, texto: '', cargadas: false, reloj: null,
+                    estado: 'cargando…' };
+    v.ideas = ideas;
+    pedir(`${API.proyecto(v.pid)}/ideas-visuales`)
+      .then(d => { ideas.texto = d.texto || ''; ideas.cargadas = true;
+                   ideas.estado = ''; })
+      .catch(err => { ideas.estado = `no se han podido leer: ${err.message}`; })
+      .finally(() => { if (APP.light.video.ideas === ideas) pintarLight(); });
+  }
+  const ideas = v.ideas;
+  const pie = h('div', { clase: 'meta' }, ideas.estado
+    || (ideas.texto ? `${miles(ideas.texto.length)} caracteres guardados` : ''));
+  const caja = ideasVisualesLight(ideas.texto, valor => {
+    ideas.texto = valor;
+    pie.textContent = '⏳ guardando…';
+    clearTimeout(ideas.reloj);
+    ideas.reloj = setTimeout(async () => {
+      try {
+        const d = await pedir(`${API.proyecto(ideas.pid)}/ideas-visuales`,
+          { method: 'PUT', cuerpo: { texto: ideas.texto } });
+        pie.textContent = d.texto
+          ? `✓ guardado (${miles(d.caracteres)} caracteres). Vale para la próxima `
+            + 'vez que se dirijan los planos; no rehace nada solo.'
+          : '✓ sin notas de imagen';
+      } catch (err) {
+        pie.textContent = `⚠️ no se ha guardado: ${err.message}`;
+      }
+    }, 900);
+  }, 'encargo-ideas', pie);
+  // mientras se leen, la caja no se puede escribir: lo tecleado se perderia al
+  // llegar lo guardado
+  if (!ideas.cargadas) {
+    const area = caja.querySelector('textarea');
+    if (area) area.disabled = true;
+  }
+  return caja;
+}
+
 /* Crear el proyecto y lanzar la primera tanda, en un gesto. Son dos llamadas
    —el proyecto tiene que existir antes de poder generar nada en él— pero UNA
    decisión, así que un botón. */
@@ -6895,6 +6979,7 @@ async function crearYGenerarLight(estilo) {
         formato: e.formato || 'horizontal',
         material: e.material,
         guion_propio: !!e.guion_propio,
+        ideas_visuales: e.ideas_visuales || '',
         indicaciones: e.indicaciones,
         cta: e.cta,
       },
@@ -7047,6 +7132,10 @@ function vistaEncargoVideoLight() {
   caja.appendChild(bloqueLight('El material',
     'de dónde salen los hechos que se van a contar',
     materialLight(e)));
+
+  caja.appendChild(bloqueLight('Lo que quieres ver',
+    'las notas de imagen de tu guion (opcional)',
+    ideasDelVideoLight()));
 
   caja.appendChild(bloqueLight('Las indicaciones',
     'cómo quieres que se cuente (opcional)',

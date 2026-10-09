@@ -380,7 +380,7 @@ ella:
   · una frase que dice que algo SUBE no se dibuja bajando.
 
 Los dos pasaron de verdad y se vieron en el video montado.
-
+{ideas}
 =====================================================================
 LOS PLANOS ({cuantos}, y los quiero TODOS)
 =====================================================================
@@ -392,6 +392,39 @@ DEVUELVE ESTE JSON:
 
 Los {cuantos} planos, ninguno menos y ninguno de mas.
 """
+
+#: LAS IDEAS DE IMAGEN DEL AUTOR (fork, 08-10-2026; ver `ideas_visuales`). Van
+#: DESPUES de las reglas y ANTES de los planos: lo de arriba dice como se
+#: escribe un plano y esto dice cual quiere ver quien escribio el guion. Sin
+#: ideas el hueco queda vacio y el encargo sale exactamente como salia.
+IDEAS = """
+=====================================================================
+LAS IDEAS DE IMAGEN DEL AUTOR. MANDAN SOBRE LO QUE TU IMAGINARIAS
+=====================================================================
+Quien escribio el guion dejo apuntado lo que quiere VER, cada idea junto a la
+frase que acompana. Cuando la frase de un plano es (o contiene) una de esas
+frases, ese plano dibuja ESA idea: adaptala a lo que cabe en un plano y sin
+contradecir el estilo ni el sitio, pero no la cambies por otra tuya.
+
+  · Una idea que encadena varias imagenes (un montaje, una secuencia, «luego»)
+    se reparte EN ORDEN entre el plano de esa frase y los que la siguen.
+  · El texto en pantalla que pida (titulos, carteles, cifras) va entre
+    comillas, en el idioma del video, y corto.
+  · Un personaje o un objeto que el autor repite (el mismo protagonista, el
+    mismo reloj) se dibuja igual cada vez que vuelve.
+  · Las notas de musica o sonido no son tuyas: ignoralas.
+  · Un plano cuya frase no tiene idea apuntada lo decides tu, como siempre.
+
+<<<
+{texto}
+>>>
+"""
+
+
+def ideas_legibles(texto):
+    """El bloque de ideas del autor para el encargo, o "" si no hay. -> str"""
+    limpio = str(texto or "").strip()
+    return IDEAS.format(texto=limpio) if limpio else ""
 
 
 def _planos_legibles(escenas, beats=None):
@@ -638,8 +671,12 @@ def _llamar_claude(instruccion, modelo, esfuerzo, avance=None):
 
 
 def proponer(escenas, ajuste=None, avisar=None, proyecto_id=None, cwd=None,
-             titulo="", estilo=None, catalogo=None, beats=None, idioma=""):
+             titulo="", estilo=None, catalogo=None, beats=None, idioma="",
+             ideas=""):
     """Escribe que se ve en cada plano. NO escribe en params: propone.
+
+    `ideas` son las notas de imagen que el autor dejo junto a su guion
+    (`ideas_visuales`): si llegan, mandan sobre lo que el agente imaginaria.
 
     Devuelve {plan, avisos, ...}. Igual que el plan de cartelas y el de rotulos:
     proponer no es aprobar, y lo que se guarda despues es la DECISION.
@@ -685,6 +722,7 @@ def proponer(escenas, ajuste=None, avisar=None, proyecto_id=None, cwd=None,
         sitios=_sitios_legibles(catalogo, dirigibles),
         reparto=_reparto_legible(catalogo, dirigibles),
         cuantos=len(dirigibles),
+        ideas=ideas_legibles(ideas),
         planos=_planos_legibles(dirigibles, [b for _, b in pares]))
 
     arranque = time.time()

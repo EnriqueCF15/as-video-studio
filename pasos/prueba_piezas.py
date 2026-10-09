@@ -2873,6 +2873,96 @@ def prueba_feedback_en_prompts():
 
 
 
+def prueba_ideas_del_autor():
+    """LAS IDEAS DE IMAGEN DEL AUTOR (fork, 08-10-2026).
+
+    Las notas «[VISUAL: ...]» de un guion escrito a mano se perdian: los bloques
+    del guion son {id, texto}. Ahora llegan a quien decide que se ve en cada
+    plano (`direccion`) y a quien decide quien sale y donde (`catalogo_visual`).
+    Sin ideas, los dos encargos tienen que salir EXACTAMENTE como salian.
+    """
+    import tempfile                                           # noqa: PLC0415
+    import types                                              # noqa: PLC0415
+    import ideas_visuales                                     # noqa: PLC0415
+    import estadisticas                                       # noqa: PLC0415
+
+    titulo("ideas del autor: se guardan en un fichero del proyecto, limpias")
+    with tempfile.TemporaryDirectory() as carpeta:
+        proyecto = types.SimpleNamespace(raiz=carpeta)
+        igual(ideas_visuales.leer(proyecto), "", "sin fichero no hay ideas")
+        guardado = ideas_visuales.guardar(proyecto, "  [VISUAL: a]  \r\nB  \r\n\n")
+        igual(guardado, "[VISUAL: a]\nB", "los saltos de Windows y los espacios "
+              "colgando se limpian")
+        igual(ideas_visuales.leer(proyecto), "[VISUAL: a]\nB", "y se leen igual")
+        igual(ideas_visuales.guardar(proyecto, "   "), "",
+              "un texto vacio las quita")
+        ok(not os.path.exists(ideas_visuales.ruta(proyecto)),
+           "y quitar es borrar el fichero, no dejar uno vacio")
+        try:
+            ideas_visuales.guardar(proyecto,
+                                   "x" * (ideas_visuales.TOPE_CARACTERES + 1))
+            ok(False, "lo que pasa del tope tendria que rechazarse")
+        except ValueError:
+            ok(True, "lo que pasa del tope se rechaza entero, no se recorta")
+
+    nota = ("NARRATION: It's three forty-seven in the afternoon.\n"
+            "[VISUAL: a doodle character slumps at a desk; the clock reads 3:47 PM]")
+
+    class Basta(Exception):
+        pass
+
+    vistas = []
+
+    def falso(instruccion, *_a, **_k):
+        vistas.append(instruccion)
+        raise Basta()
+
+    originales = (direccion._llamar_claude, catalogo_visual._llamar_claude,
+                  estadisticas.anotar)
+    direccion._llamar_claude = falso
+    catalogo_visual._llamar_claude = falso
+    estadisticas.anotar = lambda *_a, **_k: None
+    try:
+        escenas = [{"id": "S001", "narracion": "It's three forty-seven.",
+                    "personajes": []}]
+        bloques = [{"id": "B001", "texto": "It's three forty-seven."}]
+        for ideas in ("", nota):
+            for llamada in (lambda: direccion.proponer(escenas, ideas=ideas),
+                            lambda: catalogo_visual.proponer(bloques, ideas=ideas)):
+                try:
+                    llamada()
+                except Basta:
+                    pass
+    finally:
+        (direccion._llamar_claude, catalogo_visual._llamar_claude,
+         estadisticas.anotar) = originales
+    dir_sin, cat_sin, dir_con, cat_con = vistas
+
+    titulo("ideas del autor: llegan a la direccion de cada plano")
+    ok("3:47 PM" in dir_con and "MANDAN SOBRE LO QUE TU IMAGINARIAS" in dir_con,
+       "con ideas, la direccion las recibe y sabe que mandan")
+    ok(dir_con.index("LAS IDEAS DE IMAGEN DEL AUTOR")
+       < dir_con.index("LOS PLANOS (1,"),
+       "van ANTES de los planos: primero que quiere ver, luego que planos hay")
+    ok("LAS IDEAS DE IMAGEN DEL AUTOR" not in dir_sin
+       and "video montado.\n\n=====" in dir_sin,
+       "sin ideas no hay bloque ni linea de mas")
+    igual(dir_con.replace(direccion.ideas_legibles(nota), ""), dir_sin,
+          "y el bloque es lo UNICO que cambia en el encargo")
+
+    titulo("ideas del autor: llegan al reparto (quien sale aunque se diga «tu»)")
+    ok("3:47 PM" in cat_con and "QUIEN SALE" in cat_con,
+       "el catalogo visual recibe las ideas para decidir el reparto")
+    ok("LAS IDEAS DE IMAGEN DEL AUTOR" not in cat_sin,
+       "y sin ideas no se dice nada")
+    igual(cat_con.replace(catalogo_visual.ideas_legibles(nota), ""), cat_sin,
+          "y el bloque es lo UNICO que cambia en el encargo")
+
+    fuente = open(os.path.join(RAIZ, "app.py"), encoding="utf-8").read()
+    igual(fuente.count("ideas=_ideas_visuales().leer(ctx.proyecto)"), 2,
+          "app.py se las lee del proyecto a los dos agentes")
+
+
 def prueba_direccion():
     """QUE SE VE EN CADA PLANO: la capa que faltaba en el prompt de imagen.
 
@@ -4294,6 +4384,7 @@ def main():
     prueba_espaciar()
     prueba_cartelas()
     prueba_direccion()
+    prueba_ideas_del_autor()
     prueba_subtitulos()
     prueba_encajar_mide_el_ancho()
     prueba_cartelas_composicion()

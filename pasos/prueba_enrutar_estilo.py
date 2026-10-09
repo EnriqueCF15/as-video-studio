@@ -266,6 +266,106 @@ def prueba_el_idioma_llega_a_la_lamina():
        "el prompt de la lámina dice el idioma del canal")
 
 
+def prueba_las_imagenes_del_autor_llegan_a_la_lamina():
+    seccion("7c] las imágenes que subiste LLEGAN al dibujo de las láminas")
+    # Hasta el 08-10-2026 un estilo descrito con imagenes las usaba solo para
+    # que Claude escribiera la guia: las laminas se dibujaban con ese texto y
+    # nada mas. Ahora van tambien al generador, sueltas.
+    import tempfile                                           # noqa: PLC0415
+    import medios                                             # noqa: PLC0415
+    vistos = []
+    normalizadas = []
+
+    class Falso:
+        @staticmethod
+        def generar(prompt, referencias, **_kw):
+            vistos.append((prompt, list(referencias)))
+            return b"png", {"coste": 0.0}
+
+        @staticmethod
+        def normalizar(ruta, cache, lado_max=1024):
+            normalizadas.append(cache)
+            return ruta
+
+    original = medios.motor_imagen
+    medios.motor_imagen = lambda *a, **k: Falso
+    try:
+        with tempfile.TemporaryDirectory() as carpeta:
+            suyas = []
+            for nombre in ("a.jpg", "b.jpg"):
+                ruta = os.path.join(carpeta, nombre)
+                with open(ruta, "wb") as fh:
+                    fh.write(b"x")
+                suyas.append(ruta)
+            destino = os.path.join(carpeta, "estilo", "dibujadas")
+            moodboard.dibujar_desde_guia(
+                {"guia": {"guia": "Flat ink drawing, warm palette."}}, destino,
+                ejes=["cara", "objeto"], idioma="en",
+                referencias=suyas + [os.path.join(carpeta, "no_existe.png")])
+            con = list(vistos)
+            vistos.clear()
+            moodboard.dibujar_desde_guia(
+                {"guia": {"guia": "Flat ink drawing, warm palette."}}, destino,
+                ejes=["cara"], idioma="en")
+            sin = list(vistos)
+            cache_fuera = all(os.path.dirname(c) == os.path.join(carpeta, "estilo")
+                              for c in normalizadas)
+            dentro = sorted(os.listdir(destino))
+    finally:
+        medios.motor_imagen = original
+    ok(len(con) == 2 and all(refs == suyas for _p, refs in con),
+       "las dos láminas reciben tus dos imágenes (y la que no existe se salta)")
+    ok(all("The 2 reference images are example illustrations" in p
+           for p, _r in con),
+       "y el prompt dice que son ejemplos del autor a los que parecerse")
+    ok(all("colour swatches" in p and "character sheet" in p for p, _r in con),
+       "y que NO copie la maqueta: ni hoja de personaje ni muestras de color")
+    ok(all("only description of how this production is drawn" not in p
+           for p, _r in con),
+       "y ya no dice que la guía escrita sea lo único que describe el dibujo")
+    ok(len(sin) == 1 and sin[0][1] == []
+       and "only description of how this production is drawn" in sin[0][0],
+       "sin imágenes, la lámina se dibuja como siempre: sin adjuntos")
+    ok(cache_fuera and dentro == ["cara.png", "objeto.png"],
+       "las copias preparadas van JUNTO a las láminas, no dentro: "
+       "la carpeta de dibujadas solo tiene láminas")
+    ok(moodboard.prompt_de_dibujo("x", {"guia": {}}, de_autor=1).count(
+        "The reference image is an example illustration") == 1,
+       "con una sola imagen la frase va en singular")
+
+    # CON TOPE: se pueden subir 24 y el generador admite menos. Pasarse no
+    # recorta: el motor se niega y se pierden las seis laminas.
+    for tope_motor, esperadas in ((None, moodboard.MAX_REFERENCIAS_AUTOR), (3, 3)):
+        vistos.clear()
+        if tope_motor:
+            Falso.max_referencias = staticmethod(lambda *_a, t=tope_motor: t)
+        medios.motor_imagen = lambda *a, **k: Falso
+        try:
+            with tempfile.TemporaryDirectory() as carpeta:
+                muchas = []
+                for indice in range(10):
+                    ruta = os.path.join(carpeta, f"{indice}.jpg")
+                    with open(ruta, "wb") as fh:
+                        fh.write(b"x")
+                    muchas.append(ruta)
+                moodboard.dibujar_desde_guia(
+                    {"guia": {"guia": "Flat ink."}},
+                    os.path.join(carpeta, "dibujadas"), ejes=["cara"],
+                    referencias=muchas)
+        finally:
+            medios.motor_imagen = original
+            if "max_referencias" in Falso.__dict__:
+                del Falso.max_referencias
+        ok(bool(vistos) and len(vistos[0][1]) == esperadas,
+           f"con 10 imágenes viajan {esperadas}: "
+           + ("el motor dice su tope y se respeta" if tope_motor
+              else "el tope de la casa"))
+
+    fuente = _fuente("app.py")
+    ok("referencias=_aportadas_del_taller(ctx)" in fuente,
+       "y app.py le pasa las imágenes que subiste con la descripción")
+
+
 def prueba_la_lamina_llega_al_prompt():
     seccion("7] la corrección de una lámina LLEGA al dibujo")
     # UN CAJON ES UNA PROMESA. Aqui el cajon no es un param: son los argumentos
@@ -400,6 +500,7 @@ def main():
     prueba_una_sola_referencia()
     prueba_la_lamina_llega_al_prompt()
     prueba_el_idioma_llega_a_la_lamina()
+    prueba_las_imagenes_del_autor_llegan_a_la_lamina()
     prueba_lo_que_devuelve_el_modelo_para_una_lamina()
     prueba_sin_frase()
     if "--con-cli" in sys.argv:

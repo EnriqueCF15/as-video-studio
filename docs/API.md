@@ -98,6 +98,8 @@ Reglas que valen para toda la API y no se repiten en cada fila:
 | | Ruta | Qué hace |
 |---|---|---|
 | `POST` | `/api/proyectos/{pid}/guion/bloques/reescribir` | Reescribe unos bloques del guion con una frase. Sin tocar el audio. |
+| `GET` | `/api/proyectos/{pid}/ideas-visuales` | Lo que el autor quiere VER: las notas de imagen de su guion. |
+| `PUT` | `/api/proyectos/{pid}/ideas-visuales` | Cambia (o quita, con texto vacío) las ideas de imagen del vídeo. |
 
 ## Voz
 
@@ -274,4 +276,4 @@ Reglas que valen para toda la API y no se repiten en cada fila:
 
 ---
 
-**160 endpoints.** Escrito por `generar_api.py` desde `app.py`.
+**162 endpoints.** Escrito por `generar_api.py` desde `app.py`.

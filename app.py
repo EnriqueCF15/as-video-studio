@@ -2827,7 +2827,10 @@ def _correr_catalogo(avisar, ctx, ajuste, peticion):
                               # y como son los personajes en este estilo, para
                               # que el reparto se describa ya convertido
                               regla_personajes=PASOS_MODULOS.p6_assets.regla_de_especie(
-                                  params.get("estilo") or {}))
+                                  params.get("estilo") or {}),
+                              # las notas de imagen del autor: quien sale aunque
+                              # la narracion lo llame «tu» (fork, 08-10-2026)
+                              ideas=_ideas_visuales().leer(ctx.proyecto))
     ctx.bitacora.anotar("catalogo_propuesto", "assets", {
         "personajes": len(ficha.get("reparto") or {}),
         "sets": len(ficha.get("sets") or {}),
@@ -4049,6 +4052,12 @@ def _direccion():
     return PASOS_MODULOS.direccion
 
 
+def _ideas_visuales():
+    if PASOS_MODULOS is None:
+        raise ErrorApi(503, f"los pasos no se han podido cargar: {ERROR_PASOS}")
+    return PASOS_MODULOS.ideas_visuales
+
+
 def _plan_de_direccion(ctx):
     """Lo dirigido, POR UNIDAD: {"S013": "a hand covers the screen"}."""
     bloque = (ctx.estado.params("assets") or {}).get("unidades") or {}
@@ -4284,7 +4293,11 @@ def _correr_direccion(avisar, ctx, ajuste, aplicar=False):
         idioma=_idioma_del_video(ctx),
         catalogo=(assets.get("catalogo")
                   or (plan_assets or {}).get("catalogo") or {}),
-        beats=(plan_assets or {}).get("beats"))
+        beats=(plan_assets or {}).get("beats"),
+        # LAS IDEAS DE IMAGEN DEL AUTOR (fork, 08-10-2026): las notas
+        # «[VISUAL: ...]» de un guion escrito a mano. Mandan sobre lo que el
+        # agente imaginaria; sin ellas el encargo sale como salia.
+        ideas=_ideas_visuales().leer(ctx.proyecto))
     ctx.bitacora.anotar("direccion", "assets", {
         "planos": ficha.get("planos"), "dirigidos": ficha.get("dirigidos"),
         "ajuste": ajuste, "aplicar": bool(aplicar)})
@@ -7476,10 +7489,13 @@ def _correr_light_referencias(avisar, ctx, encargo):
     # que ensena a rotular mal con un ejemplo dibujado.
     idioma = str(encargo.get("idioma") or "").strip().lower()
     destino = os.path.join(ctx.proyecto.raiz, "estilo", "dibujadas")
+    # Y LAS IMAGENES QUE SUBISTE, que ahora tambien van al generador y no solo
+    # a quien escribe la guia (fork, 08-10-2026; ver `dibujar_desde_guia`).
     hecho = mod.dibujar_desde_guia({"guia": bloque.get("guia")}, destino,
                                    ejes=pedidos, peticiones=peticiones,
                                    calidad=calidad, avisar=avisar,
-                                   idioma=idioma)
+                                   idioma=idioma,
+                                   referencias=_aportadas_del_taller(ctx))
     # LA LISTA NO SE PISA CUANDO SOLO SE HA REDIBUJADO UNA. Cada lamina se
     # escribe en `<eje>.png`, o sea encima de la que habia, asi que las otras
     # cinco siguen en su sitio y en la lista. Escribir aqui `hecho["rutas"]` a
@@ -9744,6 +9760,12 @@ def crear_video_light(preset_id: str, cuerpo: dict = Body(default=None)):
         nombre = f"Vídeo de {ficha_preset.get('nombre') or preset_id}"
     if not identificador(nombre):
         raise ErrorApi(400, f"'{nombre}' no da un identificador valido")
+    # LAS IDEAS DE IMAGEN, ANTES DE CREAR NADA: un texto que no cabe se contesta
+    # sin dejar en la lista un video a medias
+    ideas = _ideas_visuales().limpiar(datos.get("ideas_visuales"))
+    if len(ideas) > _ideas_visuales().TOPE_CARACTERES:
+        raise ErrorApi(400, f"las ideas de imagen ocupan {len(ideas)} caracteres "
+                            f"y el tope son {_ideas_visuales().TOPE_CARACTERES}")
     os.makedirs(raiz_proyectos(), exist_ok=True)
     base, intento = nombre[:60], 1
     while os.path.isdir(os.path.join(raiz_proyectos(), identificador(nombre))):
@@ -9831,6 +9853,15 @@ def _sembrar_video_light(ctx, datos):
     # HECHOS y esto es COMO contarlos --, y no se pisa lo que ya hubiera escrito.
     if datos.get("indicaciones") is not None:
         guion["prompt_general"] = str(datos["indicaciones"] or "")
+    # LAS IDEAS DE IMAGEN DEL AUTOR (fork, 08-10-2026): lo que quiere VER, las
+    # notas «[VISUAL: ...]» de su guion. A un fichero y no a un param: ver la
+    # cabecera de `pasos/ideas_visuales.py` (un param entraria en la firma de
+    # cada plano).
+    if datos.get("ideas_visuales") is not None:
+        try:
+            _ideas_visuales().guardar(ctx.proyecto, datos["ideas_visuales"])
+        except ValueError as fallo:
+            raise ErrorApi(400, f"ideas_visuales: {fallo}")
     if ingesta:
         _validar_params("ingesta", ingesta, ctx)
         ctx.estado.actualizar_params("ingesta", ingesta)
@@ -9865,6 +9896,37 @@ def _fuentes():
     if PASOS_MODULOS is None:
         raise ErrorApi(503, f"los pasos no se han podido cargar: {ERROR_PASOS}")
     return PASOS_MODULOS.fuentes
+
+
+# LAS IDEAS DE IMAGEN DEL AUTOR (fork, 08-10-2026). Van junto al material pero
+# NO son un paso ni un param: las leen `catalogo_visual` y `direccion` cuando
+# corren, y cambiarlas no deja nada obsoleto. Ver `pasos/ideas_visuales.py`.
+
+@app.get("/api/proyectos/{pid}/ideas-visuales")
+def leer_ideas_visuales(pid: str):
+    """Lo que el autor quiere VER: las notas de imagen de su guion."""
+    ctx = contexto(pid)
+    texto = _ideas_visuales().leer(ctx.proyecto)
+    return {"texto": texto, "caracteres": len(texto),
+            "tope": _ideas_visuales().TOPE_CARACTERES}
+
+
+@app.put("/api/proyectos/{pid}/ideas-visuales")
+def guardar_ideas_visuales(pid: str, cuerpo: dict = Body(default=None)):
+    """Cambia (o quita, con texto vacío) las ideas de imagen del vídeo.
+
+    No rehace nada por sí sola: valen para la próxima vez que se dirijan los
+    planos o se lea el reparto.
+    """
+    ctx = contexto(pid)
+    datos = _cuerpo(cuerpo)
+    try:
+        texto = _ideas_visuales().guardar(ctx.proyecto, datos.get("texto"))
+    except ValueError as fallo:
+        raise ErrorApi(400, str(fallo))
+    ctx.bitacora.anotar("ideas_visuales", "assets", {"caracteres": len(texto)})
+    return {"texto": texto, "caracteres": len(texto),
+            "tope": _ideas_visuales().TOPE_CARACTERES}
 
 
 @app.get("/api/estadisticas")

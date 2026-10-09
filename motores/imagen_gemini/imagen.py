@@ -152,6 +152,16 @@ def modelo_para(quality="low", uso="plano"):
     return modelo, resolucion
 
 
+def max_referencias(quality="low", uso="plano"):
+    """Cuantas imagenes de entrada admite el modelo que dibujaria esto. -> int
+
+    Para quien quiere mandar «todas las que quepan» (las imagenes del autor en
+    las laminas de un estilo, fork 08-10-2026) sin enterarse por el error.
+    """
+    modelo, _resolucion = modelo_para(quality, uso)
+    return int(MODELOS[modelo]["max_refs"])
+
+
 def _cliente():
     """El cliente de Vertex (uno por proyecto y ubicacion). Nunca AI Studio."""
     try:
