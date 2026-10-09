@@ -947,14 +947,21 @@ def separar_intro(secciones, bloques, cfg):
         return secciones
     por_id = {b["id"]: b for b in bloques}
     primera = secciones[0]
-    duraciones = [_segundos_estimados(por_id[b]["texto"], cfg) for b in primera["bloques"]]
-    if sum(duraciones) <= INTRO_MAXIMO_S or len(duraciones) < 2:
-        return secciones
-    acumulado, mejor, distancia = 0.0, 1, None
-    for corte in range(1, len(duraciones)):
-        acumulado += duraciones[corte - 1]
-        if distancia is None or abs(acumulado - INTRO_OBJETIVO_S) < distancia:
-            mejor, distancia = corte, abs(acumulado - INTRO_OBJETIVO_S)
+    # `intro_hasta`: el ULTIMO bloque del gancho, dicho a mano. La cuenta por
+    # segundos estimados es una apuesta: en el video de las 8 horas cortaba una
+    # frase antes del final del gancho («...nine years old.», 09-10-2026).
+    hasta = str((cfg or {}).get("intro_hasta") or "").strip()
+    if hasta in primera["bloques"][:-1]:
+        mejor = primera["bloques"].index(hasta) + 1
+    else:
+        duraciones = [_segundos_estimados(por_id[b]["texto"], cfg) for b in primera["bloques"]]
+        if sum(duraciones) <= INTRO_MAXIMO_S or len(duraciones) < 2:
+            return secciones
+        acumulado, mejor, distancia = 0.0, 1, None
+        for corte in range(1, len(duraciones)):
+            acumulado += duraciones[corte - 1]
+            if distancia is None or abs(acumulado - INTRO_OBJETIVO_S) < distancia:
+                mejor, distancia = corte, abs(acumulado - INTRO_OBJETIVO_S)
     nuevas = [{"bloques": primera["bloques"][:mejor]},
               {"bloques": primera["bloques"][mejor:]}] + [
         {"bloques": s["bloques"]} for s in secciones[1:]]

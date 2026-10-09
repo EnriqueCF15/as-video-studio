@@ -352,9 +352,13 @@ def _relleno_de_sala(pcm, desde_seg, hasta_seg, duracion, reserva=None, muestras
         return b""
     muestras = muestras if muestras is not None else _muestras(pcm)
     propia = _semilla_de_sala(muestras, desde_seg, hasta_seg)
-    piso = reserva[2] if reserva else (propia[2] if propia else 0.0)
-    if piso <= SILENCIO_DIGITAL:
+    # CEROS solo si ESTA pausa calla con ceros. Mirando la toma entera bastaba
+    # una pausa muda para rellenar todas con ceros, y en una voz con soplido el
+    # fondo se cortaba y volvia: «un silencio chiquito y se retoma, y ahi se nota
+    # la estatica» (Enrique, 09-10-2026). `reserva` ya llega sin las mudas.
+    if propia and propia[2] <= SILENCIO_DIGITAL:
         return b"\x00" * necesarios
+    piso = reserva[2] if reserva else (propia[2] if propia else 0.0)
     aceptable = min(TECHO_SALA, max(piso * MARGEN_SALA, SILENCIO_SALA))
     elegida = None
     for candidata in (propia, reserva):
@@ -424,9 +428,13 @@ def espaciar(wav, palabras, reparto, escenas, hueco_minimo=1.0):
 
     # el trozo mas callado de TODAS las pausas: el suelo de la toma, y la muestra
     # de reserva para las pausas cuyo trozo mas callado aun lleva voz
+    # La reserva, sin las pausas mudas: el fondo de una voz con soplido es su
+    # soplido. Pero «callado» se mide con TODAS: si la unica pausa con fondo
+    # fuera una respiracion, el umbral subiria hasta ella y le meteria aire.
     semillas = [s for s in (_semilla_de_sala(muestras, d, h) for _, d, h in uniones) if s]
-    reserva = min(semillas, key=lambda s: s[2]) if semillas else None
-    callado = max(CALLADO, (reserva[2] if reserva else 0.0) * 4.0)
+    con_fondo = [s for s in semillas if s[2] > SILENCIO_DIGITAL]
+    reserva = min(con_fondo, key=lambda s: s[2]) if con_fondo else None
+    callado = max(CALLADO, min((s[2] for s in semillas), default=0.0) * 4.0)
 
     # Cortes: (instante original, silencio a insertar, pausa natural). Una union
     # sin silencio claro se queda como esta (ver _punto_de_corte).

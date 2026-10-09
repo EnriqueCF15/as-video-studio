@@ -1505,6 +1505,23 @@ def prueba_espaciar():
     igual(len(desplazamientos), 1, "sin silencio claro en la union no se mete aire")
     ok(desplazamientos[0]["desde"] >= 2.5, "y en la otra union, si")
 
+    # CADA PAUSA CON SU FONDO (09-10-2026): que una pausa de la toma sea muda no
+    # puede rellenar con ceros las que llevan soplido: el fondo se cortaria.
+    wav = _toma([(0.0, 1.0, 9000), (1.0, 1.3, 0), (1.3, 2.5, 9000), (2.5, 2.9, 40),
+                 (2.9, 4.0, 9000)])
+    nuevo, desplazamientos = voz.espaciar(wav, palabras, {"B01": [{"s": 0.0, "e": 1.0}],
+                                                          "B02": [{"s": 1.3, "e": 2.5}],
+                                                          "B03": [{"s": 2.9, "e": 4.0}]},
+                                          tres, hueco_minimo=1.0)
+    igual(len(desplazamientos), 2, "las dos uniones llevan aire")
+    primero = desplazamientos[0]["retardo"]
+    mudo = _valores(nuevo, desplazamientos[0]["desde"], desplazamientos[0]["desde"] + 0.6)
+    ok(all(v == 0 for v in mudo), "la pausa muda se alarga con silencio puro")
+    corte = desplazamientos[1]["desde"] + primero
+    soplido = _valores(nuevo, corte + 0.02, corte + 0.55)
+    ok(sum(1 for v in soplido if v == 0) < len(soplido) * 0.2 and max(map(abs, soplido)) <= 40,
+       "y la del soplido, con su mismo soplido: el fondo no se corta")
+
 
 # --------------------------------------------------- 6. p6._capa_vectorial
 

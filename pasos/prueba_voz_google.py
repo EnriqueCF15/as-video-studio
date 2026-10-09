@@ -374,6 +374,23 @@ def prueba_tramos():
     igual(a_mano[1]["tramo"], "intro", "lo fijado a mano manda")
     igual(p4_voz.separar_intro(secciones, bloques, {"estilos": {"cuerpo": CUERPO}}),
           secciones, "sin estilo de intro no se corta nada")
+    hasta = secciones[0]["bloques"][3]
+    a_medida = p4_voz.separar_intro(secciones, bloques, dict(cfg, intro_hasta=hasta))
+    igual(a_medida[0]["bloques"][-1], hasta, "con intro_hasta el gancho acaba en ESE bloque")
+    igual(sum(len(s["bloques"]) for s in a_medida), len(bloques), "tambien sin perder bloques")
+    igual(p4_voz.separar_intro(secciones, bloques, dict(cfg, intro_hasta="B99"))[0]["bloques"],
+          partidas[0]["bloques"], "un intro_hasta que no esta en la primera seccion se ignora")
+
+    # 3.1 Flash se apaga en peticiones largas: piezas cortas y PARECIDAS
+    frases = " ".join(f"Sentence number {i} is here." for i in range(60))
+    partes = goo.trocear_equilibrado(frases, 700)
+    comprobar(len(partes) == len(goo.trocear_por_bytes(frases, 700)) and
+              max(map(len, partes)) - min(map(len, partes)) < 60,
+              f"troceo equilibrado: mismas piezas, de tamano parecido ({[len(p) for p in partes]})")
+    comprobar(all(len(p.encode()) <= 700 for p in partes) and " ".join(partes) == frases,
+              "sin pasar del tope ni perder texto")
+    igual(goo.BYTES_PIEZA_POR_MODELO.get("gemini-3.1-flash-tts-preview"), 700,
+          "3.1 Flash va en piezas de 700 bytes")
 
 
 def prueba_toma_y_regrabado(base):
