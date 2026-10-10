@@ -368,6 +368,14 @@ def de_escena(escena, cap_linea=CAP_LINEA, idioma=None, texto="",
         # ninguno: miente sobre lo unico que promete.
         return []
     t_in = float(escena.get("t_in") or 0.0)
+    if not idioma:
+        # sin idioma se leia con las tablas de los dos y «once» salia «11» en
+        # ingles: el de la frase del plano es mejor que ninguno (fork, 10-10-2026)
+        try:
+            from . import medios                               # noqa: PLC0415
+        except ImportError:                                    # pragma: no cover
+            import medios                                      # noqa: PLC0415
+        idioma = medios.idioma_de(" ".join(palabras), defecto=None)
     rangos = list(tramos(palabras, cap_linea=cap_linea, cap_trozo=cap_trozo,
                          intocables=_cifras_de(palabras, idioma)))
     dibujados = [limpiar_texto(palabras[a:b], idioma) for a, b in rangos]

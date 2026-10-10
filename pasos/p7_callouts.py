@@ -1383,6 +1383,13 @@ def ejecutar(proyecto, params, avisar=None, unidades=None):
         os.makedirs(ruta, exist_ok=True)
 
     escenas = plan.get("escenas") or []
+    # EL IDIOMA DE LOS SUBTITULOS, del texto del video si nadie lo ha puesto:
+    # los params de callouts no traen `idioma`, asi que llegaba None y
+    # `medios.cifras_en` leia con las tablas de los DOS idiomas. En un video en
+    # ingles, «once» (una vez) salia «11» (fork, 10-10-2026).
+    if not p.get("idioma"):
+        p["idioma"] = medios.idioma_de(
+            " ".join(str(e.get("narracion") or "") for e in escenas), defecto=None)
     pedidas = set(unidades) if unidades is not None else None
     movimiento = medios.motor("render_video/movimiento.py")
     # EL FORMATO DEL VIDEO, del plan: el cuadro de salida, el

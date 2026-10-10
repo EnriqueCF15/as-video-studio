@@ -3766,6 +3766,29 @@ def prueba_subtitulos():
           "25 people",
           "pero «twenty five» NO es el ano 2005: la segunda mitad de un ano "
           "tiene que valer diez o mas")
+    # fork, 10-10-2026: lo que salio mal en el video de historia
+    igual(subtitulos.limpiar_texto("It's three forty-seven in the afternoon.".split(), "en"),
+          "It's 3:47 in the afternoon.",
+          "LA HORA dicha a la inglesa es una hora, no la suma 3 + 47 = «50»")
+    igual(subtitulos.limpiar_texto("around twelve fifty B.C.".split(), "en"),
+          "around 1250 B.C.",
+          "y con «B.C.» detras es un ano antes de Cristo, no las 12:50")
+    igual(subtitulos.limpiar_texto("By the eighteen thirties, in the early eighteen "
+                                   "hundreds".split(), "en"),
+          "By the 1830s, in the early 1800s",
+          "LA DECADA y el siglo, enteros: no «18 thirties» ni «18 hundreds»")
+    igual(subtitulos.limpiar_texto("And once you know that story".split(), "en"),
+          "And once you know that story",
+          "«once» en ingles es «una vez»: con el idioma del video no es el 11")
+    igual(subtitulos.limpiar_texto("And once you know that story".split()),
+          "And 11 you know that story",
+          "(sin idioma lee con las dos tablas: por eso hay que pasarlo)")
+    escena_once = {"narracion": "And once you know that story, you won't look back.",
+                   "t_in": 0.0, "marcas": [[k * 0.3, k * 0.3 + 0.25] for k in range(10)]}
+    ok(all("11" not in x["texto"] for x in subtitulos.de_escena(escena_once)),
+       "y de_escena sin idioma lo saca de la propia frase: no sale «11»")
+    igual(subtitulos.limpiar_texto("from nine to thirteen".split(), "en"),
+          "from 9 to 13", "lo de siempre sigue igual")
     igual(subtitulos.limpiar_texto("UNC five five three seven.".split(), "en"),
           "UNC 5537.",
           "LA SERIE DE DIGITOS es un identificador dictado, no una suma: el "
