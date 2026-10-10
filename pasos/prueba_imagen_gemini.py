@@ -193,6 +193,14 @@ def prueba_generar():
         finally:
             errors.APIError = clase_real
         igual(len(doble.llamadas), 2, "un 429 se espera y se reintenta")
+        doble = _ClienteDoble([_APIError(499, "CANCELLED"), respuesta(png(1264, 848))])
+        errors.APIError = _APIError
+        try:
+            _img, meta = con_cliente(doble, lambda: gem.generar("x", [ref]))
+        finally:
+            errors.APIError = clase_real
+        igual(len(doble.llamadas), 2,
+              "un 499 (Flex cancela la peticion en cola) se reintenta, no tumba la tanda")
 
         doble = _ClienteDoble([sin_imagen(), respuesta(png(1264, 848))])
         _img, meta = con_cliente(doble, lambda: gem.generar("x", [ref]))

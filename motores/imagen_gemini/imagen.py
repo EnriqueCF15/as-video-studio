@@ -424,7 +424,9 @@ def generar(prompt, referencias, *, quality="low", tamano="apaisado", api_key=No
                     "Google Cloud no deja cobrar en este proyecto (credito agotado o "
                     "facturacion parada). NO actives la cuenta de pago sin revisarlo: "
                     f"mira Facturacion en la consola. {ultimo}") from fallo
-            if codigo in (429, 500, 502, 503, 504) and intento < reintentos:
+            # 499 CANCELLED: Flex cancela a veces una peticion en cola (09-10,
+            # la 219 de 220 tumbo la tanda entera): se reintenta como un 503.
+            if codigo in (429, 499, 500, 502, 503, 504) and intento < reintentos:
                 espera = min(ESPERA_MAXIMA_S, 2.0 ** (intento + 2) + random.uniform(0, 2))
                 if codigo == 429:
                     _pausar(espera)       # el freno es de todas las llamadas
