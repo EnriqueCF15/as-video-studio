@@ -423,6 +423,14 @@ POR_FASE = {
 }
 
 
+#: Las fases que NO suben al suelo del canal (Opus «xhigh»). Las dos van una vez
+#: por imagen corregida, asi que su coste se multiplica por el repaso entero:
+#: medido el 12-10-2026, el corrector tarda ~66 s por plano en Opus xhigh y el
+#: revisor ~33 s, y un repaso de 40 imagenes eran 6-8 % del cupo semanal del
+#: plan Pro. Lo pidio el canal: revisor en Sonnet y corrector en Opus «alto».
+FASES_SIN_SUELO = frozenset({"revisor_imagen", "corrector_imagen"})
+
+
 def _orden_modelo(nombre):
     """Cuanto sube un modelo en la escala. Los ids ya van de menos a mas."""
     return MODELOS.index(nombre) if nombre in MODELOS else len(MODELOS)
@@ -445,8 +453,17 @@ def por_defecto_de(fase):
     alguien depurando por que su seleccion no se aplica.
 
     Volver al reparto por fase es devolver aqui `dict(ficha)`.
+
+    SALVO LAS FASES DE `FASES_SIN_SUELO`, que corren con su recomendacion tal
+    cual: son las que se llaman UNA VEZ POR IMAGEN corregida, y ahi el suelo
+    del canal se multiplica por cada plano del repaso.
     """
     ficha = POR_FASE.get(str(fase))
+    if ficha and str(fase) in FASES_SIN_SUELO:
+        return {"modelo": ficha["modelo"], "esfuerzo": ficha["esfuerzo"],
+                "porque": ficha["porque"] + " (fuera del suelo del canal: va una "
+                                            "vez por imagen corregida)",
+                "recomendado": dict(ficha)}
     modelo, esfuerzo = MODELO_POR_DEFECTO, ESFUERZO_POR_DEFECTO
     porque = f"el canal corre todo en {modelo} con esfuerzo {esfuerzo}"
     if ficha:

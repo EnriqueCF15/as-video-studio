@@ -163,6 +163,16 @@ def prueba_modos():
     ok(not p6_assets._toca_revisar({}, "nota", False), "lo que no se ha pedido no se revisa")
     ok(p6_assets._toca_revisar({"revisor": "todo"}, "", True), "«todo» revisa toda imagen")
     ok(not p6_assets._toca_revisar({"revisor": "no"}, "nota", True), "«no» lo apaga")
+    revisa = cli_claude.por_defecto_de("revisor_imagen")
+    igual((revisa["modelo"], revisa["esfuerzo"]), ("sonnet", "medium"),
+          "el revisor va en sonnet: no sube al suelo del canal (12-10)")
+    corrige = cli_claude.por_defecto_de("corrector_imagen")
+    igual((corrige["modelo"], corrige["esfuerzo"]), ("opus", "high"),
+          "el corrector va en opus alto, no xhigh")
+    dirige = cli_claude.por_defecto_de("direccion")
+    igual((dirige["modelo"], dirige["esfuerzo"]),
+          (cli_claude.MODELO_POR_DEFECTO, cli_claude.ESFUERZO_POR_DEFECTO),
+          "el resto de fases sigue con el suelo del canal")
     ok(p6_assets._corrector_obligatorio({}), "por defecto el corrector es obligatorio")
     ok(not p6_assets._corrector_obligatorio({"corrector": "si_puede"}),
        "«si_puede» vuelve a lo de antes")
