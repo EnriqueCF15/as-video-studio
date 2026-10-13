@@ -66,6 +66,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import cartelas  # noqa: E402
 import corrector  # noqa: E402
+import revisor  # noqa: E402
 import cta  # noqa: E402
 import encuadres  # noqa: E402
 import estadisticas  # noqa: E402
@@ -712,9 +713,196 @@ def _ultima_nota(valor):
     return {}
 
 
+def _nota_vigente(valor):
+    """El texto de la nota que manda AHORA sobre un plano: la ultima.
+
+    Era `_texto_feedback`, que une TODO el historial con « | ». Con el corrector
+    funcionando el agente lo desenredaba; sin el, el generador recibia las
+    cuatro vueltas a la vez y se contradecian: medido el 12-10-2026 en S042, la
+    primera nota pedia «tres filas de diez casillas», la tercera «una fila
+    numerada» y la cuarta «simbolos», todas juntas al final del prompt, y salio
+    mal cuatro veces. Con solo la ultima, a la primera. Es lo que `_ultima_nota`
+    ya decia que habia que hacer.
+    """
+    if isinstance(valor, list):
+        return str(_ultima_nota(valor).get("texto") or "").strip()
+    return _texto_feedback(valor)
+
+
 def _corrector_activo(p):
     """Si este proyecto usa el corrector. Se apaga con `corrector: "no"`."""
     return str((p or {}).get("corrector") or "agente").strip().lower() != "no"
+
+
+def _corrector_obligatorio(p):
+    """Si un fallo del corrector PARA la tanda en vez de dibujar sin el.
+
+    Por defecto si: lo pidio el canal el 12-10-2026, despues de una tarde
+    entera de imagenes rehechas sin filtro porque la sesion del CLI habia
+    caducado y el corrector fallaba en silencio. `corrector: "si_puede"`
+    vuelve a lo de antes (si falla, se dibuja por el camino de siempre).
+    """
+    return str((p or {}).get("corrector") or "agente").strip().lower() != "si_puede"
+
+
+def _revisor_modo(p):
+    """Que imagenes mira el revisor (revisor.py) despues de dibujarlas.
+
+    «notas» (por defecto): las que se rehacen porque alguien escribio una nota,
+    que es donde se repetian las vueltas. «todo»: cualquier imagen nueva (en
+    una tanda de 220 planos son 220 llamadas al CLI). «no»: apagado.
+    """
+    modo = str((p or {}).get("revisor") or "notas").strip().lower()
+    return modo if modo in ("notas", "todo", "no") else "notas"
+
+
+def _toca_revisar(p, nota, pedida):
+    modo = _revisor_modo(p)
+    if modo == "no":
+        return False
+    return True if modo == "todo" else bool(nota and pedida)
+
+
+def _necesita_claude(escenas, p, unidades, forzar):
+    """Si esta tanda va a pedirle algo a Claude al dibujar. -> bool
+
+    Lo pide si hay algun plano pedido con nota (corrector y revisor) o si el
+    revisor mira todo y hay algo que dibujar. Sin eso no se prueba nada: una
+    tanda que solo conserva no tiene por que esperar a una cuenta.
+    """
+    corrector_manda = _corrector_activo(p) and _corrector_obligatorio(p)
+    modo = _revisor_modo(p)
+    for escena in escenas:
+        uid = f"escena:{escena['id']}"
+        pedida = (uid in set(unidades) if unidades is not None else bool(forzar))
+        if not pedida:
+            continue
+        if modo == "todo":
+            return True
+        nota = _nota_vigente(_ajustes_unidad(p, uid).get("feedback"))
+        if nota and (corrector_manda or modo != "no"):
+            return True
+    return False
+
+
+def _comprobar_claude(escenas, p, unidades, forzar, avisar=None):
+    """ANTES DE DIBUJAR NADA: si el filtro no puede trabajar, no se dibuja.
+
+    El corrector y el revisor son lo que evita pagar imagenes en vano, y los dos
+    hablan con Claude. Si ninguna cuenta contesta, la tanda se para aqui, sin
+    gastar ni una imagen, y dice como arreglarlo.
+    """
+    if not _necesita_claude(escenas, p, unidades, forzar):
+        return
+    if avisar:
+        avisar(0.34, "comprobando que Claude contesta (corrector y revisor)", None)
+    contesta, motivo = revisor.claude_contesta(
+        para="el filtro de las imagenes, antes de dibujar")
+    if not contesta:
+        raise RuntimeError(
+            "Claude no contesta, y sin el no se rehace ninguna imagen: el "
+            "corrector y el revisor son el filtro que evita pagarlas en vano. "
+            "No se ha dibujado nada ni gastado un centimo. Entra en ⚙ → «Claude "
+            "CLI» → «Entrar» (o «Probar» si ya hay cuenta) y vuelve a lanzarlo. "
+            f"Detalle: {motivo}"[:900])
+
+
+def _bloque_revision(veredicto):
+    """Lo que se le añade al prompt en el reintento: el arreglo del revisor."""
+    return ("ART REVIEW OF THE PREVIOUS ATTEMPT: it was rejected. Fix ONLY "
+            "this and keep everything else exactly as described above: "
+            + str(veredicto.get("arreglo") or "").strip())
+
+
+def _revisar_y_reintentar(sid, escena, destino, prompt, referencias, p, plan,
+                          proyecto, nota, meta, tamano, avisar=None):
+    """Mira la imagen recien dibujada y, si suspende, la rehace UNA vez.
+
+    -> (prompt con el que quedo, meta con la ficha del revisor dentro)
+
+    Un solo reintento, y es deliberado: si con el arreglo delante sigue mal, el
+    problema no se arregla insistiendo (suele ser una hoja de personaje mal
+    dibujada, o algo que el generador no sabe contar). La imagen se queda --ya
+    esta pagada-- y el fallo se dice en el resumen de la tanda.
+    """
+    estilo = "\n".join("  " + linea for linea in guia_escrita(p["estilo"]))
+    especie = regla_de_especie(p["estilo"])
+    antes = next((r.get("ruta") for r in referencias
+                  if r.get("papel") == "rechazada"), None)
+    titulo = str(plan.get("titulo") or "")
+    cwd = getattr(proyecto, "raiz", None)
+
+    def mirar():
+        return revisor.revisar(destino, nota, escena, estilo, especie,
+                               titulo=titulo, antes=antes, cwd=cwd,
+                               ajuste=p.get("ajuste_revisor"), avisar=avisar)
+
+    primero = mirar()
+    ficha = {"intentos": [primero], "reintento": False}
+    if primero.get("error") or primero.get("ok"):
+        ficha.update(ok=bool(primero.get("ok")), error=primero.get("error"),
+                     fallos=[])
+        return prompt, dict(meta, revisor=ficha)
+
+    if avisar:
+        avisar(None, f"{sid}: el revisor la suspende ({'; '.join(primero['fallos'])[:200]}); "
+                     f"se rehace una vez con el arreglo", None)
+    prompt_nuevo = prompt + "\n\n" + _bloque_revision(primero)
+    otra = _producir_imagen(sid, prompt_nuevo, [r["ruta"] for r in referencias],
+                            destino, p, rehacer=True, tamano=tamano)
+    segundo = mirar()
+    ficha["intentos"].append(segundo)
+    ficha.update(reintento=True, ok=bool(segundo.get("ok")),
+                 error=segundo.get("error"),
+                 fallos=([] if segundo.get("ok")
+                         else list(segundo.get("fallos") or primero.get("fallos") or [])))
+    nueva = dict(otra, revisor=ficha,
+                 coste=round(float(meta.get("coste") or 0.0)
+                             + float(otra.get("coste") or 0.0), 6))
+    if meta.get("corrector"):
+        nueva["corrector"] = meta["corrector"]
+    return prompt_nuevo, nueva
+
+
+def resumen_revision(resultados):
+    """Lo que hizo el revisor en esta tanda, para el resumen. -> dict
+
+    Solo cuenta las imagenes generadas AHORA: una ficha conservada puede traer
+    el veredicto de una tanda anterior, y contarlo diria que se reviso hoy.
+    """
+    revisadas, bien, rehechas, mal, sin_revisar = 0, 0, 0, [], []
+    for uid, ficha in sorted((resultados or {}).items()):
+        veredicto = (ficha or {}).get("revisor")
+        if not veredicto or ficha.get("origen") not in ("generada", "cache"):
+            continue
+        sid = uid.split(":", 1)[-1]
+        if veredicto.get("error"):
+            sin_revisar.append({"id": sid, "error": veredicto["error"]})
+            continue
+        revisadas += 1
+        rehechas += 1 if veredicto.get("reintento") else 0
+        if veredicto.get("ok"):
+            bien += 1
+        else:
+            mal.append({"id": sid, "fallos": list(veredicto.get("fallos") or [])})
+    return {"revisadas": revisadas, "bien": bien, "rehechas": rehechas,
+            "siguen_mal": mal, "sin_revisar": sin_revisar}
+
+
+def frase_revision(revision):
+    """Una linea para el resumen de la tanda; vacia si no se reviso nada."""
+    if not revision or not (revision["revisadas"] or revision["sin_revisar"]):
+        return ""
+    trozos = [f"revisor: {revision['bien']} de {revision['revisadas']} bien"]
+    if revision["rehechas"]:
+        trozos.append(f"{revision['rehechas']} rehechas una vez")
+    if revision["siguen_mal"]:
+        trozos.append("siguen con fallos " + ", ".join(
+            m["id"] for m in revision["siguen_mal"]))
+    if revision["sin_revisar"]:
+        trozos.append("sin revisar " + ", ".join(
+            m["id"] for m in revision["sin_revisar"]))
+    return "; ".join(trozos)
 
 
 def _inventario_para_nota(escena, plan, dirs, p, trabajo, notas, proyecto):
@@ -888,7 +1076,7 @@ def _adjuntos_de_la_nota(escena, dirs, p, notas=None):
     ajustes = _ajustes_unidad(p, f"escena:{escena['id']}")
     crudo = ajustes.get("feedback")
     nota = _ultima_nota(crudo)
-    texto = _texto_feedback(crudo)
+    texto = _nota_vigente(crudo)
     if not nota and texto:
         # el camino rapido manda solo el texto: la nota entera esta en el repaso
         nota = _nota_del_repaso_para(escena["id"], texto, notas) or {"texto": texto}
@@ -3211,6 +3399,9 @@ def _generar_escenas(plan, dirs, p, trabajo, toca, unidades, resultados, avisar,
     if recolocadas["movidas"]:
         avisar(0.34, "%d imagenes recolocadas: el corte les cambio el numero"
                      % recolocadas["movidas"], None)
+    # Y ANTES DE DIBUJAR NADA, que el filtro pueda trabajar: si Claude no
+    # contesta, la tanda se para aqui sin gastar (ver `_comprobar_claude`).
+    _comprobar_claude(escenas, p, unidades, forzar, avisar)
     total = len(escenas)
     cadenas = _cuantas_cadenas(p, escenas)
     orden = {escena["id"]: indice for indice, escena in enumerate(escenas)}
@@ -3359,7 +3550,8 @@ def _generar_escenas(plan, dirs, p, trabajo, toca, unidades, resultados, avisar,
                 referencias = _referencias_escena(
                     escena, plan, dirs, p, dirs["cache"], previas,
                     anteriores=orden_cadena, notas=notas_repaso)
-                nota_texto = _texto_feedback(
+                # LA NOTA VIGENTE, no el historial entero: ver `_nota_vigente`
+                nota_texto = _nota_vigente(
                     _ajustes_unidad(p, uid).get("feedback"))
                 escena_final = escena
                 corregido = None
@@ -3372,6 +3564,16 @@ def _generar_escenas(plan, dirs, p, trabajo, toca, unidades, resultados, avisar,
                     corregido = _corregir_con_agente(
                         escena, plan, dirs, p, trabajo, notas_repaso, proyecto,
                         nota_texto, avisar)
+                    # SIN CORRECTOR NO SE DIBUJA. Antes se seguia por el camino
+                    # de siempre y nadie se enteraba (ver `_corrector_obligatorio`).
+                    if (corregido and corregido.get("error")
+                            and _corrector_obligatorio(p)):
+                        raise RuntimeError(
+                            f"{sid}: el corrector no ha podido preparar la "
+                            f"correccion ({str(corregido['error'])[:200]}). No se "
+                            f"ha dibujado para no gastar en vano: comprueba que "
+                            f"Claude contesta (⚙ → «Claude CLI» → «Probar») y "
+                            f"vuelve a lanzarlo.")
                 if corregido and not corregido.get("error"):
                     escena_final = dict(escena, prompt=corregido["escena"],
                                         personajes=corregido["personajes"])
@@ -3402,6 +3604,8 @@ def _generar_escenas(plan, dirs, p, trabajo, toca, unidades, resultados, avisar,
                 # 14 planos con la firma SIN cambiar y su PNG en el banco,
                 # 0,55 $. Es el ultimo resto de la deduccion vieja que el
                 # comentario de `_generar_escenas` da por retirada.
+                tamano = p2_brief.comun.ficha_formato(
+                    plan.get("formato"))["tamano_imagen"]
                 meta = _producir_imagen(sid, prompt,
                                         [r["ruta"] for r in referencias],
                                         destino, p,
@@ -3414,13 +3618,20 @@ def _generar_escenas(plan, dirs, p, trabajo, toca, unidades, resultados, avisar,
                                         # al tamano del formato del video: un
                                         # plano vertical se PIDE vertical, no
                                         # se recorta de uno apaisado
-                                        tamano=p2_brief.comun.ficha_formato(
-                                            plan.get("formato"))["tamano_imagen"])
+                                        tamano=tamano)
                 if corregido:
                     meta = dict(meta, corrector={
                         k: corregido.get(k) for k in
                         ("alcance", "personajes", "escena", "referencias",
                          "porque", "error", "modelo", "esfuerzo", "segundos")})
+                # EL REVISOR: mira lo que ha salido antes de darlo por bueno y,
+                # si suspende, lo rehace UNA vez con su arreglo (revisor.py).
+                # No en lo adoptado: eso no se ha dibujado ahora.
+                if (meta.get("origen") in ("generada", "cache")
+                        and _toca_revisar(p, nota_texto, pedida)):
+                    prompt, meta = _revisar_y_reintentar(
+                        sid, escena_final, destino, prompt, referencias, p,
+                        plan, proyecto, nota_texto, meta, tamano, avisar)
             # Una cartela NO entra en la continuidad: las referencias de
             # continuidad existen para que la paleta y el grosor de linea no
             # deriven de un plano al siguiente, y pasarle al generador una
@@ -3974,7 +4185,7 @@ def _notas_del_repaso(proyecto):
 def _texto_de_la_nota(escena, p, notas=None):
     """El texto de la nota vigente sobre este plano, venga por donde venga."""
     crudo = _ajustes_unidad(p, f"escena:{escena['id']}").get("feedback")
-    return _texto_feedback(crudo)
+    return _nota_vigente(crudo)
 
 
 def _nota_del_repaso_para(sid, texto, notas):
@@ -4481,6 +4692,15 @@ def ejecutar(proyecto, params, avisar=None, unidades=None, solo_assets=False,
             f"({camaras['planos_repetidos']} seguidos de la misma familia), "
             f"{generadas} imagenes nuevas, {coste:.3f} USD"),
     }
+    # LO QUE DIJO EL REVISOR, en el resumen y no solo en cada ficha: lo que
+    # sigue mal despues del reintento lo tiene que ver quien lanzo la tanda.
+    revision = resumen_revision(resultados)
+    if revision["revisadas"] or revision["sin_revisar"]:
+        salidas["revisor"] = revision
+        salidas["resumen"] += "; " + frase_revision(revision)
+        for malo in revision["siguen_mal"]:
+            avisar(None, f"AVISO: {malo['id']} sigue con fallos tras el reintento: "
+                         + "; ".join(malo["fallos"])[:300], None)
     avisar(1.0, salidas["resumen"])
     # Los planos que este recorte ha dejado fuera. Van en el resultado para que
     # quien tiene el estado en la mano los DES-DECLARE: un id de plano es

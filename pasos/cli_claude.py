@@ -411,6 +411,14 @@ POR_FASE = {
                                    "que en la escena anterior» exige mirar las "
                                    "imagenes y elegir bien que se adjunta; una "
                                    "eleccion mala se paga en imagenes"},
+    # MIRAR LA IMAGEN YA DIBUJADA contra la nota y la guia del estilo. Es leer
+    # una imagen y una lista, no razonar largo: en la matriz, medio. Pero cada
+    # suspenso equivocado paga una imagen de mas y cada aprobado equivocado lo
+    # tiene que descubrir una persona, asi que tampoco bajo (pasos/revisor.py).
+    "revisor_imagen": {"modelo": "sonnet", "esfuerzo": "medium",
+                       "porque": "comparar una imagen con la nota y la guia "
+                                 "del estilo: contar, leer rotulos y buscar lo "
+                                 "prohibido; un juicio corto, no un plan"},
 
 }
 
