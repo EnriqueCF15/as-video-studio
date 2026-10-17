@@ -108,6 +108,8 @@ Reglas que valen para toda la API y no se repiten en cada fila:
 | `POST` | `/api/proyectos/{pid}/voz/describir` | Describe como quieres que suene y devuelve voz y mandos propuestos. |
 | `POST` | `/api/proyectos/{pid}/voz/previsualizar` | Sintetiza unos segundos con estos mandos de voz para escucharlos. |
 | `POST` | `/api/proyectos/{pid}/voz/secciones/{seccion_id}/regrabar` | Regraba una seccion de la toma, con microcambio si se pide. |
+| `POST` | `/api/proyectos/{pid}/voz/bloques/probar` | Graba tomas de prueba de unos bloques (con sus vecinos), SIN tocar la voz. |
+| `POST` | `/api/proyectos/{pid}/voz/bloques/regrabar` | Cose en la voz las tomas de prueba elegidas, sin volver a grabar. |
 | `GET` | `/api/voces` | Catalogo de voces (Cartesia, o Google con ?proveedor=google). |
 | `GET` | `/api/voces/elevenlabs/creditos` | Los creditos de ElevenLabs del mes: usados, limite, restantes, renovacion. |
 

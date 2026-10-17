@@ -1896,9 +1896,11 @@ def _correr_regrabar(avisar, ctx, seccion_id, peticion, ajuste):
                               or p4.NOMBRE_PISTA),
                  os.path.join(destino, ficha_voz.get("archivo")
                               or p4.NOMBRE_PISTA))
-    salidas, nuevos = p4.regrabar_seccion(
-        bloques, seccion_id, cfg, meta, destino, peticion=peticion,
-        ajuste=ajuste, avisar=avisar, cwd=ctx.proyecto.raiz)
+    # con el contador abierto: sin el, la voz regrabada no llegaba a coste.jsonl
+    with COSTE.contexto(ctx.proyecto, "voz"):
+        salidas, nuevos = p4.regrabar_seccion(
+            bloques, seccion_id, cfg, meta, destino, peticion=peticion,
+            ajuste=ajuste, avisar=avisar, cwd=ctx.proyecto.raiz)
 
     cambiados = [b["id"] for b, viejo in zip(nuevos, bloques)
                  if b["texto"] != viejo["texto"]]
@@ -2028,6 +2030,169 @@ def regrabar_seccion(pid: str, seccion_id: str, cuerpo: dict = Body(default=None
         str(datos.get("peticion") or ""), ajuste, paso="voz")
     _registrar_trabajo(trabajo_id, ctx.id)
     return {"trabajo_id": trabajo_id, "seccion": seccion_id, "ajuste": ajuste,
+            "trabajo": ctx.gestor.estado(trabajo_id),
+            "eventos": f"/api/trabajos/{trabajo_id}/eventos"}
+
+
+# --------------------------------------------- regrabar solo unos bloques
+#
+# Una seccion puede ser de diez minutos, y regrabarla entera para cambiar una
+# frase vuelve a tirar los dados en todo lo que ya sonaba bien. Aqui se graban
+# TOMAS DE PRUEBA de unos bloques (sin tocar la voz) y despues se cosen las
+# elegidas tal cual. Ver p4_voz, «regrabar solo unos bloques».
+
+#: Carpeta (dentro del proyecto) de las tomas de prueba y sus audios para oir.
+CARPETA_PRUEBAS_VOZ = "pruebas_voz"
+#: Segundos de la toma de alrededor en el audio «en contexto» de cada prueba.
+CONTEXTO_ANTES_S, CONTEXTO_DESPUES_S = 4.0, 3.0
+
+
+def _voz_actual(ctx):
+    """(p4, meta, ruta del wav) de la voz activa."""
+    p4 = PASOS_MODULOS.p4_voz
+    ficha_voz = ctx.estado.salidas("voz") or {}
+    carpeta = ctx.proyecto.ruta_paso("voz")
+    meta = medios_json(os.path.join(carpeta, ficha_voz.get("meta")
+                                    or p4.NOMBRE_META))
+    if not meta or not meta.get("bloques"):
+        raise RuntimeError("no encuentro el audio_meta.json de la toma actual")
+    return p4, meta, os.path.join(carpeta, ficha_voz.get("archivo")
+                                  or p4.NOMBRE_PISTA)
+
+
+def _correr_probar_bloques(avisar, ctx, ids, textos, estilo, tomas, etiqueta):
+    p4, meta, ruta_wav = _voz_actual(ctx)
+    bloques = p4.ediciones_a_mano(
+        ctx.proyecto, [{"id": b["id"], "texto": b["texto"]} for b in meta["bloques"]])
+    for bloque in bloques:
+        if bloque["id"] in textos:
+            bloque["texto"] = textos[bloque["id"]]
+    cfg = p4.resolver_params(p4.params_con_idioma(
+        ctx.proyecto, ctx.estado.params("voz") or {}))
+    with open(ruta_wav, "rb") as fh:
+        pcm_toma = fh.read()[44:]
+    carpeta = os.path.join(ctx.proyecto.raiz, CARPETA_PRUEBAS_VOZ)
+    tramos = p4.tramos_seguidos(bloques, ids)
+    bps = p4.SR * 2
+    hechas, total = [], len(tramos) * tomas
+    for tramo in tramos:
+        nombre_base = "-".join(tramo)
+        for n in range(1, tomas + 1):
+            paso = len(hechas)
+            avisar(0.05 + 0.9 * paso / total, f"grabando {nombre_base}, toma {n} de {tomas}")
+            # con el contador abierto: sin el, lo que se paga a Google no
+            # llegaba a coste.jsonl (medido el 17-10 con la primera prueba)
+            with COSTE.contexto(ctx.proyecto, "voz"):
+                toma = p4.grabar_bloques(
+                    bloques, tramo, cfg, tramo=p4.tramo_de_bloque(meta, tramo[0]),
+                    estilo=estilo,
+                    progreso=lambda f, m="": avisar(0.05 + 0.9 * (paso + max(0.0, min(1.0, f))) / total, m))
+            nombre = f"{nombre_base}_{etiqueta}{n}"
+            ruta_json = p4.guardar_toma_prueba(toma, carpeta, nombre)
+            # para OIR la costura: la toma de alrededor con esta prueba dentro
+            con_prueba, de_antes = p4.audio_en_contexto(
+                pcm_toma, meta, toma, CONTEXTO_ANTES_S, CONTEXTO_DESPUES_S)
+            with open(os.path.join(carpeta, f"{nombre}_contexto.wav"), "wb") as fh:
+                fh.write(p4.motor.wav_desde_pcm(con_prueba))
+            with open(os.path.join(carpeta, f"{nombre_base}_antes.wav"), "wb") as fh:
+                fh.write(p4.motor.wav_desde_pcm(de_antes))
+            hechas.append({"toma": nombre, "json": ruta_json,
+                           "segundos": round(len(toma["pcm"]) / bps, 2),
+                           "antes_s": round((len(de_antes) - len(con_prueba)
+                                             + len(toma["pcm"])) / bps, 2),
+                           "avisos": (toma.get("info") or {}).get("sin_arreglar")})
+    ctx.bitacora.anotar("bloques_probados", "voz", {
+        "bloques": list(ids), "estilo": estilo, "tomas": [h["toma"] for h in hechas]})
+    resumen = f"{len(hechas)} toma(s) de prueba en {CARPETA_PRUEBAS_VOZ}/"
+    avisar(1.0, resumen)
+    return {"tomas": hechas, "carpeta": carpeta, "resumen": resumen}
+
+
+@app.post("/api/proyectos/{pid}/voz/bloques/probar", status_code=202)
+def probar_bloques_voz(pid: str, cuerpo: dict = Body(default=None)):
+    """Graba tomas de prueba de unos bloques, SIN tocar la voz.
+
+    {"bloques": ["B019"], "textos": {"B019": "..."} (opcional), "estilo": "..."
+    (opcional; si no, el de su tramo), "tomas": 1-4, "etiqueta": "a"}
+    """
+    ctx = contexto(pid)
+    if PASOS_MODULOS is None:
+        raise ErrorApi(503, f"los pasos no se han podido cargar: {ERROR_PASOS}")
+    datos = _cuerpo(cuerpo)
+    ids = [str(b).strip().upper() for b in (datos.get("bloques") or []) if str(b).strip()]
+    if not ids:
+        raise ErrorApi(400, "hace falta 'bloques' con los ids a probar")
+    textos = {str(k).strip().upper(): " ".join(str(v).split())
+              for k, v in (datos.get("textos") or {}).items() if str(v).strip()}
+    etiqueta = re.sub(r"[^a-z0-9]", "", str(datos.get("etiqueta") or "t").lower())[:8] or "t"
+    try:
+        tomas = max(1, min(4, int(datos.get("tomas") or 1)))
+    except (TypeError, ValueError):
+        raise ErrorApi(400, "'tomas' tiene que ser un numero de 1 a 4")
+    estilo = " ".join(str(datos.get("estilo") or "").split()) or None
+    trabajo_id = ctx.gestor.lanzar("probar_bloques_voz", _correr_probar_bloques, ctx,
+                                   ids, textos, estilo, tomas, etiqueta, paso="voz")
+    _registrar_trabajo(trabajo_id, ctx.id)
+    return {"trabajo_id": trabajo_id, "bloques": ids, "tomas": tomas,
+            "trabajo": ctx.gestor.estado(trabajo_id),
+            "eventos": f"/api/trabajos/{trabajo_id}/eventos"}
+
+
+def _correr_regrabar_bloques(avisar, ctx, nombres):
+    p4, meta, ruta_wav = _voz_actual(ctx)
+    carpeta = os.path.join(ctx.proyecto.raiz, CARPETA_PRUEBAS_VOZ)
+    tomas = [p4.leer_toma_prueba(os.path.join(carpeta, f"{n}.json")) for n in nombres]
+    # el texto de la TOMA, no el del guion: los bloques que no se cosen siguen
+    # sonando como se grabaron, aunque tengan una edicion pendiente
+    bloques = [{"id": b["id"], "texto": b["texto"]} for b in meta["bloques"]]
+    destino = PASOS_MODULOS.comun.preparar_trabajo(ctx.proyecto, "voz")
+    shutil.copy2(ruta_wav, os.path.join(destino, meta.get("archivo") or p4.NOMBRE_PISTA))
+    salidas, nuevos = p4.regrabar_bloques(bloques, tomas, meta, destino, avisar=avisar)
+    # el texto con el que suena cada bloque AHORA, para la conservacion
+    PASOS_MODULOS.comun.escribir_json(os.path.join(destino, "guion_locutado.json"),
+                                      {"bloques": nuevos})
+    antes = {b["id"]: b["texto"] for b in meta["bloques"]}
+    cambiados = [b["id"] for b in nuevos if b["texto"] != antes.get(b["id"])]
+    if cambiados:
+        # al guion, como en regrabar una seccion: el guion y la voz no pueden
+        # decir cosas distintas
+        ediciones = dict((ctx.estado.params("guion") or {}).get("bloques") or {})
+        for bloque in nuevos:
+            if bloque["id"] in cambiados:
+                ediciones[bloque["id"]] = {"texto": bloque["texto"]}
+        ctx.estado.actualizar_params("guion", {"bloques": ediciones})
+    salidas["bloques_cambiados"] = cambiados
+    salidas["bloques_regrabados"] = [i for t in tomas for i in t["ids"]]
+    salidas["guion_locutado"] = "guion_locutado.json"
+    ligeras, _recortadas = _aligerar(salidas)
+    ctx.estado.completar("voz", ligeras)
+    ctx.bitacora.anotar("bloques_regrabados", "voz", {
+        "tomas": list(nombres), "bloques_cambiados": cambiados})
+    return salidas
+
+
+@app.post("/api/proyectos/{pid}/voz/bloques/regrabar", status_code=202)
+def regrabar_bloques_voz(pid: str, cuerpo: dict = Body(default=None)):
+    """Cose en la voz las tomas de prueba elegidas: {"tomas": ["B019_a1", ...]}.
+
+    No graba nada: lo que se cose es exactamente lo que se ha oido.
+    """
+    ctx = contexto(pid)
+    if PASOS_MODULOS is None:
+        raise ErrorApi(503, f"los pasos no se han podido cargar: {ERROR_PASOS}")
+    datos = _cuerpo(cuerpo)
+    nombres = [str(n).strip() for n in (datos.get("tomas") or []) if str(n).strip()]
+    if not nombres:
+        raise ErrorApi(400, "hace falta 'tomas' con los nombres de las tomas de prueba")
+    carpeta = os.path.join(ctx.proyecto.raiz, CARPETA_PRUEBAS_VOZ)
+    for nombre in nombres:
+        if not re.fullmatch(r"[A-Za-z0-9_\-]+", nombre) or not os.path.exists(
+                os.path.join(carpeta, f"{nombre}.json")):
+            raise ErrorApi(404, f"no hay ninguna toma de prueba {nombre!r}")
+    trabajo_id = ctx.gestor.lanzar("regrabar_bloques_voz", _correr_regrabar_bloques,
+                                   ctx, nombres, paso="voz")
+    _registrar_trabajo(trabajo_id, ctx.id)
+    return {"trabajo_id": trabajo_id, "tomas": nombres,
             "trabajo": ctx.gestor.estado(trabajo_id),
             "eventos": f"/api/trabajos/{trabajo_id}/eventos"}
 

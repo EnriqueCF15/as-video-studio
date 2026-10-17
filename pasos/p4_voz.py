@@ -2421,6 +2421,19 @@ def regrabar_seccion(bloques, seccion_id, cfg, meta, destino, peticion="",
             palabras.append({"w": p["w"], "s": round(p["s"] + delta, 3),
                              "e": round(p["e"] + delta, 3)})
 
+    salidas = _guardar_toma_cosida(
+        nuevos, palabras, wav, meta, destino,
+        f"{seccion_id} regrabada ({len(trozo.split())} palabras)")
+    avisa(1.0, salidas["resumen"])
+    return salidas, nuevos
+
+
+def _guardar_toma_cosida(nuevos, palabras, wav, meta, destino, resumen):
+    """Escribe la toma cosida y su audio_meta, con los bloques repartidos de nuevo.
+
+    -> salidas. Lo comparten regrabar una seccion y regrabar unos bloques: lo que
+    hay aguas abajo lee estas salidas y no puede notar cual de los dos coso.
+    """
     escenas, reparto = _reparto(nuevos, palabras)
     fichas, ordenadas = [], []
     for bloque in nuevos:
@@ -2438,16 +2451,421 @@ def regrabar_seccion(bloques, seccion_id, cfg, meta, destino, peticion="",
     salidas = dict(meta)
     salidas.update({
         "pista": os.path.join(destino, nombre), "archivo": nombre,
-        "duracion": round(len(_pcm_de(wav)) / bytes_seg, 3),
+        "duracion": round(len(_pcm_de(wav)) / (SR * 2), 3),
         "palabras": ordenadas, "bloques": fichas,
         "secciones": _fichas_de_seccion(
             [{"id": s["id"], "bloques": s["bloques"], "tramo": s.get("tramo")}
              for s in (meta.get("secciones") or [])], fichas),
-        "resumen": f"{seccion_id} regrabada ({len(trozo.split())} palabras)",
+        "resumen": resumen,
     })
     salidas.pop("transcript", None)
     meta_nueva = dict(salidas)
     meta_nueva["transcript"] = " ".join(b["texto"].strip() for b in nuevos)
     comun.escribir_json(os.path.join(destino, NOMBRE_META), meta_nueva)
-    avisa(1.0, salidas["resumen"])
+    return salidas
+
+
+# ------------------------------------------------ regrabar solo unos bloques
+#
+# `regrabar_seccion` regraba la seccion ENTERA, y la primera de un video largo
+# puede durar diez minutos: el 17-10-2026, retocar tres frases de la SB001
+# (624 s, 53 bloques) obligaba a volver a grabar todo lo que ya estaba
+# aprobado. Aqui se graban SOLO los bloques pedidos y se cosen en su sitio.
+#
+# Para que la costura no se oiga:
+#   - se graban CON SUS VECINOS (el bloque de antes y el de despues en la misma
+#     peticion) y se recorta lo que es del bloque: grabada suelta, una frase
+#     arranca en frio y suena distinta (prueba A/B del 06-10).
+#   - se sustituye solo lo que SUENA: el silencio de antes y el de despues
+#     siguen siendo los de la toma, asi que el aire entre bloques no cambia.
+#
+# Y va en dos tiempos, porque Gemini dice distinto cada vez: primero TOMAS DE
+# PRUEBA (cada una con su wav y sus marcas, sin tocar la voz) para oirlas y
+# elegir; despues se cose la elegida TAL CUAL, sin volver a grabar ni pagar.
+
+#: Por debajo de esto un trozo de 20 ms no suena (Gemini calla con ceros
+#: digitales, asi que el umbral apenas importa).
+UMBRAL_SILENCIO_DB = -50.0
+#: Silencio minimo para dar por acabada una frase: mas corto puede ser el
+#: cierre de una consonante (la p de «spend») y cortaria la palabra.
+SILENCIO_FRONTERA_S = 0.06
+#: Aire que se lleva cada lado de lo que suena, para no comerse un arranque
+#: suave. Menor que SILENCIO_FRONTERA_S: nunca llega a la frase vecina.
+MARGEN_COSTURA_S = 0.04
+#: Fundido en los bordes del trozo nuevo, por si el corte cae en un resto de
+#: ruido y no en cero.
+FUNDIDO_COSTURA_S = 0.01
+
+
+def tramos_seguidos(bloques, ids):
+    """Los ids pedidos, agrupados en tramos de bloques SEGUIDOS y en orden."""
+    orden = [b["id"] for b in bloques]
+    faltan = [i for i in ids if i not in orden]
+    if faltan:
+        raise RuntimeError("la toma no tiene los bloques " + ", ".join(faltan))
+    tramos = []
+    for indice in sorted({orden.index(i) for i in ids}):
+        if tramos and indice == tramos[-1][-1] + 1:
+            tramos[-1].append(indice)
+        else:
+            tramos.append([indice])
+    return [[orden[i] for i in tramo] for tramo in tramos]
+
+
+def _ventanas_que_suenan(pcm):
+    """Por cada ventana de 20 ms, si suena. -> (lista de bool, bytes por ventana)"""
+    import numpy as np
+    muestras = np.frombuffer(pcm[:len(pcm) & ~1], dtype="<i2").astype(np.float32) / 32768.0
+    paso = int(SR * 0.02)
+    n = len(muestras) // paso
+    if not n:
+        return [], paso * 2
+    energia = np.sqrt(np.mean(muestras[:n * paso].reshape(n, paso) ** 2, axis=1) + 1e-12)
+    return list(energia > 10 ** (UMBRAL_SILENCIO_DB / 20.0)), paso * 2
+
+
+#: Cuanto se mira hacia DENTRO del bloque, desde su primera (o ultima) marca,
+#: buscando la pausa que lo separa del vecino: el alineador llega a poner la
+#: primera palabra un tercio de segundo tarde (B046 del 17-10: «The» 0,31 s).
+DENTRO_DEL_BLOQUE_S = 0.4
+#: Y hacia FUERA, desde la marca del vecino, por si la suya tambien va movida.
+FUERA_DEL_BLOQUE_S = 0.3
+
+
+def _lo_que_suena(pcm, t_in, t_out, t_antes=None, t_despues=None):
+    """Donde empieza y acaba de verdad lo que suena de un bloque.
+
+    -> (byte_inicio, byte_fin). `t_in`/`t_out` son la primera y la ultima marca
+    del bloque; `t_antes`/`t_despues`, el final de la palabra de antes y el
+    principio de la de despues (None si no hay).
+
+    Con vecino, la frontera es la PAUSA MAS LARGA entre el y el bloque: entre
+    dos bloques siempre hay mas aire que dentro de una frase. Buscar el primer
+    silencio no basta: el 17-10 el alineador puso «But» de B026 ya dentro de
+    «don't», el primer hueco hacia atras era el de entre las dos palabras, y el
+    «But» viejo se quedo delante del nuevo («But But don't»). Sin vecino (el
+    principio o el final de la toma), el primer silencio de verdad hacia fuera.
+    """
+    suena, paso = _ventanas_que_suenan(pcm)
+    n = len(suena)
+    if not n:
+        return 0, len(pcm)
+    fin = min(n - 1, max(0, int(t_out / 0.02)))
+    inicio = min(fin, max(0, int(t_in / 0.02)))
+    while inicio < fin and not suena[inicio]:     # la marca cayo en silencio
+        inicio += 1
+    while fin > inicio and not suena[fin]:
+        fin -= 1
+
+    arranque = final = None
+    if t_antes is not None:
+        hueco = _pausa_mas_larga(suena, min(t_antes, t_in) - FUERA_DEL_BLOQUE_S,
+                                 min(t_in + DENTRO_DEL_BLOQUE_S, t_out))
+        if hueco:
+            arranque = hueco[1]
+    if t_despues is not None:
+        hueco = _pausa_mas_larga(suena, max(t_out - DENTRO_DEL_BLOQUE_S, t_in),
+                                 max(t_despues, t_out) + FUERA_DEL_BLOQUE_S)
+        if hueco:
+            final = hueco[0] - 1
+    if arranque is None:
+        arranque = _frontera(suena, inicio, -1)
+    if final is None:
+        final = _frontera(suena, fin, +1)
+    if arranque is None:
+        arranque = max(0, int((t_in - 0.05) / 0.02))
+    if final is None:
+        final = min(n - 1, int((t_out + 0.1) / 0.02))
+    if final < arranque:                          # nunca un trozo al reves
+        arranque, final = inicio, fin
+    return arranque * paso, (final + 1) * paso
+
+
+def _marca(palabra, clave):
+    """El instante de una marca de palabra, o None si no hay palabra o tiempo."""
+    valor = (palabra or {}).get(clave)
+    return float(valor) if valor is not None else None
+
+
+def _pausa_mas_larga(suena, desde_t, hasta_t):
+    """La racha de silencio mas larga entre dos instantes. -> (i, j) o None.
+
+    `i` es la primera ventana callada y `j` la primera que vuelve a sonar; una
+    racha mas corta que SILENCIO_FRONTERA_S no cuenta como pausa.
+    """
+    seguidas = max(1, round(SILENCIO_FRONTERA_S / 0.02))
+    desde = max(0, int(desde_t / 0.02))
+    hasta = min(len(suena), int(hasta_t / 0.02) + 1)
+    mejor, i = None, desde
+    while i < hasta:
+        if suena[i]:
+            i += 1
+            continue
+        j = i
+        while j < len(suena) and not suena[j]:
+            j += 1
+        if j - i >= seguidas and (mejor is None or j - i > mejor[1] - mejor[0]):
+            mejor = (i, j)
+        i = j
+    return mejor
+
+
+def _frontera(suena, desde, sentido, limite_s=0.6):
+    """La ultima ventana que suena antes de un silencio de verdad.
+
+    Desde `desde` se camina en `sentido` (-1 hacia atras, +1 hacia delante)
+    hasta encontrar SILENCIO_FRONTERA_S seguidos; el borde del audio cuenta
+    como silencio. -> indice, o None si no aparece en `limite_s`.
+    """
+    seguidas = max(1, round(SILENCIO_FRONTERA_S / 0.02))
+    ultima, calladas, i = desde, 0, desde
+    for _ in range(round(limite_s / 0.02)):
+        i += sentido
+        if i < 0 or i >= len(suena):
+            return ultima
+        if suena[i]:
+            ultima, calladas = i, 0
+        else:
+            calladas += 1
+            if calladas >= seguidas:
+                return ultima
+    return None
+
+
+def _oidas(hablado):
+    """Cuantas palabras le cuenta el alineador a un texto ya limpio de marcas.
+
+    Con SU regla (`alinear.tokens_del_guion`): un signo suelto, como una raya
+    entre espacios, se pega a la palabra de antes y no cuenta. Contar por
+    espacios descuadraria el trozo de cada bloque en cuanto hubiera uno.
+    """
+    return sum(1 for token in str(hablado or "").split() if re.sub(r"[\W_]", "", token))
+
+
+def _rango_de_palabras(fichas, ids):
+    """Indices [desde, hasta) de las palabras de esos bloques en la lista plana."""
+    cuenta, desde, hasta = 0, None, None
+    for ficha in fichas:
+        if ficha["id"] == ids[0]:
+            desde = cuenta
+        cuenta += int(ficha.get("palabras") or 0)
+        if ficha["id"] == ids[-1]:
+            hasta = cuenta
+    return desde, hasta
+
+
+def grabar_bloques(bloques, ids, cfg, tramo="cuerpo", estilo=None, progreso=None):
+    """Graba UN tramo de bloques seguidos con sus vecinos y recorta lo suyo.
+
+    `bloques` es el guion entero ([{"id", "texto"}], con el texto que se quiere
+    para esos ids). -> toma de prueba: {"ids", "textos", "estilo", "pcm"
+    (solo lo que suena, con su margen), "palabras" (relativas a ese pcm),
+    "info"}. No toca la voz: eso lo hace `coser_bloques`.
+    """
+    progreso = progreso or (lambda f, m="": None)
+    orden = [b["id"] for b in bloques]
+    primero, ultimo = orden.index(ids[0]), orden.index(ids[-1])
+    if orden[primero:ultimo + 1] != list(ids):
+        raise RuntimeError("los bloques de una toma tienen que ir seguidos: "
+                           + ", ".join(ids))
+    vecinos = bloques[max(0, primero - 1):ultimo + 2]
+    hablados = [marcas_tts.limpiar(b["texto"]) for b in vecinos]
+    antes = sum(_oidas(h) for h, b in zip(hablados, vecinos)
+                if orden.index(b["id"]) < primero)
+    propias = sum(_oidas(h) for h, b in zip(hablados, vecinos) if b["id"] in ids)
+    estilo = estilo or estilo_de(tramo, cfg)
+
+    if simulado():
+        texto = " ".join(hablados)
+        wav, _dur, palabras = _toma_simulada(texto, cfg)
+        info = {"simulado": True}
+    elif cfg.get("proveedor") == "google":
+        familia = motor_google.familia_de(cfg["modelo"])
+        trozo = {"texto": " ".join(marcas_tts.para_google(b["texto"], familia)
+                                   for b in vecinos),
+                 "seccion": "+".join(ids), "secciones": ["+".join(ids)],
+                 "estilo": estilo if familia == "gemini" else None}
+        wav, _dur, alineado, info = _google_verificado(
+            [trozo], [" ".join(hablados)], cfg, progreso)
+        palabras = alineado["palabras"]
+        info["alineado"] = _resumen_alineado(alineado)
+    else:
+        raise RuntimeError("regrabar bloques sueltos solo esta hecho para la voz "
+                           "de Google (con otro proveedor, regraba la seccion)")
+
+    if len(palabras) < antes + propias:
+        raise RuntimeError("el alineador ha devuelto menos palabras que el texto: "
+                           "vuelve a grabar la toma")
+    toma = {
+        "ids": list(ids),
+        "textos": {b["id"]: b["texto"] for b in vecinos if b["id"] in ids},
+        "estilo": estilo,
+        "info": info,
+        # LA GRABACION ENTERA, con los vecinos: si el recorte sale mal se
+        # vuelve a recortar de aqui, sin volver a pagar la voz
+        "crudo": {"pcm": _pcm_de(wav), "palabras": palabras,
+                  "desde": antes, "hasta": antes + propias},
+    }
+    return recortar_toma(toma)
+
+
+def recortar_toma(toma):
+    """Saca de la grabacion entera (`toma["crudo"]`) lo que es de sus bloques.
+
+    -> la misma toma con "pcm" (solo lo que suena, con su margen) y "palabras"
+    (relativas a ese pcm).
+    """
+    crudo = toma["crudo"]
+    palabras, desde, hasta = crudo["palabras"], crudo["desde"], crudo["hasta"]
+    suyas = palabras[desde:hasta]
+    if not suyas or any(p.get("s") is None for p in suyas):
+        raise RuntimeError("el alineador no ha podido situar las palabras del "
+                           "bloque en la toma: vuelve a grabarla")
+    pcm = crudo["pcm"]
+    previa = palabras[desde - 1] if desde > 0 else None
+    siguiente = palabras[hasta] if hasta < len(palabras) else None
+    ini, fin = _lo_que_suena(pcm, suyas[0]["s"], suyas[-1]["e"],
+                             _marca(previa, "e"), _marca(siguiente, "s"))
+    margen = int(MARGEN_COSTURA_S * SR) * 2
+    ini, fin = max(0, ini - margen), min(len(pcm), fin + margen)
+    cero = ini / (SR * 2)
+    salida = dict(toma)
+    salida["pcm"] = _fundido(pcm[ini:fin])
+    salida["palabras"] = [{"w": p["w"], "s": round(max(0.0, p["s"] - cero), 3),
+                           "e": round(max(0.0, p["e"] - cero), 3)} for p in suyas]
+    return salida
+
+
+def _fundido(pcm):
+    """Fundido corto de entrada y salida, para que el borde no haga clic."""
+    import numpy as np
+    muestras = np.frombuffer(pcm, dtype="<i2").astype(np.float32)
+    n = min(len(muestras) // 2, int(FUNDIDO_COSTURA_S * SR))
+    if n > 1:
+        rampa = np.linspace(0.0, 1.0, n, dtype=np.float32)
+        muestras[:n] *= rampa
+        muestras[-n:] *= rampa[::-1]
+    return np.clip(muestras, -32768, 32767).astype("<i2").tobytes()
+
+
+def coser_bloques(pcm_toma, palabras_toma, fichas, toma):
+    """Mete una toma de prueba en la toma entera, en el sitio de sus bloques.
+
+    -> (pcm, palabras, (byte_inicio, byte_fin_viejo, byte_fin_nuevo)). Se quita de la toma solo
+    lo que sonaba de esos bloques (con el mismo margen que lleva la toma de
+    prueba) y se pone lo nuevo; las palabras de despues se corren lo que haya
+    cambiado la duracion. Tiempos ABSOLUTOS, como siempre.
+    """
+    ids = toma["ids"]
+    desde, hasta = _rango_de_palabras(fichas, ids)
+    if desde is None or hasta is None or hasta <= desde:
+        raise RuntimeError("la toma no tiene palabras de " + ", ".join(ids))
+    viejas = palabras_toma[desde:hasta]
+    previa = palabras_toma[desde - 1] if desde > 0 else None
+    siguiente = palabras_toma[hasta] if hasta < len(palabras_toma) else None
+    ini, fin = _lo_que_suena(pcm_toma, viejas[0]["s"], viejas[-1]["e"],
+                             _marca(previa, "e"), _marca(siguiente, "s"))
+    margen = int(MARGEN_COSTURA_S * SR) * 2
+    ini, fin = max(0, ini - margen), min(len(pcm_toma), fin + margen)
+    nuevo = toma["pcm"]
+    bytes_seg = SR * 2
+    cero, delta = ini / bytes_seg, (len(nuevo) - (fin - ini)) / bytes_seg
+    palabras = [dict(p) for p in palabras_toma[:desde]]
+    palabras += [{"w": p["w"], "s": round(p["s"] + cero, 3),
+                  "e": round(p["e"] + cero, 3)} for p in toma["palabras"]]
+    palabras += [{"w": p["w"], "s": round(p["s"] + delta, 3),
+                  "e": round(p["e"] + delta, 3)} for p in palabras_toma[hasta:]]
+    return (pcm_toma[:ini] + nuevo + pcm_toma[fin:], palabras,
+            (ini, fin, ini + len(nuevo)))
+
+
+def guardar_toma_prueba(toma, carpeta, nombre):
+    """La toma de prueba a disco: <nombre>.wav (lo que suena), <nombre>.json y,
+    si la trae, la grabacion entera en <nombre>_crudo.wav."""
+    os.makedirs(carpeta, exist_ok=True)
+    with open(os.path.join(carpeta, f"{nombre}.wav"), "wb") as fh:
+        fh.write(motor.wav_desde_pcm(toma["pcm"]))
+    ficha = {k: v for k, v in toma.items() if k not in ("pcm", "crudo")}
+    ficha["wav"] = f"{nombre}.wav"
+    if toma.get("crudo"):
+        with open(os.path.join(carpeta, f"{nombre}_crudo.wav"), "wb") as fh:
+            fh.write(motor.wav_desde_pcm(toma["crudo"]["pcm"]))
+        ficha["crudo"] = {k: v for k, v in toma["crudo"].items() if k != "pcm"}
+        ficha["crudo"]["wav"] = f"{nombre}_crudo.wav"
+    comun.escribir_json(os.path.join(carpeta, f"{nombre}.json"), ficha)
+    return os.path.join(carpeta, f"{nombre}.json")
+
+
+def leer_toma_prueba(ruta_json):
+    """Lo que escribio `guardar_toma_prueba`, con su pcm (y el del crudo)."""
+    carpeta = os.path.dirname(ruta_json)
+    with open(ruta_json, "r", encoding="utf-8") as fh:
+        toma = json.load(fh)
+    with open(os.path.join(carpeta, toma["wav"]), "rb") as fh:
+        toma["pcm"] = _pcm_de(fh.read())
+    if toma.get("crudo"):
+        with open(os.path.join(carpeta, toma["crudo"]["wav"]), "rb") as fh:
+            toma["crudo"]["pcm"] = _pcm_de(fh.read())
+    return toma
+
+
+def audio_en_contexto(pcm_toma, meta, toma, antes_s=4.0, despues_s=3.0):
+    """Para OIR la costura: la toma de alrededor con esta prueba dentro.
+
+    -> (pcm con la prueba, pcm de lo que hay ahora), los dos desde `antes_s`
+    antes del bloque hasta `despues_s` despues.
+    """
+    pcm, _palabras, (ini, fin_viejo, fin_nuevo) = coser_bloques(
+        pcm_toma, meta.get("palabras") or [], meta["bloques"], toma)
+    desde = max(0, ini - int(antes_s * SR) * 2)
+    cola = int(despues_s * SR) * 2
+    return pcm[desde:fin_nuevo + cola], pcm_toma[desde:fin_viejo + cola]
+
+
+def tramo_de_bloque(meta, bloque_id):
+    """intro / cuerpo / cierre: el de la seccion en la que esta el bloque."""
+    for seccion in meta.get("secciones") or []:
+        if bloque_id in (seccion.get("bloques") or []):
+            return seccion.get("tramo") or "cuerpo"
+    return "cuerpo"
+
+
+def regrabar_bloques(bloques, tomas, meta, destino, avisar=None):
+    """Cose en la toma unas tomas de prueba ya elegidas. No graba nada.
+
+    `bloques`: el guion entero como esta ahora; los textos de los ids de cada
+    toma se cambian por los que se grabaron en ella (asi el guion y la voz no
+    dicen cosas distintas). -> (salidas, bloques_nuevos)
+    """
+    avisa = _avisador(avisar)
+    origen = os.path.join(destino, meta.get("archivo") or NOMBRE_PISTA)
+    with open(origen, "rb") as fh:
+        pcm = _pcm_de(fh.read())
+    palabras = [dict(p) for p in meta.get("palabras") or []]
+    fichas = [dict(f) for f in meta.get("bloques") or []]
+    if sum(int(f.get("palabras") or 0) for f in fichas) != len(palabras):
+        raise RuntimeError("las palabras de la toma no cuadran con sus bloques: "
+                           "no se puede saber que trozo es de cada bloque")
+    usados = [i for t in tomas for i in t["ids"]]
+    if len(usados) != len(set(usados)):
+        raise RuntimeError("hay dos tomas para el mismo bloque")
+    orden = [f["id"] for f in fichas]
+    nuevos = [dict(b) for b in bloques]
+    # de la ULTIMA a la primera: coser una no mueve las que van antes
+    for toma in sorted(tomas, key=lambda t: orden.index(t["ids"][0]), reverse=True):
+        avisa(0.2, f"cosiendo {', '.join(toma['ids'])}")
+        pcm, palabras, _sitio = coser_bloques(pcm, palabras, fichas, toma)
+        for bloque in nuevos:
+            if bloque["id"] in toma["textos"]:
+                bloque["texto"] = toma["textos"][bloque["id"]]
+        # cuantas palabras tiene ahora cada bloque cosido: la lista plana ya
+        # lleva las nuevas, y el rango de la toma siguiente se cuenta con esto
+        for ficha in fichas:
+            if ficha["id"] in toma["textos"]:
+                ficha["palabras"] = _oidas(marcas_tts.limpiar(toma["textos"][ficha["id"]]))
+    resumen = (f"{len(usados)} bloque(s) regrabado(s) sueltos: "
+               + ", ".join(usados))
+    salidas = _guardar_toma_cosida(nuevos, palabras, motor.wav_desde_pcm(pcm),
+                                   meta, destino, resumen)
+    avisa(1.0, resumen)
     return salidas, nuevos

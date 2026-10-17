@@ -437,13 +437,46 @@ def prueba_toma_y_regrabado(base):
         igual(doble_google.llamadas[-1][0]["estilo"], INTRO,
               "regrabar la intro usa el estilo de intro")
         ultima = meta["secciones"][-1]["id"]
-        p4_voz.regrabar_seccion(bloques, ultima, cfg, nuevas,
-                                os.path.dirname(salidas["pista"]))
+        cierre, _ = p4_voz.regrabar_seccion(bloques, ultima, cfg, nuevas,
+                                            os.path.dirname(salidas["pista"]))
         igual(doble_google.llamadas[-1][0]["estilo"], CIERRE,
               "regrabar el cierre usa el de cierre")
         igual([s.get("tramo") for s in nuevas["secciones"]],
               [s.get("tramo") for s in salidas["secciones"]],
               "tras regrabar, cada seccion sigue en su tramo")
+
+        # regrabar UN bloque suelto: se graba con sus vecinos, se queda con lo
+        # suyo y se cose sin mover lo de antes
+        destino = os.path.dirname(salidas["pista"])
+        actuales = [{"id": b["id"], "texto": b["texto"]} for b in cierre["bloques"]]
+        pedidos = [dict(b) for b in actuales]
+        pedidos[1]["texto"] = "A brand new sentence for this block — said a little differently."
+        llamadas = len(doble_google.llamadas)
+        toma = p4_voz.grabar_bloques(pedidos, [pedidos[1]["id"]], cfg,
+                                     tramo="intro", estilo="Lively.")
+        igual(doble_google.llamadas[llamadas][0]["estilo"], "Lively.",
+              "un bloque suelto se graba con el estilo que se pida")
+        vecinos = " ".join(marcas_tts.limpiar(b["texto"]) for b in pedidos[:3])
+        igual(doble_alineador.llamadas[-1], vecinos,
+              "con el bloque de antes y el de despues en la misma peticion")
+        igual([p["w"] for p in toma["palabras"]],
+              alin.tokens_del_guion(marcas_tts.limpiar(pedidos[1]["texto"])),
+              "y se queda solo con las palabras del bloque (la raya suelta no cuenta)")
+        cosidas, nuevos = p4_voz.regrabar_bloques(actuales, [toma], cierre, destino)
+        igual(nuevos[1]["texto"], pedidos[1]["texto"], "el texto nuevo viaja con la toma")
+        igual([b["texto"] for b in nuevos[:1] + nuevos[2:]],
+              [b["texto"] for b in actuales[:1] + actuales[2:]],
+              "los demas bloques no cambian")
+        igual((cosidas["bloques"][0]["t_in"], cosidas["bloques"][0]["t_out"]),
+              (cierre["bloques"][0]["t_in"], cierre["bloques"][0]["t_out"]),
+              "lo de antes del bloque no se mueve")
+        delta = cosidas["duracion"] - cierre["duracion"]
+        igual(round(cosidas["bloques"][-1]["t_out"], 2),
+              round(cierre["bloques"][-1]["t_out"] + delta, 2),
+              "lo de despues se corre justo lo que cambio la duracion")
+        igual(len(cosidas["palabras"]),
+              sum(len(alin.tokens_del_guion(marcas_tts.limpiar(b["texto"]))) for b in nuevos),
+              "una marca por palabra tras coser")
     finally:
         p4_voz.motor_google, p4_voz.alineador = real_google, real_alineador
         if simular is None:
