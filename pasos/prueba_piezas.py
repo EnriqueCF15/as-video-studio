@@ -3787,6 +3787,82 @@ def prueba_subtitulos():
                    "t_in": 0.0, "marcas": [[k * 0.3, k * 0.3 + 0.25] for k in range(10)]}
     ok(all("11" not in x["texto"] for x in subtitulos.de_escena(escena_once)),
        "y de_escena sin idioma lo saca de la propia frase: no sale «11»")
+
+    # fork, 17-10-2026: el repaso 4 del video de historia
+    def trozos_de(frase):
+        palabras = frase.split()
+        return [x["texto"] for x in subtitulos.de_escena(
+            {"narracion": frase, "t_in": 0.0,
+             "marcas": [[k * 0.3, k * 0.3 + 0.25] for k in range(len(palabras))]},
+            idioma="en")]
+    igual(subtitulos.limpiar_texto("A thirty-minute dinner break quietly became "
+                                   "twenty-seven.".split(), "en"),
+          "A 30-minute dinner break quietly became 27.",
+          "UNA COMPUESTA con cifra delante se convierte: «30-minute», no "
+          "«thirty-minute» al lado de un «27»")
+    igual(subtitulos.limpiar_texto("the forty-eight-hour week".split(), "en"),
+          "the 48-hour week", "con la cifra entera delante, aunque sea de dos")
+    igual(subtitulos.limpiar_texto("your nine-to-five".split(), "en"),
+          "your nine-to-five", "pero con otra cifra en la cola no se toca")
+    igual(subtitulos.limpiar_texto("in the twenty-ninth year, sixty-one "
+                                   "companies".split(), "en"),
+          "in the 29th year, 61 companies",
+          "y lo que ya salia entero sigue entero: no «20-ninth» ni «60-one»")
+    igual(trozos_de("And here's the thing about machines: they don't rest. They "
+                    "don't celebrate Saint Monday. The engine doesn't care if the "
+                    "hay is in."),
+          ["And here's the thing about machines: they don't rest.",
+           "They don't celebrate Saint Monday.",
+           "The engine doesn't care if the hay is in."],
+          "EL FINAL DE FRASE ES FRONTERA: no «...celebrate Saint» | «Monday.»")
+    igual(trozos_de("A thirty-minute dinner break quietly became twenty-seven. "
+                    "Think about that the next time your phone casually shows "
+                    "you the time."),
+          ["A 30-minute dinner break quietly became 27.",
+           "Think about that the next time your phone casually shows you the time."],
+          "ni «...became 27. Think» | «about that...»")
+    igual(trozos_de("forty-eight a week, plus two hours of school. Teenagers from "
+                    "thirteen to eighteen: maximum twelve hours a day."),
+          ["48 a week, plus 2 hours of school.",
+           "Teenagers from 13 to 18: maximum 12 hours a day."],
+          "LA ENTRADILLA CON DOS PUNTOS va con lo que anuncia, aunque pase del "
+          "blando")
+    igual(trozos_de("Here's what it said. No children under nine. Kids from nine to "
+                    "thirteen: maximum eight hours a day,"),
+          ["Here's what it said. No children under nine.",
+           "Kids from 9 to 13: maximum 8 hours a day,"],
+          "y no se pega a lo de antes para quedarse sola al final del trozo")
+    igual(trozos_de("Like a scientist once measured the human brain and announced: "
+                    "eight hours, that's the limit."),
+          ["Like a scientist once measured the human brain and announced:",
+           "eight hours, that's the limit."],
+          "una frase LARGA que acaba en «:» no es entradilla: sigue igual")
+    ok(subtitulos._cierra_frase("rest.", "They")
+       and not subtitulos._cierra_frase("E.", "P.")
+       and not subtitulos._cierra_frase("B.C.", "That")
+       and not subtitulos._cierra_frase("Mr.", "Owen")
+       and not subtitulos._cierra_frase("so...", "and"),
+       "las iniciales, «B.C.» y los tratamientos no cierran frase; y la "
+       "siguiente tiene que empezar en mayuscula")
+    igual(trozos_de("That claim traces back to a popular book from the nineteen "
+                    "nineties that picked the lowest estimates it could find."),
+          ["That claim traces back to a popular book from the 1990s",
+           "that picked the lowest estimates it could find."],
+          "UN TROZO NO ACABA EN «the» si hay otro corte razonable")
+    igual(trozos_de("You get two days off out of every seven. He got two out of "
+                    "every ten."),
+          ["You get two days off out of every seven.", "He got 2 out of every 10."],
+          "EL VECINO ARRASTRA dentro de la frase y no salta a la anterior: no "
+          "«two days off out of every 7»")
+    igual(trozos_de("almost seventy years later: eight hours for work, eight hours "
+                    "for rest,"),
+          ["almost 70 years later: 8 hours for work,", "8 hours for rest,"],
+          "y dentro de la frase no depende de donde caiga el corte: el segundo "
+          "trozo tambien sale «8», no «eight hours for rest»")
+    igual(trozos_de("since the late eighteen seventies, called Eight Hours."),
+          ["since the late 1870s, called Eight Hours."],
+          "una cifra arrastrada con mayuscula es un NOMBRE (la cancion): se "
+          "queda en letra")
     igual(subtitulos.limpiar_texto("from nine to thirteen".split(), "en"),
           "from 9 to 13", "lo de siempre sigue igual")
     igual(subtitulos.limpiar_texto("UNC five five three seven.".split(), "en"),
@@ -4179,6 +4255,38 @@ def prueba_cartelas_dos_fondos():
        "y con la imagen ya oscurecida desde el fotograma cero")
 
 
+def prueba_cartela_que_no_cabe():
+    """Fork, repaso 4 del 17-10-2026: la cartela de S075 empezaba a escribirse a
+    los 5 s de un plano de 8,3 y el plano acababa con ella recien escrita."""
+    titulo("cartelas: si no da para leerla y nadie la continua, se adelanta")
+    tiempos = [5.0, 5.32, 5.64, 5.96, 6.28, 6.6, 6.92, 7.24, 7.621, 7.701, 8.092, 8.092]
+    escritura = {"tiempos": tiempos, "cola": 3.36, "falta": 4.64, "dos_planos": True}
+    nuevos = p7_callouts.tiempos_que_caben(tiempos, escritura, 8.342)
+    ok(abs((8.342 - nuevos[-1]) - 3.36) < 0.01,
+       "acaba de escribirse con su cola de lectura por delante")
+    igual([round(b - a, 3) for a, b in zip(nuevos, nuevos[1:])],
+          [round(b - a, 3) for a, b in zip(tiempos, tiempos[1:])],
+          "y al mismo ritmo: solo se adelanta, no se aprieta")
+    igual(p7_callouts.tiempos_que_caben(tiempos, escritura, 8.342, sigue_despues=True),
+          tiempos, "si el plano siguiente la continua, se queda donde la dice la voz")
+    igual(p7_callouts.tiempos_que_caben(tiempos, dict(escritura, falta=0), 8.342),
+          tiempos, "y si ya cabe, no se toca")
+    apretados = p7_callouts.tiempos_que_caben(
+        [0.5, 2.0, 4.5], {"cola": 3.0, "falta": 1.5}, 5.0)
+    ok(apretados[0] == 0.0 and abs(apretados[-1] - 2.0) < 0.01,
+       "si ni empezando en el corte llega, se aprieta: desde el corte y con la "
+       "cola entera (obtenido %s)" % apretados)
+    ok(p7_callouts.tiempos_que_caben([1.0, 3.0], {"cola": 9.0, "falta": 5.0},
+                                     4.0)[-1] <= 4.0 * p7_callouts.PARTE_PARA_ESCRIBIR,
+       "y en un plano mas corto que la cola, se escribe en su primera parte")
+    escenas = [{"id": "S1", "cartela": {"plantilla": "contraste"}},
+               {"id": "S2", "cartela": {"sigue_a": "S1"}}, {"id": "S3"}]
+    ok(p7_callouts._sigue_despues(escenas, "S1")
+       and not p7_callouts._sigue_despues(escenas, "S2")
+       and not p7_callouts._sigue_despues(escenas, "S3"),
+       "el plano siguiente la continua solo si lo dice (sigue_a o continua)")
+
+
 def prueba_reloj_de_cartela():
     """EL FALLO DE LA LISTA: el «02» y el «03» llegaban al final de la escena.
 
@@ -4555,6 +4663,7 @@ def main():
     prueba_transiciones()
     prueba_sonido()
     prueba_reloj_de_cartela()
+    prueba_cartela_que_no_cabe()
     prueba_mascaras_en_la_hoja()
     prueba_unidades_fantasma()
     prueba_lo_que_la_receta_no_nombra()

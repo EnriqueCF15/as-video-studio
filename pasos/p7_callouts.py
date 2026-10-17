@@ -1237,6 +1237,56 @@ def capa_fija_vacia(salida=SALIDA):
             f'width="{salida[0]}" height="{salida[1]}"></svg>')
 
 
+#: Si una cartela no cabe ni empezando al principio del plano, se escribe en
+#: esta parte del plano y el resto queda para leerla.
+PARTE_PARA_ESCRIBIR = 0.4
+
+
+def _sigue_despues(escenas, sid):
+    """Si el plano siguiente CONTINUA la cartela de `sid` (ya escrita, quieta)."""
+    escenas = list(escenas or [])
+    for indice, escena in enumerate(escenas):
+        if escena.get("id") == sid and indice + 1 < len(escenas):
+            siguiente = escenas[indice + 1]
+            escritura = siguiente.get("escritura")
+            return bool((isinstance(escritura, dict) and escritura.get("continua"))
+                        or (siguiente.get("cartela") or {}).get("sigue_a"))
+    return False
+
+
+def tiempos_que_caben(tiempos, escritura, duracion, sigue_despues=False):
+    """Los tiempos de escritura de una cartela, adelantados si no da para leerla.
+
+    El plan pone cada palabra cuando la voz la dice, y si asi no queda tiempo
+    para leerla lo declara (`falta`) y pide seguir en el plano siguiente
+    (`dos_planos`). Cuando el siguiente NO la continua, la cartela se escribia al
+    final del plano y se cortaba recien escrita: la de S075 empezaba a los 5 s de
+    8,3 (fork, repaso 4 del 17-10-2026: «la animacion del texto entra tarde y da
+    poco tiempo para leer»). Aqui se adelanta lo justo para que acabe de
+    escribirse con su `cola` de lectura por delante: primero moviendolo todo
+    (mismo ritmo) y, si ni empezando en el corte llega, apretando el ritmo.
+    """
+    tiempos = [float(t) for t in (tiempos or [])]
+    escritura = escritura if isinstance(escritura, dict) else {}
+    if (not tiempos or sigue_despues
+            or float(escritura.get("falta") or 0.0) <= 0.01):
+        return tiempos
+    duracion = float(duracion)
+    cola = float(escritura.get("cola") or 0.0)
+    objetivo = duracion - cola
+    if objetivo < duracion * PARTE_PARA_ESCRIBIR:
+        objetivo = duracion * PARTE_PARA_ESCRIBIR
+    if tiempos[-1] <= objetivo:
+        return tiempos
+    adelanto = tiempos[-1] - objetivo
+    if tiempos[0] - adelanto >= 0:
+        return [round(t - adelanto, 3) for t in tiempos]
+    tramo = tiempos[-1] - tiempos[0]
+    if tramo <= 0:
+        return [0.0 for _ in tiempos]
+    return [round((t - tiempos[0]) * objetivo / tramo, 3) for t in tiempos]
+
+
 #: Cuanto se amplia el fondo de una cartela frente al lienzo de generacion. Es
 #: el mismo x2 que el hyperframe de un plano dibujado, y por el mismo motivo: la
 #: pagina de render lo coloca a ese tamano.
@@ -1280,7 +1330,9 @@ def _capa_de_cartela(escena, paleta, diseno, dirs, trabajo, svg_ruta, mov_ruta,
     escritura = escena.get("escritura") if isinstance(escena.get("escritura"), dict) else {}
     continua = bool(escritura.get("continua")) or bool(
         (escena.get("cartela") or {}).get("sigue_a"))
-    tiempos = list(escritura.get("tiempos") or [])
+    tiempos = tiempos_que_caben(
+        escritura.get("tiempos"), escritura, duracion,
+        _sigue_despues((plan or {}).get("escenas"), sid))
     if not tiempos and not continua:
         # Con los VECINOS: una cartela destila una frase, y una frase casi nunca
         # empieza justo donde empieza el plano en el que cuelga (PENDIENTE 12).
@@ -1492,7 +1544,8 @@ def ejecutar(proyecto, params, avisar=None, unidades=None):
                 escena.get("escritura"), dict) else {}
             continua = bool(escritura.get("continua")) or bool(
                 (escena.get("cartela") or {}).get("sigue_a"))
-            tiempos = list(escritura.get("tiempos") or [])
+            tiempos = tiempos_que_caben(escritura.get("tiempos"), escritura,
+                                        duracion_c, _sigue_despues(escenas, sid))
             if not tiempos and not continua:
                 antes, despues = cartelas.vecinos_de(escenas, sid)
                 tiempos = cartelas.tiempos_dichos(escena["cartela"], escena,

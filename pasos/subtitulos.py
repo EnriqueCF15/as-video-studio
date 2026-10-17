@@ -100,6 +100,50 @@ def _cierra_clausula(token):
     return bool(_CIERRA.search(token) or _GUION.match(token))
 
 
+#: EL FINAL DE FRASE TAMBIEN ES FRONTERA. Solo se cortaba en `,;:`, asi que una
+#: clausula con dos frases que no cabia se partia por el sitio mas parejo, que
+#: podia caer en mitad de una: «They don't celebrate Saint | Monday.» o «...became
+#: 27. Think | about that...» (fork, repaso 4 del 17-10-2026). Las iniciales y
+#: los tratamientos («E. P. Thompson», «B.C.», «Mr.») no cierran frase, y la
+#: palabra siguiente tiene que empezar en mayuscula o cifra.
+_CIERRA_FRASE = re.compile(r"[.!?…][\"'”’»)\]]*$")
+_INICIALES = re.compile(r"^(?:[A-Za-z]\.)+$")
+_TRATAMIENTOS = {"mr.", "mrs.", "ms.", "dr.", "st.", "sr.", "sra.", "srta.",
+                 "dra.", "jr.", "vs.", "ud.", "uds."}
+
+
+def _cierra_frase(token, siguiente=""):
+    token = str(token or "")
+    if not _CIERRA_FRASE.search(token):
+        return False
+    pelado = token.rstrip("\"'”’»)]")
+    if _INICIALES.match(pelado) or pelado.lower() in _TRATAMIENTOS:
+        return False
+    siguiente = str(siguiente or "").lstrip("\"'“‘«([¿¡")
+    return not siguiente or siguiente[:1].isupper() or siguiente[:1].isdigit()
+
+
+#: Palabras que no cierran un trozo: articulos, preposiciones, conjunciones y
+#: posesivos piden lo que viene detras. Partir «from the | 1990s» o «44 hours
+#: a | week» obliga a leer el siguiente para entender el anterior (fork,
+#: 17-10-2026). No se prohibe: el corte detras de una cuesta PENALIZA_DEBIL
+#: caracteres de desequilibrio, asi que solo gana si no hay otro razonable.
+_DEBILES = set("""a an the of on in to from at by for with into about and or
+nor but that this these those your my his her its our their than as
+el la los las lo un una unos unas de del al en con por para sin sobre entre
+y e o u ni que su sus mi mis tu tus nuestro nuestra como""".split())
+PENALIZA_DEBIL = 24
+
+
+def _debil(token):
+    return re.sub(r"[^\wÀ-ÿ']", "", str(token or "")).lower() in _DEBILES
+
+
+def _anuncia(token):
+    """Los dos puntos ANUNCIAN lo que viene: «Kids from 9 to 13:» va con lo suyo."""
+    return str(token or "").endswith(":")
+
+
 def tramos(palabras, cap_linea=CAP_LINEA, cap_blando=CAP_BLANDO,
            min_trozo=MIN_TROZO, cap_trozo=None, intocables=None):
     """[(a, b), ...] rangos de indices sobre `palabras`, sin solapar y cubriendo.
@@ -108,7 +152,7 @@ def tramos(palabras, cap_linea=CAP_LINEA, cap_blando=CAP_BLANDO,
     `trozos()` en scripts/build-config11.js):
 
       1. se corta en FRONTERA DE CLAUSULA -- detras de un token que acabe en
-         `,;:` o de un guion suelto;
+         `,;:` o de un guion suelto -- y en FINAL DE FRASE (`_cierra_frase`);
       2. lo que aun no cabe en dos lineas se parte por la mitad, siempre en
          frontera de palabra y eligiendo el corte mas parejo;
       3. se reagrupa mientras quepa comodo en una linea;
@@ -139,10 +183,12 @@ def tramos(palabras, cap_linea=CAP_LINEA, cap_blando=CAP_BLANDO,
     def largo(a, b):
         return len(" ".join(palabras[a:b]))
 
-    # 1 · fronteras de clausula
+    # 1 · fronteras de clausula y de frase
     rangos, ini = [], 0
     for i, token in enumerate(palabras):
-        if i == len(palabras) - 1 or _cierra_clausula(token):
+        siguiente = palabras[i + 1] if i + 1 < len(palabras) else ""
+        if (i == len(palabras) - 1 or _cierra_clausula(token)
+                or _cierra_frase(token, siguiente)):
             rangos.append([ini, i + 1])
             ini = i + 1
 
@@ -164,6 +210,8 @@ def tramos(palabras, cap_linea=CAP_LINEA, cap_blando=CAP_BLANDO,
             if corte in dentro:
                 continue
             distancia = abs(largo(a, corte) - largo(corte, b))
+            if _debil(palabras[corte - 1]):
+                distancia += PENALIZA_DEBIL
             if dif is None or distancia < dif:
                 dif, mejor = distancia, corte
         if mejor is None:
@@ -175,12 +223,29 @@ def tramos(palabras, cap_linea=CAP_LINEA, cap_blando=CAP_BLANDO,
 
     piezas = [trozo for par in rangos for trozo in partir(par)]
 
-    # 3 · se reagrupa mientras quepa comodo
+    # 3 · se reagrupa mientras quepa comodo. UNA ENTRADILLA CON DOS PUNTOS VA
+    #     CON LO QUE ANUNCIA: si es corta (una linea) se queda con la pieza
+    #     siguiente aunque pase del blando, y no se pega a lo de antes si asi
+    #     se quedaria sola. Salia «...under 9. Kids from 9 to 13:» | «maximum
+    #     eight hours a day,» (fork, repaso 4 del 17-10-2026). Una frase larga
+    #     que acaba en «:» no es una entradilla y sigue la regla de siempre.
+    def entradilla(a, b):
+        return _anuncia(palabras[b - 1]) and largo(a, b) <= cap_linea
+
     salida = []
-    for a, b in piezas:
+    for k, (a, b) in enumerate(piezas):
         if salida:
             ultimo = salida[-1]
             junto = largo(ultimo[0], b)
+            if entradilla(*ultimo) and junto <= cap_trozo:
+                ultimo[1] = b
+                continue
+            siguiente = piezas[k + 1] if k + 1 < len(piezas) else None
+            if (entradilla(a, b) and siguiente
+                    and largo(a, siguiente[1]) <= cap_trozo
+                    and largo(ultimo[0], ultimo[1]) >= min_trozo):
+                salida.append([a, b])
+                continue
             if (junto <= cap_blando
                     or (largo(ultimo[0], ultimo[1]) < min_trozo
                         and junto <= cap_trozo)):
@@ -228,26 +293,95 @@ def _cortes_de(palabras):
     return cortes
 
 
-def _cifras_de(palabras, idioma=None):
-    """Los tramos de palabras que son UNA cifra dicha. -> [(a, b)]
+def _llanas_y_colas(palabras, idioma=None):
+    """Las palabras normalizadas para `medios.cifras_en`, y la COLA escrita de
+    las compuestas con cifra delante. -> (llanas, {indice: cola})
 
-    La misma cuenta que `limpiar_texto` (medios.cifras_en sobre las palabras
-    normalizadas), para que lo que no se parte sea exactamente lo que luego se
-    convierte.
+    «thirty-minute» es UN token con un numero delante y una palabra detras, y
+    `medios.cifras_en` solo convierte tokens enteros («sixty-five» -> «60 five»
+    se leeria peor que nada): se quedaba en letra mientras el «twenty-seven» de
+    la misma frase salia «27» (fork, repaso 4 del 17-10-2026). Aqui se le pasa
+    solo el numero («thirty») y la cola («-minute») se vuelve a pegar al
+    escribirlo: «30-minute», «48-hour». Solo si delante hay UN numero entero y
+    detras ninguno, asi que «nine-to-five» no se toca; y solo en las palabras
+    que no salian ya convertidas enteras («twenty-ninth» es «29th», no
+    «20-ninth»; «sixty-one» es «61»).
     """
     try:
         from . import medios                                   # noqa: PLC0415
     except ImportError:                                        # pragma: no cover
         import medios                                          # noqa: PLC0415
+    llanas = [medios.normalizar_texto(p) for p in palabras]
+    enteras = set()
+    for inicio, cuantas, _ in medios.cifras_en(llanas, idioma, _cortes_de(palabras)):
+        enteras.update(range(inicio, inicio + cuantas))
+    colas = {}
+    for indice, palabra in enumerate(palabras):
+        if indice in enteras:
+            continue
+        nucleo = _PEGADO_DERECHA.sub("", _PEGADO_IZQUIERDA.sub("", str(palabra or "")))
+        partes = nucleo.split("-")
+        if len(partes) > 1 and all(partes):
+            for corte in range(len(partes) - 1, 0, -1):
+                delante = [medios.normalizar_texto(x) for x in partes[:corte]]
+                detras = [medios.normalizar_texto(x) for x in partes[corte:]]
+                numero = medios.numeros_dichos(delante, idioma)
+                if (len(numero) == 1 and tuple(numero[0][:2]) == (0, len(delante))
+                        and not medios.numeros_dichos(detras, idioma)):
+                    llanas[indice] = " ".join(delante)
+                    colas[indice] = "-" + "-".join(partes[corte:])
+                    break
+    return llanas, colas
+
+
+def _frases_de(palabras):
+    """[(a, b)] las frases de `palabras`, cortadas donde `_cierra_frase`."""
+    frases, ini = [], 0
+    for i, token in enumerate(palabras):
+        siguiente = palabras[i + 1] if i + 1 < len(palabras) else ""
+        if i == len(palabras) - 1 or _cierra_frase(token, siguiente):
+            frases.append((ini, i + 1))
+            ini = i + 1
+    return frases
+
+
+def _cifras_de(palabras, idioma=None):
+    """Los tramos de palabras que son UNA cifra dicha. -> [(inicio, cuantas, cifra)]
+
+    La misma cuenta que `limpiar_texto` (medios.cifras_en sobre las palabras
+    normalizadas), para que lo que no se parte sea exactamente lo que luego se
+    convierte.
+
+    SE CUENTA FRASE A FRASE. Una cifra pequena sola se queda en letra, pero se
+    escribe en numero si tiene otra al lado (`medios.cifras_dichas`, «el vecino
+    arrastra»). Ese arrastre no puede depender de donde caiga el corte del
+    subtitulo, ni saltar de una frase a otra: «...every seven. He got two out
+    of every ten» sacaba «every 7» al lado de «two days» (fork, 17-10-2026). Y
+    no arrastra un nombre propio: la cancion «Eight Hours» no es «8 Hours».
+    """
     try:
-        llanas = [medios.normalizar_texto(p) for p in palabras]
-        return [(a, a + n) for a, n, _ in
-                medios.cifras_en(llanas, idioma, _cortes_de(palabras))]
+        from . import medios                                   # noqa: PLC0415
+    except ImportError:                                        # pragma: no cover
+        import medios                                          # noqa: PLC0415
+    salida = []
+    try:
+        for a, b in _frases_de(palabras):
+            frase = palabras[a:b]
+            llanas, _ = _llanas_y_colas(frase, idioma)
+            for inicio, cuantas, cifra in medios.cifras_en(
+                    llanas, idioma, _cortes_de(frase)):
+                primera = _PEGADO_IZQUIERDA.sub("", str(frase[inicio]))
+                if (inicio > 0 and primera[:1].isupper()
+                        and not medios.cifras_en(llanas[inicio:inicio + cuantas],
+                                                 idioma)):
+                    continue        # arrastrada y con mayuscula: es un nombre
+                salida.append((a + inicio, cuantas, cifra))
     except Exception:                                          # noqa: BLE001
         return []
+    return salida
 
 
-def limpiar_texto(palabras, idioma=None):
+def limpiar_texto(palabras, idioma=None, cifras=None):
     """El texto que se DIBUJA a partir de las palabras que se DICEN.
 
     Dos cosas y ninguna toca los tiempos:
@@ -267,6 +401,11 @@ def limpiar_texto(palabras, idioma=None):
     INDICES de palabra, asi que cambiar el numero de palabras antes de trocear
     desplazaria todo lo que viene detras. Aqui el texto puede encoger sin que
     nada se mueva, porque el trozo ya tiene su `desde` y su `hasta`.
+
+    `cifras` son las de la frase ENTERA (`_cifras_de`, ya en indices del
+    trozo): una cifra pequena se escribe en numero si tiene otra al lado, y eso
+    no puede depender de donde caiga el corte -- con el troceo por frases
+    salia «No children under nine.» | «Kids from 9 to 13:» (fork, 17-10-2026).
     """
     palabras = list(palabras or [])
     if not palabras:
@@ -275,15 +414,20 @@ def limpiar_texto(palabras, idioma=None):
         from . import medios                                   # noqa: PLC0415
     except ImportError:                                        # pragma: no cover
         import medios                                          # noqa: PLC0415
-    llanas = [medios.normalizar_texto(p) for p in palabras]
     try:
-        tramos = medios.cifras_en(llanas, idioma, _cortes_de(palabras))
+        llanas, colas = _llanas_y_colas(palabras, idioma)
+        tramos = (list(cifras) if cifras is not None
+                  else medios.cifras_en(llanas, idioma, _cortes_de(palabras)))
     except Exception:                                          # noqa: BLE001
         return " ".join(palabras)
     por_indice = {t[0]: t for t in tramos}
     salida, i = [], 0
     while i < len(palabras):
         tramo = por_indice.get(i)
+        # una compuesta solo puede cerrar la cifra: con su cola en medio
+        # («thirty-minute five») no hay forma limpia de escribirla
+        if tramo and any(k in colas for k in range(i, i + tramo[1] - 1)):
+            tramo = None
         if not tramo:
             salida.append(palabras[i])
             i += 1
@@ -293,6 +437,7 @@ def limpiar_texto(palabras, idioma=None):
         izquierda = _PEGADO_IZQUIERDA.search(primero)
         derecha = _PEGADO_DERECHA.search(ultimo)
         salida.append((izquierda.group(0) if izquierda else "") + cifra
+                      + colas.get(i + cuantas - 1, "")
                       + (derecha.group(0) if derecha else ""))
         i += cuantas
     return " ".join(salida)
@@ -376,9 +521,13 @@ def de_escena(escena, cap_linea=CAP_LINEA, idioma=None, texto="",
         except ImportError:                                    # pragma: no cover
             import medios                                      # noqa: PLC0415
         idioma = medios.idioma_de(" ".join(palabras), defecto=None)
+    cifras = _cifras_de(palabras, idioma)
     rangos = list(tramos(palabras, cap_linea=cap_linea, cap_trozo=cap_trozo,
-                         intocables=_cifras_de(palabras, idioma)))
-    dibujados = [limpiar_texto(palabras[a:b], idioma) for a, b in rangos]
+                         intocables=[(i, i + n) for i, n, _ in cifras]))
+    dibujados = [limpiar_texto(palabras[a:b], idioma,
+                               cifras=[(i - a, n, c) for i, n, c in cifras
+                                       if a <= i and i + n <= b])
+                 for a, b in rangos]
     if texto:
         dibujados = repartir_escrito(dibujados, texto)
     salida = []
