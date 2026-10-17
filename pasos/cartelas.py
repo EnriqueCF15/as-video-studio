@@ -270,8 +270,10 @@ PLANTILLAS = {
         "nombre": "El remate",
         "descripcion": "Una frase corta abajo a la izquierda con una regla gruesa encima. Cierra, no abre.",
         "cuando": "el tramo remata algo que ya se ha contado; es el punto y aparte",
-        "campos": {"texto": (True, 66), "icono": (False, 20)},
-        "ejemplo": {"texto": "Nadie ha ido a la cárcel", "icono": "escudo_roto"},
+        "campos": {"texto": (True, 66), "icono": (False, 20),
+                   "antetitulo": (False, 46)},
+        "ejemplo": {"texto": "Nadie ha ido a la cárcel", "icono": "escudo_roto",
+                    "antetitulo": "El caso se cerró en 2008"},
     },
 }
 
@@ -1878,10 +1880,27 @@ def _cuerpo(plantilla, datos, colores, diseno, duracion, animado=True, semilla=0
             lineas_max=LINEAS_TITULAR)
         salto = int(tam * 1.22)
         base = y1 - salto * (len(lineas) - 1) - 30
-        piezas.append(_regla(x0, base - tam - 62, 340, 10, colores["linea"],
+        regla_y = base - tam - 62
+        piezas.append(_regla(x0, regla_y, 340, 10, colores["linea"],
                              ENTRADA, animado))
+        # EL ANTETITULO VA ENCIMA DE LA REGLA y se escribe ANTES que la frase:
+        # es lo que se lee primero («La jornada de 8 horas fue un acuerdo») y la
+        # frase de abajo lo remata. Lo pidio el canal en el cierre del video.
+        arriba_a = regla_y
+        if datos.get("antetitulo"):
+            lineas_a, tam_a = tipografia.encajar(
+                _mayus(datos["antetitulo"], diseno), fam, 46, False, 0,
+                ancho * AIRE_TITULAR, 130, minimo=30, interlineado=1.25,
+                lineas_max=2)
+            salto_a = int(tam_a * 1.25)
+            base_a = regla_y - 34 - salto_a * (len(lineas_a) - 1)
+            svg, t = _escrito(x0, base_a, lineas_a, tam_a, colores["tenue"],
+                              diseno, t, paso, negrita=False, animado=animado,
+                              interlineado=1.25, registro=registro)
+            piezas.append(svg)
+            arriba_a = base_a - tam_a
         if icono:
-            piezas.append(_icono(icono, x0 + 34, base - tam - 140, 68,
+            piezas.append(_icono(icono, x0 + 34, arriba_a - 78, 68,
                                  colores["linea"], ENTRADA, animado, 0.8))
         svg, t = _escrito(x0, base, lineas, tam, colores["texto"], diseno,
                           t + 0.25, paso, animado=animado, interlineado=1.22,

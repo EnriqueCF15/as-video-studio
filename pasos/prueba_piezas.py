@@ -4200,6 +4200,28 @@ def prueba_cartelas_composicion():
     ok(any(c in juntos for c in "áéíóúñ¿"),
        "llevan tildes, enyes y signos de apertura")
 
+    titulo("cartelas: el remate admite un antetitulo encima de la regla")
+    datos_r, avisos_r = cartelas.validar(
+        "remate", {"texto": "Agreements are made by people",
+                   "antetitulo": "The 8-hour workday was an agreement"})
+    igual(datos_r.get("antetitulo"), "The 8-hour workday was an agreement",
+          "el antetitulo pasa la validacion y no se pierde")
+    ficha_r = {"plantilla": "remate", "datos": datos_r}
+    dibujadas_r = cartelas.palabras_dibujadas(ficha_r, 8.0)
+    igual(dibujadas_r[:6], "The 8-hour workday was an agreement".upper().split()
+          if cartelas.LETRA.get("versales") else
+          "The 8-hour workday was an agreement".split(),
+          "se escribe ANTES que la frase: es lo que se lee primero")
+    igual(len(dibujadas_r), 11, "y despues la frase entera, sin palabras de mas")
+    capa_r = cartelas.svg_capa(ficha_r, paleta, escrita=True)
+    ok(capa_r.index("WORKDAY" if cartelas.LETRA.get("versales") else "workday")
+       < capa_r.index("people" if not cartelas.LETRA.get("versales") else "PEOPLE"),
+       "en el SVG va antes (encima) de la frase")
+    sin_ante = cartelas.svg_capa({"plantilla": "remate",
+                                  "datos": {"texto": "Nadie ha ido a la cárcel"}},
+                                 paleta, escrita=True)
+    ok("workday" not in sin_ante.lower(), "sin antetitulo el remate es el de siempre")
+
 
 def prueba_cartelas_dos_fondos():
     """TODAS van sobre la imagen del plano, y el velo aterriza con la voz."""
