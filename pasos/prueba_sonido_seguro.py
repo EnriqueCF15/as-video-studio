@@ -328,6 +328,104 @@ def prueba_banda_con_lo_propio():
                 os.remove(ruta)
 
 
+def prueba_arco_del_guion():
+    print("\n[4d] la musica por lo que se cuenta: tonos, mapa y gancho")
+    import mapa_musical  # noqa: PLC0415
+    # 60 planos de 10 s: 0-100 s neutro, 100-400 s tenso, 400-430 alegre
+    # (un golpe corto), 430-600 s solemne
+    escenas = []
+    for i in range(60):
+        t = i * 10.0
+        tono_plano = ("neutro" if t < 100 else "tenso" if t < 400
+                      else "alegre" if t < 430 else "solemne")
+        escenas.append({"id": f"S{i + 1:03d}", "t_in": t, "t_out": t + 10.0,
+                        "narracion": f"frase {i + 1}", "tono": tono_plano})
+    hay = {"misterioso": 3, "tension": 1, "sobrio": 2, "melancolico": 2,
+           "esperanzador": 2, "divertido": 1}
+    arco = sonido.arco_del_guion(escenas, 600.0, hay=hay)
+    comprobar(arco[0]["gancho"] and not any(t["gancho"] for t in arco[1:]),
+              "la primera seccion es el gancho, y solo ella")
+    comprobar(abs(sum(t["fraccion"] for t in arco) - 1.0) < 1e-6
+              and all(a["hasta"] == b["desde"] for a, b in zip(arco, arco[1:])),
+              "las secciones cubren el video entero, sin huecos")
+    comprobar(all(sonido.SECCION_MIN_TONOS_S <= t["hasta"] - t["desde"]
+                  <= sonido.SECCION_MAX_S for t in arco),
+              f"con los tonos, ninguna corta ni larga ({[round(t['hasta'] - t['desde']) for t in arco]})")
+    animos = [t["animo"] for t in arco]
+    comprobar("tension" not in animos and "misterioso" in animos,
+              "«tenso» con una sola cancion de tension pide la siguiente (misterioso)")
+    comprobar("melancolico" in animos, "«solemne» pide melancolico")
+    comprobar("divertido" not in animos, "un plano alegre no es un chiste: no pide «divertido»")
+    comprobar(all(t["desde_plano"] for t in arco), "cada seccion dice en que plano empieza")
+
+    mapa = mapa_musical.leer_mapa({"secciones": [
+        {"desde_plano": "S003", "animo": "misterioso", "porque": "el gancho"},
+        {"desde_plano": "S020", "animo": "tension", "porque": "la huelga"},
+        {"desde_plano": "S030", "animo": "divertido", "porque": "la excusa de la cerveza"},
+        {"desde_plano": "S033", "animo": "tension", "porque": "sigue la huelga"},
+        {"desde_plano": "S040", "animo": "oscuro", "porque": "sin canciones"},
+        {"desde_plano": "S999", "animo": "sobrio", "porque": "no existe"},
+        {"desde_plano": "S045", "animo": "esperanzador", "porque": "el cierre"}]},
+        escenas, hay)
+    igual(mapa["secciones"][0]["desde_plano"], "S001",
+          "el mapa empieza siempre en el primer plano")
+    igual(len(mapa["avisos"]), 2, "un animo sin canciones y un plano que no existe se avisan")
+    arco_m = sonido.arco_del_guion(escenas, 600.0, mapa=mapa, hay=hay)
+    igual([t["animo"] for t in arco_m][:4], ["misterioso", "tension", "divertido", "tension"],
+          "con el mapa, sus animos en su orden")
+    divertida = next(t for t in arco_m if t["animo"] == "divertido")
+    comprobar(sonido.DIVERTIDO_MIN_S <= divertida["hasta"] - divertida["desde"]
+              <= sonido.DIVERTIDO_MAX_S, "el momento divertido se queda corto (10-45 s)")
+    igual(divertida["por_que"], "la excusa de la cerveza", "con el porque de Claude")
+    largo_d = mapa_musical.leer_mapa({"secciones": [
+        {"desde_plano": "S001", "animo": "misterioso", "porque": "a"},
+        {"desde_plano": "S020", "animo": "divertido", "porque": "demasiado largo"}]},
+        escenas, hay)
+    arco_l = sonido.arco_del_guion(escenas, 600.0, mapa=largo_d, hay=hay)
+    larga = next(t for t in arco_l if t["animo"] == "divertido")
+    comprobar(larga["hasta"] - larga["desde"] <= sonido.DIVERTIDO_MAX_S + 10,
+              "un «divertido» de minutos se recorta y vuelve lo de antes")
+    falla(lambda: mapa_musical.leer_mapa({"secciones": [
+        {"desde_plano": "S999", "animo": "misterioso"}]}, escenas, hay),
+        "un mapa sin ninguna seccion usable se rechaza (y se usan los tonos)", ValueError)
+    texto = mapa_musical.instruccion(escenas, 600.0, hay, "Prueba")
+    comprobar("S001 0:00 frase 1" in texto and "- divertido:" in texto
+              and "- oscuro" not in texto,
+              "a Claude le llega la narracion con su minuto y solo los animos con canciones")
+
+    print("\n[4e] el gancho: primero las canciones que entran a tope")
+    carpeta = sonido.carpeta_propia("musica")
+    golpe, susurro = os.path.join(carpeta, "Golpe.wav"), os.path.join(carpeta, "Susurro.wav")
+    tono(golpe, 30.0, 200.0)
+    t = np.arange(int(sonido.FRECUENCIA * 30.0)) / sonido.FRECUENCIA
+    mono = 0.3 * np.sin(2 * np.pi * 260.0 * t) * np.clip(t / 8.0, 0.02, 1.0)
+    sonido._escribir(susurro, np.stack([mono, mono], axis=1).astype(np.float32))
+    for nombre in ("Golpe.wav", "Susurro.wav"):
+        sonido.guardar_ficha_propia("musica", nombre, {
+            "fuente": "otra", "titulo": nombre[:-4], "artista": "Alguien",
+            "licencia": "CC0", "animo": "misterioso"})
+    try:
+        fichas = {f["archivo"]: f for f in sonido.propios("musica")}
+        comprobar(sonido.fuerza_de_arranque(fichas["Golpe.wav"]) > sonido.GANCHO_MIN_DB
+                  > sonido.fuerza_de_arranque(fichas["Susurro.wav"]),
+                  "se mide: Golpe entra a tope y Susurro en un susurro")
+        planos = [{"id": f"S{i + 1:03d}", "t_in": i * 4.0, "t_out": (i + 1) * 4.0,
+                   "tono": "neutro"} for i in range(40)]
+        todo_misterio = {"lento": "misterioso", "rapido": "misterioso"}
+        tramos = sonido.arco_del_guion(planos, 160.0, hay={"misterioso": 2, "sobrio": 2},
+                                       animos={"inicio": todo_misterio, "medio": todo_misterio,
+                                               "cierre": todo_misterio})
+        banda = sonido.montar_banda(planos, 160.0, tramos=tramos)
+        igual(banda["tramos"][0]["piezas"][0]["archivo"], "Golpe.wav",
+              "el gancho arranca con la que entra a tope")
+        comprobar(banda["tramos"][0].get("gancho"), "y queda dicho que es el gancho")
+    finally:
+        for ruta in (golpe, susurro):
+            for fichero in (ruta, sonido._ruta_ficha(ruta)):
+                if os.path.exists(fichero):
+                    os.remove(fichero)
+
+
 def prueba_efectos_propios():
     print("\n[5] los efectos: lo propio sin clave de Freesound")
     lista = sonido.surtir("transicion_suave")
@@ -469,6 +567,7 @@ def main():
         prueba_ajustes()
         prueba_carpeta_propia()
         prueba_banda_con_lo_propio()
+        prueba_arco_del_guion()
         prueba_efectos_propios()
         prueba_filtros_en_linea()
         prueba_creditos()

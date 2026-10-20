@@ -5605,6 +5605,12 @@ def _correr_banda(avisar, ctx, tramos):
     # la tabla de animos del Estilo
     render = ctx.estado.params("render") or {}
     fijadas = render.get("musica_fijada") or {}
+    if tramos is None and render.get("arco") == "guion":
+        # POR LO QUE SE CUENTA (fork, 19-10): el mapa guardado (o los tonos de
+        # la direccion si no hay mapa). Sin volver a llamar a Claude: por eso
+        # la tanda del render puede rehacer la banda sin perder las secciones.
+        tramos = sonido.arco_del_guion(escenas, largo, animos=render.get("animos_arco"),
+                                       mapa=render.get("mapa_musical") or None)
     ficha = sonido.montar_banda(escenas, largo, avisar=avisar, tramos=tramos,
                                 fijadas=fijadas, animos=render.get("animos_arco"))
     ctx.estado.actualizar_params("render", {"musica": ficha})
@@ -5711,15 +5717,117 @@ def montar_banda_sonora(pid: str, cuerpo: dict = Body(default=None)):
             archivo = os.path.basename(str(archivo or "")).strip()
             if archivo:
                 fijadas[str(int(clave))] = archivo
+    # COMO SE PARTE LA MUSICA (fork, 19-10): «ritmo» (seis trozos iguales, lo
+    # de siempre) o «guion» (por lo que se cuenta: el mapa musical guardado o,
+    # sin el, los tonos de la direccion). Se guarda y vale para las siguientes.
+    arco = datos.get("arco")
+    if arco is not None and arco not in ("ritmo", "guion"):
+        raise ErrorApi(400, "arco: «ritmo» o «guion»")
     if not sonido.hay_musica():
         raise ErrorApi(409, sonido.falta_musica_texto())
     if fijadas is not None:
         ctx.estado.actualizar_params("render", {"musica_fijada": fijadas})
+    if arco is not None:
+        ctx.estado.actualizar_params("render", {"arco": arco})
     trabajo_id = ctx.gestor.lanzar("banda_sonora", _correr_banda, ctx, tramos,
                                    paso="render")
     _registrar_trabajo(trabajo_id, ctx.id)
     return {"trabajo_id": trabajo_id, "trabajo": ctx.gestor.estado(trabajo_id),
             "eventos": f"/api/trabajos/{trabajo_id}/eventos"}
+
+
+def _tramos_legibles(tramos):
+    """Los tramos de la musica en una tabla para ensenar: minuto, animo, porque."""
+    def mmss(segundos):
+        return f"{int(segundos // 60)}:{int(segundos % 60):02d}"
+    return [{"tramo": t.get("i", i), "desde": mmss(t["desde"]), "hasta": mmss(t["hasta"]),
+             "segundos": round(t["hasta"] - t["desde"]), "animo": t["animo"],
+             "desde_plano": t.get("desde_plano"), "gancho": bool(t.get("gancho")),
+             "por_que": t.get("por_que")}
+            for i, t in enumerate(tramos or [])]
+
+
+def _correr_mapa(avisar, ctx, con_claude, ajuste, montar):
+    """Propone el mapa musical, lo guarda y (si se pide) monta la banda con el.
+
+    Con Claude lee la narracion; sin el, o si falla, los tonos de la direccion.
+    Nunca se queda sin mapa: lo peor que pasa es que salga el de los tonos, y
+    eso se dice en los avisos.
+    """
+    sonido = _sonido()
+    plan = PASOS_MODULOS.p6_assets.plan_actual(ctx.proyecto, "assets", estado=ctx.estado) or {}
+    escenas = plan.get("escenas") or []
+    if not escenas:
+        raise RuntimeError("no hay planos todavía: primero hay que cortar el vídeo")
+    largo = float(plan.get("duracion_total") or 0) or (
+        float(escenas[-1].get("t_out") or 0) - float(escenas[0].get("t_in") or 0))
+    render = ctx.estado.params("render") or {}
+    hay = sonido.animos_con_canciones()
+    avisos, mapa = [], {"fuente": "tonos", "secciones": []}
+    if con_claude:
+        avisar(0.05, "Claude está leyendo la narración para decidir la música")
+        propuesto = PASOS_MODULOS.mapa_musical.proponer(
+            escenas, largo, hay, titulo=ctx.proyecto.config.get("nombre", ""),
+            ajuste=ajuste, cwd=getattr(ctx.proyecto, "raiz", None), avisar=avisar)
+        if propuesto.get("error"):
+            avisos.append("Claude no ha podido hacer el mapa ("
+                          + propuesto["error"][:160] + "): se usan los tonos de cada plano")
+        else:
+            mapa = propuesto
+            avisos.extend(mapa.get("avisos") or [])
+    ctx.estado.actualizar_params("render", {"arco": "guion", "mapa_musical": mapa})
+    tramos = sonido.arco_del_guion(escenas, largo, animos=render.get("animos_arco"),
+                                   mapa=mapa if mapa.get("secciones") else None)
+    resultado = {"fuente": mapa.get("fuente"), "secciones": _tramos_legibles(tramos),
+                 "avisos": avisos}
+    if montar:
+        avisar(0.7, "montando la banda sonora con el mapa")
+        ficha = _correr_banda(lambda v=None, m="", *a, **k: None, ctx, None)
+        resultado["banda"] = ficha.get("resumen")
+        resultado["avisos"] += ficha.get("avisos") or []
+    ctx.bitacora.anotar("mapa_musical", "render", {
+        "fuente": mapa.get("fuente"), "secciones": len(tramos),
+        "animos": [t["animo"] for t in tramos], "avisos": avisos})
+    resultado["resumen"] = (f"mapa musical ({'Claude' if mapa.get('fuente') == 'claude' else 'tonos'}): "
+                            f"{len(tramos)} secciones")
+    avisar(1.0, resultado["resumen"])
+    return resultado
+
+
+@app.post("/api/proyectos/{pid}/sonido/mapa", status_code=202)
+def proponer_mapa_musical(pid: str, cuerpo: dict = Body(default=None)):
+    """La musica por LO QUE SE CUENTA (fork, 19-10): propone el mapa musical.
+
+    {"con_claude": true} (por defecto) le pide a Claude que lea la narracion;
+    false usa solo los tonos que la direccion puso a cada plano (sin llamar a
+    nadie). Lo guarda en los params del render, pone el arco «guion» y, con
+    {"montar": true} (por defecto), monta la banda con el. 0 $ de Google.
+    """
+    ctx = contexto(pid)
+    datos = _cuerpo(cuerpo)
+    if not _sonido().hay_musica():
+        raise ErrorApi(409, _sonido().falta_musica_texto())
+    por_fase = CLI_CLAUDE.por_defecto_de("mapa_musical")
+    ajuste = _ajuste_cli(datos, por_fase["modelo"], por_fase["esfuerzo"])
+    trabajo_id = ctx.gestor.lanzar("mapa_musical", _correr_mapa, ctx,
+                                   bool(datos.get("con_claude", True)), ajuste,
+                                   bool(datos.get("montar", True)), paso="render")
+    _registrar_trabajo(trabajo_id, ctx.id)
+    return {"trabajo_id": trabajo_id, "trabajo": ctx.gestor.estado(trabajo_id),
+            "eventos": f"/api/trabajos/{trabajo_id}/eventos"}
+
+
+@app.get("/api/proyectos/{pid}/sonido/mapa")
+def leer_mapa_musical(pid: str):
+    """Como se parte la musica ahora: el arco elegido y sus secciones, legibles."""
+    ctx = contexto(pid)
+    render = ctx.estado.params("render") or {}
+    mapa = render.get("mapa_musical") or {}
+    tramos = [t for t in ((render.get("musica") or {}).get("tramos") or [])]
+    return {"arco": render.get("arco") or "ritmo", "fuente": mapa.get("fuente"),
+            "mapa": mapa, "puestos": [
+                {**s, "canciones": [p.get("titulo") for p in (t.get("piezas") or [])]}
+                for s, t in zip(_tramos_legibles(tramos), tramos)]}
 
 
 @app.get("/api/audio-propio")

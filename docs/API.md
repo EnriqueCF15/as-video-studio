@@ -168,6 +168,8 @@ Reglas que valen para toda la API y no se repiten en cada fila:
 | `POST` | `/api/proyectos/{pid}/sonido/banda` | Monta la banda sonora SOLA: un tema por tramo, elegido por el ritmo. |
 | `POST` | `/api/proyectos/{pid}/sonido/efectos` | Llena el banco de efectos del canal para los papeles que se pidan. |
 | `POST` | `/api/proyectos/{pid}/sonido/escuchar` | La voz con la música y los efectos elegidos, en un MP3, SIN montar el vídeo. |
+| `GET` | `/api/proyectos/{pid}/sonido/mapa` | Cómo se parte la música ahora: arco («ritmo» o «guion») y secciones legibles con sus canciones. |
+| `POST` | `/api/proyectos/{pid}/sonido/mapa` | La música por lo que se cuenta: Claude lee la narración (o, sin él, los tonos de cada plano), guarda el mapa y monta la banda. |
 | `POST` | `/api/proyectos/{pid}/sonido/musica` | Temas de Jamendo que pegan con el tono. Devuelve candidatos, no elige. |
 | `POST` | `/api/proyectos/{pid}/sonido/vetados` | Prohíbe un efecto en TODO el canal, o levanta el veto con `quitar`. |
 | `GET` | `/api/proyectos/{pid}/transiciones` | Las transiciones que existen, con su GLSL, y cuales entran en este video. |

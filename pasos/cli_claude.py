@@ -419,16 +419,25 @@ POR_FASE = {
                        "porque": "comparar una imagen con la nota y la guia "
                                  "del estilo: contar, leer rotulos y buscar lo "
                                  "prohibido; un juicio corto, no un plan"},
+    # EL MAPA MUSICAL: leer la narracion con sus minutos y partirla en
+    # secciones con un animo de musica cada una (pasos/mapa_musical.py). Es
+    # leer y agrupar, sin herramientas; una vez por video y se puede repetir
+    # gratis en Google, asi que un error se arregla volviendo a pedirlo.
+    "mapa_musical": {"modelo": "sonnet", "esfuerzo": "high",
+                     "porque": "leer el guion y agruparlo por lo que se cuenta: "
+                               "comprension de texto, no un plan largo"},
 
 }
 
 
-#: Las fases que NO suben al suelo del canal (Opus «xhigh»). Las dos van una vez
-#: por imagen corregida, asi que su coste se multiplica por el repaso entero:
-#: medido el 12-10-2026, el corrector tarda ~66 s por plano en Opus xhigh y el
-#: revisor ~33 s, y un repaso de 40 imagenes eran 6-8 % del cupo semanal del
-#: plan Pro. Lo pidio el canal: revisor en Sonnet y corrector en Opus «alto».
-FASES_SIN_SUELO = frozenset({"revisor_imagen", "corrector_imagen"})
+#: Las fases que NO suben al suelo del canal (Opus «xhigh»). El corrector y el
+#: revisor van una vez por imagen corregida, asi que su coste se multiplica por
+#: el repaso entero: medido el 12-10-2026, el corrector tarda ~66 s por plano en
+#: Opus xhigh y el revisor ~33 s, y un repaso de 40 imagenes eran 6-8 % del cupo
+#: semanal del plan Pro. Lo pidio el canal: revisor en Sonnet y corrector en Opus
+#: «alto». El mapa musical (19-10) entra por lo mismo: el canal pidio ahorrar
+#: Claude, y se puede pedir otra vez cuantas veces haga falta.
+FASES_SIN_SUELO = frozenset({"revisor_imagen", "corrector_imagen", "mapa_musical"})
 
 
 def _orden_modelo(nombre):
