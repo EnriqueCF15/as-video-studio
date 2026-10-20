@@ -409,6 +409,17 @@ def prueba_arco_del_guion():
         comprobar(sonido.fuerza_de_arranque(fichas["Golpe.wav"]) > sonido.GANCHO_MIN_DB
                   > sonido.fuerza_de_arranque(fichas["Susurro.wav"]),
                   "se mide: Golpe entra a tope y Susurro en un susurro")
+        # la carpeta del canal es de MP3: el banco los guarda tal cual y se
+        # miden sobre su WAV (la primera version leia el MP3 como WAV, fallaba
+        # en silencio y el gancho no ordenaba nada)
+        golpe_mp3 = os.path.join(carpeta, "GolpeMp3.mp3")
+        sonido._ffmpeg("-i", golpe, golpe_mp3)
+        sonido.guardar_ficha_propia("musica", "GolpeMp3.mp3", {
+            "fuente": "otra", "titulo": "GolpeMp3", "artista": "Alguien",
+            "licencia": "CC0", "animo": "sobrio"})
+        ficha_mp3 = next(f for f in sonido.propios("musica") if f["archivo"] == "GolpeMp3.mp3")
+        comprobar(sonido.fuerza_de_arranque(ficha_mp3) > sonido.GANCHO_MIN_DB,
+                  "y con un MP3 tambien se mide")
         planos = [{"id": f"S{i + 1:03d}", "t_in": i * 4.0, "t_out": (i + 1) * 4.0,
                    "tono": "neutro"} for i in range(40)]
         todo_misterio = {"lento": "misterioso", "rapido": "misterioso"}
@@ -420,7 +431,7 @@ def prueba_arco_del_guion():
               "el gancho arranca con la que entra a tope")
         comprobar(banda["tramos"][0].get("gancho"), "y queda dicho que es el gancho")
     finally:
-        for ruta in (golpe, susurro):
+        for ruta in (golpe, susurro, os.path.join(carpeta, "GolpeMp3.mp3")):
             for fichero in (ruta, sonido._ruta_ficha(ruta)):
                 if os.path.exists(fichero):
                     os.remove(fichero)

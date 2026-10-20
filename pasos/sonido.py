@@ -1250,9 +1250,11 @@ def fuerza_de_arranque(ficha):
     """
     import wave                                        # noqa: PLC0415
     ruta = traer(ficha, "musica")
-    with wave.open(ruta, "rb") as fh:
+    # el banco guarda el MP3 tal cual: se mide sobre su WAV, como `medir`
+    wav = _a_wav(ruta)
+    with wave.open(wav, "rb") as fh:
         hercios = fh.getframerate()
-    datos = _leer(ruta).mean(axis=1)
+    datos = _leer(wav).mean(axis=1)
     partes = partes_utiles(ficha, ruta)
     ini = int(float(partes[0][0] if partes else 0.0) * hercios)
 
