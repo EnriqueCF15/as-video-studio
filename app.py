@@ -5605,14 +5605,18 @@ def _correr_banda(avisar, ctx, tramos):
     # la tabla de animos del Estilo
     render = ctx.estado.params("render") or {}
     fijadas = render.get("musica_fijada") or {}
+    # las canciones que en este video no suenan nunca (fork, 19-10)
+    vetadas = list(render.get("musica_vetada") or [])
     if tramos is None and render.get("arco") == "guion":
         # POR LO QUE SE CUENTA (fork, 19-10): el mapa guardado (o los tonos de
         # la direccion si no hay mapa). Sin volver a llamar a Claude: por eso
         # la tanda del render puede rehacer la banda sin perder las secciones.
         tramos = sonido.arco_del_guion(escenas, largo, animos=render.get("animos_arco"),
-                                       mapa=render.get("mapa_musical") or None)
+                                       mapa=render.get("mapa_musical") or None,
+                                       hay=sonido.animos_con_canciones(vetadas))
     ficha = sonido.montar_banda(escenas, largo, avisar=avisar, tramos=tramos,
-                                fijadas=fijadas, animos=render.get("animos_arco"))
+                                fijadas=fijadas, animos=render.get("animos_arco"),
+                                vetadas=vetadas)
     ctx.estado.actualizar_params("render", {"musica": ficha})
     ctx.bitacora.anotar("banda_sonora", "render", {
         "tramos": len(ficha["tramos"]),
@@ -5723,12 +5727,20 @@ def montar_banda_sonora(pid: str, cuerpo: dict = Body(default=None)):
     arco = datos.get("arco")
     if arco is not None and arco not in ("ritmo", "guion"):
         raise ErrorApi(400, "arco: «ritmo» o «guion»")
+    # LAS VETADAS: ficheros de tu carpeta que en este video no suenan nunca
+    # (lista entera: la que se pasa sustituye a la que habia; [] las quita)
+    vetadas = None
+    if isinstance(datos.get("vetadas"), list):
+        vetadas = sorted({os.path.basename(str(a or "")).strip()
+                          for a in datos["vetadas"] if str(a or "").strip()})
     if not sonido.hay_musica():
         raise ErrorApi(409, sonido.falta_musica_texto())
     if fijadas is not None:
         ctx.estado.actualizar_params("render", {"musica_fijada": fijadas})
     if arco is not None:
         ctx.estado.actualizar_params("render", {"arco": arco})
+    if vetadas is not None:
+        ctx.estado.actualizar_params("render", {"musica_vetada": vetadas})
     trabajo_id = ctx.gestor.lanzar("banda_sonora", _correr_banda, ctx, tramos,
                                    paso="render")
     _registrar_trabajo(trabajo_id, ctx.id)
@@ -5762,7 +5774,8 @@ def _correr_mapa(avisar, ctx, con_claude, ajuste, montar):
     largo = float(plan.get("duracion_total") or 0) or (
         float(escenas[-1].get("t_out") or 0) - float(escenas[0].get("t_in") or 0))
     render = ctx.estado.params("render") or {}
-    hay = sonido.animos_con_canciones()
+    vetadas = list(render.get("musica_vetada") or [])
+    hay = sonido.animos_con_canciones(vetadas)
     avisos, mapa = [], {"fuente": "tonos", "secciones": []}
     if con_claude:
         avisar(0.05, "Claude está leyendo la narración para decidir la música")
@@ -5777,7 +5790,7 @@ def _correr_mapa(avisar, ctx, con_claude, ajuste, montar):
             avisos.extend(mapa.get("avisos") or [])
     ctx.estado.actualizar_params("render", {"arco": "guion", "mapa_musical": mapa})
     tramos = sonido.arco_del_guion(escenas, largo, animos=render.get("animos_arco"),
-                                   mapa=mapa if mapa.get("secciones") else None)
+                                   mapa=mapa if mapa.get("secciones") else None, hay=hay)
     resultado = {"fuente": mapa.get("fuente"), "secciones": _tramos_legibles(tramos),
                  "avisos": avisos}
     if montar:
@@ -5825,7 +5838,7 @@ def leer_mapa_musical(pid: str):
     mapa = render.get("mapa_musical") or {}
     tramos = [t for t in ((render.get("musica") or {}).get("tramos") or [])]
     return {"arco": render.get("arco") or "ritmo", "fuente": mapa.get("fuente"),
-            "mapa": mapa, "puestos": [
+            "vetadas": render.get("musica_vetada") or [], "mapa": mapa, "puestos": [
                 {**s, "canciones": [p.get("titulo") for p in (t.get("piezas") or [])]}
                 for s, t in zip(_tramos_legibles(tramos), tramos)]}
 

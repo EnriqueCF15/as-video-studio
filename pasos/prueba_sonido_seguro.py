@@ -393,6 +393,28 @@ def prueba_arco_del_guion():
               and "- oscuro" not in texto,
               "a Claude le llega la narracion con su minuto y solo los animos con canciones")
 
+    print("\n[4f] canciones vetadas en un video y animos sin canciones")
+    # 19-10: la unica de «tension» (Go Down Swinging) se veto; el mapa la pedia
+    hay_sin_tension = {"misterioso": 3, "sobrio": 2, "esperanzador": 2, "divertido": 1}
+    arco_v = sonido.arco_del_guion(escenas, 600.0, mapa=mapa, hay=hay_sin_tension)
+    comprobar("tension" not in [t["animo"] for t in arco_v]
+              and "misterioso" in [t["animo"] for t in arco_v],
+              "una seccion de un animo sin canciones pide el mas parecido (tension -> misterioso)")
+    planos_v = [{"id": f"S{i + 1:03d}", "t_in": i * 4.0, "t_out": (i + 1) * 4.0}
+                for i in range(40)]
+    banda_v = sonido.montar_banda(planos_v, 160.0, vetadas=["Paseo.wav"])
+    comprobar(all(p["archivo"] != "Paseo.wav"
+                  for t in banda_v["tramos"] for p in t["piezas"]),
+              "una cancion vetada no suena en ningun tramo")
+    fijada_v = sonido.montar_banda(planos_v, 160.0, fijadas={"0": "Paseo.wav"},
+                                   vetadas=["Paseo.wav"])
+    comprobar(all(p["archivo"] != "Paseo.wav"
+                  for t in fijada_v["tramos"] for p in t["piezas"]),
+              "ni aunque este fijada")
+    comprobar("sobrio" not in sonido.animos_con_canciones(["Calma Total.wav", "Paseo.wav"])
+              and sonido.animos_con_canciones().get("sobrio") == 2,
+              "las vetadas no cuentan para los animos con canciones")
+
     print("\n[4e] el gancho: primero las canciones que entran a tope")
     carpeta = sonido.carpeta_propia("musica")
     golpe, susurro = os.path.join(carpeta, "Golpe.wav"), os.path.join(carpeta, "Susurro.wav")

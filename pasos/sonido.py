@@ -1046,13 +1046,44 @@ GANCHO_MIN_DB = -4.0
 GANCHO_SEGUNDOS = 3.0
 
 
-def animos_con_canciones():
-    """Cuantas canciones con ficha hay de cada animo en tu carpeta. -> {animo: n}"""
+def animos_con_canciones(vetadas=()):
+    """Cuantas canciones con ficha hay de cada animo en tu carpeta. -> {animo: n}
+
+    Sin contar las `vetadas` de este video (ver `montar_banda`).
+    """
+    vetadas = set(vetadas or ())
     cuantas = {}
     for ficha in propios("musica"):
-        if ficha.get("animo"):
+        if ficha.get("animo") and ficha.get("archivo") not in vetadas:
             cuantas[ficha["animo"]] = cuantas.get(ficha["animo"], 0) + 1
     return cuantas
+
+
+#: Cuando un animo se queda sin canciones (no hay, o la unica esta vetada en
+#: este video), el mas parecido que si tenga. 19-10: la unica de «tension» era
+#: Go Down Swinging, el canal la quito, y las dos secciones de tension del mapa
+#: se iban a rellenar con cualquier cosa de la carpeta.
+ANIMOS_PARECIDOS = {
+    "tension": ("misterioso", "oscuro", "epico"),
+    "oscuro": ("misterioso", "tension", "melancolico"),
+    "epico": ("tension", "esperanzador", "misterioso"),
+    "misterioso": ("oscuro", "tension", "sobrio"),
+    "melancolico": ("sobrio", "esperanzador", "misterioso"),
+    "sobrio": ("melancolico", "misterioso", "esperanzador"),
+    "esperanzador": ("corporativo", "sobrio", "melancolico"),
+    "corporativo": ("esperanzador", "sobrio"),
+    "divertido": ("esperanzador", "corporativo"),
+}
+
+
+def _animo_que_suena(animo, hay):
+    """El animo si tiene canciones; si no, el mas parecido que tenga. -> (animo, cambiado)"""
+    if hay.get(animo, 0) > 0:
+        return animo, False
+    for parecido in ANIMOS_PARECIDOS.get(animo, ()):
+        if hay.get(parecido, 0) > 0:
+            return parecido, True
+    return animo, False
 
 
 def tono_de(escena):
@@ -1221,6 +1252,12 @@ def arco_del_guion(escenas, duracion_s=0.0, animos=None, mapa=None, hay=None):
     secciones[0]["desde"] = 0.0
     for actual, siguiente in zip(secciones, secciones[1:] + [None]):
         actual["hasta"] = siguiente["desde"] if siguiente else total
+    for seccion in secciones:
+        # un animo sin canciones (o con la unica vetada) pide el mas parecido
+        animo, cambiado = _animo_que_suena(seccion["animo"], hay)
+        if cambiado:
+            seccion["por_que"] += f" (sin canciones «{seccion['animo']}»: {animo})"
+            seccion["animo"] = animo
     secciones = [s for s in secciones if s["hasta"] > s["desde"]]
     secciones = _partir_largas(_suavizar(secciones, minimo, fronteras), fronteras)
 
@@ -1502,18 +1539,19 @@ def llenar_tramo(largo, candidatos):
     return piezas
 
 
-def _candidatos_de(tramo, fijada=None):
+def _candidatos_de(tramo, fijada=None, vetadas=()):
     """Las canciones que pueden ir en un tramo, de la primera fuente que tenga.
 
     De la carpeta propia: la FIJADA a mano primero (si sigue en la carpeta),
     luego las del animo del tramo, y si ninguna es de ese animo, cualquiera de
     la carpeta (con la carpeta primero, lo de fuera solo entra si esta vacia).
     De relleno no entran las de ANIMOS_SOLO_A_PROPOSITO, salvo que no haya
-    otras. -> (lista, fijada_encontrada)
+    otras. Las `vetadas` (ficheros) no entran nunca. -> (lista, fijada_encontrada)
     """
+    vetadas = set(vetadas or ())
     for fuente in fuentes_de("musica"):
         if fuente == "propia":
-            lista = propios("musica")
+            lista = [f for f in propios("musica") if f.get("archivo") not in vetadas]
             if not lista:
                 continue
             fija = [f for f in lista if fijada and f.get("archivo") == fijada]
@@ -1534,7 +1572,7 @@ def _candidatos_de(tramo, fijada=None):
 
 
 def montar_banda(escenas, duracion_s, avisar=None, tramos=None, fijadas=None,
-                 animos=None):
+                 animos=None, vetadas=None):
     """La banda sonora entera, decidida sola. Devuelve la ficha para params.
 
     NO deja fichero: deja escrito QUE trozos de que canciones van en cada
@@ -1551,6 +1589,9 @@ def montar_banda(escenas, duracion_s, avisar=None, tramos=None, fijadas=None,
     `fijadas` es {indice de tramo: fichero de tu carpeta}: esa cancion va
     primero en ese tramo, sea del animo que sea. Es lo que se elige a mano en
     la pantalla del video.
+
+    `vetadas` son ficheros de tu carpeta que en ESTE video no suenan nunca, ni
+    fijados ni de relleno (19-10: Go Down Swinging «desentona con todo»).
     """
     avisar = avisar or (lambda *a, **k: None)
     fijadas = {str(k): str(v) for k, v in (fijadas or {}).items() if v}
@@ -1567,7 +1608,7 @@ def montar_banda(escenas, duracion_s, avisar=None, tramos=None, fijadas=None,
                f"tramo {tramo['i'] + 1} de {len(arco)}: buscando algo "
                f"«{tramo['animo']}»")
         fijada = fijadas.get(str(tramo["i"]))
-        candidatos, encontrada = _candidatos_de(tramo, fijada)
+        candidatos, encontrada = _candidatos_de(tramo, fijada, vetadas)
         if fijada and not encontrada:
             avisos.append(f"tramo {tramo['i'] + 1}: «{fijada}» ya no está en tu "
                           "carpeta (o no tiene ficha); se ha elegido otra")
