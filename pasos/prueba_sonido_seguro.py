@@ -299,6 +299,34 @@ def prueba_banda_con_lo_propio():
     comprobar("Calma Total" in hecho["texto"] and "Paseo" in hecho["texto"],
               "los creditos citan TODAS las canciones de un tramo, no solo la primera")
 
+    print("\n[4c] la musica 'divertido' solo suena donde se pide")
+    comprobar("divertido" in sonido.ANIMOS, "'divertido' es un animo que se puede elegir")
+    risas = os.path.join(sonido.carpeta_propia("musica"), "Risas.wav")
+    tono(risas, 20.0, 330.0)
+    sonido.guardar_ficha_propia("musica", "Risas.wav", {
+        "fuente": "otra", "titulo": "Risas", "artista": "Alguien",
+        "licencia": "CC BY 4.0", "atribucion_requerida": True,
+        "texto_credito": "Risas by Alguien - CC BY 4.0", "animo": "divertido"})
+    try:
+        sin_pedir = sonido.montar_banda(escenas, 160.0)
+        comprobar(all(p["archivo"] != "Risas.wav"
+                      for t in sin_pedir["tramos"] for p in t["piezas"]),
+                  "de relleno no entra: ningun tramo serio la usa")
+        arco_d = sonido.arco_del_video(escenas, 160.0)
+        arco_d[0]["animo"] = "divertido"
+        pedida = sonido.montar_banda(escenas, 160.0, tramos=arco_d)
+        igual(pedida["tramos"][0]["piezas"][0]["archivo"], "Risas.wav",
+              "un tramo 'divertido' la usa")
+        comprobar(all(p["archivo"] != "Risas.wav" for p in pedida["tramos"][1]["piezas"]),
+                  "y el tramo de al lado sigue sin ella")
+        fijada_d = sonido.montar_banda(escenas, 160.0, fijadas={"1": "Risas.wav"})
+        igual(fijada_d["tramos"][1]["piezas"][0]["archivo"], "Risas.wav",
+              "fijada a mano entra en cualquier tramo")
+    finally:
+        for ruta in (risas, sonido._ruta_ficha(risas)):
+            if os.path.exists(ruta):
+                os.remove(ruta)
+
 
 def prueba_efectos_propios():
     print("\n[5] los efectos: lo propio sin clave de Freesound")

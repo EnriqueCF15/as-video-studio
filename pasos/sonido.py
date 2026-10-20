@@ -618,7 +618,14 @@ ANIMOS = {
     "epico": "epic cinematic", "sobrio": "documentary ambient",
     "esperanzador": "uplifting hopeful", "corporativo": "corporate clean",
     "melancolico": "melancholic piano", "misterioso": "mysterious ambient",
+    "divertido": "funny comedy quirky",
 }
+
+#: Animos que NO sirven de relleno. Cuando un tramo no tiene canciones de su
+#: animo, entra cualquiera de la carpeta; una de comedia en medio de una parte
+#: seria descoloca. Estas solo suenan donde se piden: un tramo con ese animo o
+#: una cancion fijada a mano (la anecdota, el blooper, la curiosidad).
+ANIMOS_SOLO_A_PROPOSITO = ("divertido",)
 
 
 def _pedir_a_jamendo(params):
@@ -1233,7 +1240,8 @@ def _candidatos_de(tramo, fijada=None):
     De la carpeta propia: la FIJADA a mano primero (si sigue en la carpeta),
     luego las del animo del tramo, y si ninguna es de ese animo, cualquiera de
     la carpeta (con la carpeta primero, lo de fuera solo entra si esta vacia).
-    -> (lista, fijada_encontrada)
+    De relleno no entran las de ANIMOS_SOLO_A_PROPOSITO, salvo que no haya
+    otras. -> (lista, fijada_encontrada)
     """
     for fuente in fuentes_de("musica"):
         if fuente == "propia":
@@ -1244,7 +1252,9 @@ def _candidatos_de(tramo, fijada=None):
             resto = [f for f in lista if f not in fija]
             del_animo = [f for f in resto if f.get("animo") == tramo["animo"]
                          or tramo["animo"] in (f.get("etiquetas") or [])]
-            return fija + (del_animo or resto), bool(fija)
+            relleno = [f for f in resto
+                       if f.get("animo") not in ANIMOS_SOLO_A_PROPOSITO] or resto
+            return fija + (del_animo or relleno), bool(fija)
         if fuente == "jamendo" and hay_claves()[0]:
             candidatos = buscar_musica(
                 animo=tramo["animo"], cuantas=6,
