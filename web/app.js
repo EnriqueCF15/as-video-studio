@@ -3301,7 +3301,7 @@ const ANIMOS_EXPLICADOS = {
   esperanzador: 'optimista, luminoso',
   corporativo: 'limpio, de empresa',
   oscuro: 'grave, sombrío',
-  divertido: 'gracioso, de comedia: anécdotas, bloopers, curiosidades (solo suena donde se pide)',
+  divertido: 'gracioso, de comedia',
 };
 
 /* CÓMO SE ORDENA CADA VÍDEO DE ESTE ESTILO (fork, Fase 5): un relato con

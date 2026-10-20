@@ -1263,6 +1263,11 @@ video { width: 100%; border-radius: 9px; border: 1px solid var(--linea); backgro
 }
 .form-audio [hidden] { display: none !important; }
 .form-audio audio { width: 100%; }
+/* La columna no crece con lo que lleva dentro: un desplegable con una opción
+   larga ensanchaba la ficha entera y empujaba fuera del panel el ▶ y la ✕ de
+   cada trozo bueno (pasó con la explicación de «divertido», 19-10). */
+.form-audio { grid-template-columns: minmax(0, 1fr); }
+.form-audio select { max-width: 100%; }
 .form-audio-cab { border-bottom: 1px solid var(--linea); padding-bottom: 6px; }
 .paso-ficha {
   display: flex; align-items: center; gap: 8px; margin-top: 8px;
