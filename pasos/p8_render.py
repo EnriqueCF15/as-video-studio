@@ -123,6 +123,49 @@ CALIDADES = {
     "baja": {"crf": "26", "preset": "veryfast"},
 }
 
+# ------------------------------------------------ lo que pide YouTube al subir
+#
+# Medido el 21-10-2026 con ffprobe sobre el MP4 del video de historia y
+# comparado con la guia de subida de YouTube (support.google.com/youtube/
+# answer/1722171): el video estaba bien (H.264 High, 4:2:0, faststart, CRF 16),
+# pero el audio salia a 96 kHz y 196 kbps -- `loudnorm` trabaja a 192 kHz y el
+# AAC baja a lo maximo que admite, 96 -- y el color, convertido y etiquetado
+# como BT.601, que es lo que ffmpeg hace por defecto con un JPEG. La guia pide
+# 48 kHz, 384 kbps en estereo y BT.709 en matriz, transferencia y primarios.
+
+AUDIO_HZ = 48000
+AUDIO_KBPS = "384k"
+
+#: Las tres etiquetas de color del MP4. Van con una conversion que las cumpla
+#: (`_filtro_color`): etiquetar BT.709 lo convertido con BT.601 cambia los
+#: colores en vez de arreglarlos.
+ETIQUETAS_709 = ["-colorspace", "bt709", "-color_primaries", "bt709",
+                 "-color_trc", "bt709"]
+
+
+def _filtro_color(extension):
+    """La conversion a YUV de TV con la matriz BT.709. -> valor de `-vf`
+
+    Un JPEG llega como YUV de rango completo con la matriz BT.601 (la del
+    JPEG); un PNG, como RGB. Los dos salen igual: rango de TV, BT.709, 4:2:0.
+    """
+    if extension == "jpg":
+        return ("scale=in_range=pc:out_range=tv:in_color_matrix=bt601:"
+                "out_color_matrix=bt709,format=yuv420p")
+    return "scale=out_range=tv:out_color_matrix=bt709,format=yuv420p"
+
+
+def _es_709(clip):
+    """Si el clip ya va en BT.709. Los de antes del 21-10 van en BT.601."""
+    try:
+        salida = subprocess.run(
+            [medios.ffprobe(), "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=color_space", "-of", "default=nw=1:nk=1", clip],
+            capture_output=True, text=True, timeout=60, **medios.SIN_VENTANA)
+    except Exception:                                          # noqa: BLE001
+        return False
+    return salida.stdout.strip() == "bt709"
+
 
 # ------------------------------------------- en que se guarda cada fotograma
 #
@@ -174,7 +217,9 @@ EXT_HUELLA = ".huella"
 #: Se sube A MANO cuando cambie COMO se dibuja un clip (el codigo, no sus
 #: datos): con otra version ninguna huella vieja vale y se redibuja todo.
 #: 2 (06-10): fotogramas en JPEG y 25 fps. 3: el JPEG pasa a rango de TV al codificar.
-VERSION_HUELLA = 3
+#: 4 (21-10): color en BT.709 (matriz y etiquetas). Un clip viejo va en BT.601 y
+#: la concatenacion es `-c:v copy`: mezclarlos daria dos colores en un video.
+VERSION_HUELLA = 4
 
 _HUELLAS_FICHERO = {}
 
@@ -615,12 +660,12 @@ def _codificar(dir_frames, destino, fps, calidad):
     # que es como salia siempre desde los PNG. Sin convertirlo, el MP4 salia
     # marcado «yuvj420p / pc» y cada reproductor lo pinta a su manera; con esto
     # sale igual que antes y mas fiel a la imagen (medido: 48,6 dB contra 47,8).
-    rango = (["-vf", "scale=in_range=pc:out_range=tv"] if extension == "jpg" else [])
+    # Y CON LA MATRIZ BT.709 (21-10): ver «lo que pide YouTube al subir».
     orden = [medios.ffmpeg(), "-y", "-loglevel", "error",
              "-framerate", str(fps), "-i", os.path.join(dir_frames, f"f%05d.{extension}"),
-             *rango,
+             "-vf", _filtro_color(extension),
              "-c:v", "libx264", "-preset", ajustes["preset"], "-crf", ajustes["crf"],
-             "-pix_fmt", "yuv420p", "-r", str(fps), destino]
+             "-pix_fmt", "yuv420p", *ETIQUETAS_709, "-r", str(fps), destino]
     proceso = subprocess.run(orden, capture_output=True, text=True, timeout=3600,
                              **medios.SIN_VENTANA)
     if proceso.returncode != 0 or not os.path.exists(destino):
@@ -716,10 +761,17 @@ def _cola_negra(clips, trabajo, fps, calidad, segundos=COLA_NEGRO_S):
             capture_output=True, text=True, timeout=120, **medios.SIN_VENTANA)
         if sacar.returncode != 0 or not os.path.exists(fotograma):
             return clips
+        # CON EL COLOR DE LOS CLIPS: la concatenacion no recodifica, y un
+        # «solo montar» puede juntar clips viejos (BT.601) con esta cola
+        fundido = f"fade=t=out:st=0:d={entrada:g}:color=black"
+        if _es_709(ultimo):
+            color = ["-vf", f"{fundido},{_filtro_color('png')}", *ETIQUETAS_709]
+        else:
+            color = ["-vf", fundido]
         hacer = subprocess.run(
             [medios.ffmpeg(), "-y", "-loglevel", "error", "-loop", "1",
              "-framerate", str(fps), "-t", f"{segundos:g}", "-i", fotograma,
-             "-vf", f"fade=t=out:st=0:d={entrada:g}:color=black",
+             *color,
              "-c:v", "libx264", "-preset", ajustes["preset"],
              "-crf", ajustes["crf"], "-pix_fmt", "yuv420p", "-r", str(fps),
              "-an", negro],
@@ -790,7 +842,10 @@ def _concatenar(clips, destino, audio, desfase, trabajo, musica=None,
         # SIN `-shortest`: la locucion acaba antes que el video --le sobran los
         # tres segundos de cola-- y con el la salida se recortaba ahi, que es
         # exactamente quitar lo que se acaba de anadir. Manda el video.
-        orden += ["-c:v", "copy", "-c:a", "aac", "-b:a", "192k"]
+        # 48 kHz y 384 kbps, lo que pide YouTube: sin `-ar` salia a 96 kHz
+        # (lo que deja `loudnorm`) y a 192 kbps
+        orden += ["-c:v", "copy", "-c:a", "aac", "-b:a", AUDIO_KBPS,
+                  "-ar", str(AUDIO_HZ)]
     else:
         orden += ["-c", "copy"]
     # +faststart: el indice del MP4 (el atomo `moov`) al PRINCIPIO en vez de al
