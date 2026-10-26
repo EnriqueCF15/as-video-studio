@@ -62,6 +62,7 @@ from nucleo.proyecto import Proyecto  # noqa: E402
 from nucleo.trabajos import GestorTrabajos  # noqa: E402
 
 import cartelas  # noqa: E402
+import comun  # noqa: E402
 import encuadres  # noqa: E402
 import medios  # noqa: E402
 import p6_assets  # noqa: E402
@@ -294,8 +295,10 @@ def preparar_proyecto():
 #: Tamano del arte: el de GENERACION de un video horizontal
 #: (`comun.FORMATOS`), que es el que tendria una imagen recien pagada. No es un
 #: detalle: p7 mide en pixeles sobre este lienzo para colocar el rotulo, y con
-#: otro tamano lo que se comprueba deja de ser lo que pasa en un video.
-LIENZO_ARTE = (1536, 1024)
+#: otro tamano lo que se comprueba deja de ser lo que pasa en un video. Se lee
+#: de alli: desde el 26-10 es 16:9 (1536x864), y un 3:2 fijo aqui era un plan
+#: de video nuevo con laminas de los de antes.
+LIENZO_ARTE = tuple(comun.FORMATOS["horizontal"]["generacion"])
 
 #: Donde esta EL SUJETO en las laminas fabricadas, en fraccion del alto. Una
 #: banda oscura en la mitad de abajo: p7 tiene que poner el rotulo ARRIBA, y con

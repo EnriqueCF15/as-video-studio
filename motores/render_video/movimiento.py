@@ -1,8 +1,9 @@
 """
 Hyperframes y movimiento de camara determinista.
 
-Idea: el plano se genera a 1536x1024 y se amplia x2 en local. El video sale a
-1920x1080 recortando una ventana 16:9 DENTRO de ese hyperframe de 3072x2048. Un
+Idea: el plano se genera a 1536x864 (1536x1024 en los videos de antes del
+26-10) y se amplia x2 en local. El video sale a 1920x1080 recortando una ventana
+16:9 DENTRO de ese hyperframe (3072x1728: con el plano quieto, entero). Un
 zoom de 1.0 a 1.2 sigue leyendo pixeles reales del hyperframe en vez de estirar
 los del plano, que es la diferencia entre un zoom limpio y uno emborronado.
 

@@ -142,8 +142,10 @@ def prueba_modelos():
     igual(gem.modelo_para("low", "reparto"), ("gemini-3.1-flash-image", "2K"),
           "las hojas de reparto, con Nano Banana 2 a 2K sea cual sea la calidad "
           "(eleccion de Enrique tras la prueba real)")
-    igual(gem.ASPECTOS, {"apaisado": "3:2", "cuadrado": "1:1", "vertical": "2:3"},
-          "la MISMA proporcion que daba OpenAI (1536x1024)")
+    igual(gem.ASPECTOS, {"apaisado": "3:2", "cuadrado": "1:1", "vertical": "2:3",
+                         "panoramico": "16:9", "movil": "9:16"},
+          "la proporcion que daba OpenAI (1536x1024) y, desde el 26-10, la del "
+          "video (16:9 y 9:16)")
     usd = gem.coste_de("gemini-3.1-flash-image", "1K", 15680, 1120)
     comprobar(abs(usd - (0.0672 + 0.00784)) < 1e-6,
               f"coste de un plano con 14 referencias a 1K = salida + entrada ({usd:.4f} $)")
@@ -155,7 +157,10 @@ def prueba_tamanos():
     print("\n[2] el tamano exacto que espera el Estudio")
     for tamano, (ancho, alto), crudo in (("apaisado", (1536, 1024), (1264, 848)),
                                          ("vertical", (1024, 1536), (848, 1264)),
-                                         ("cuadrado", (1024, 1024), (1024, 1024))):
+                                         ("cuadrado", (1024, 1024), (1024, 1024)),
+                                         # lo que da Nano Banana 2 a 1K en 16:9
+                                         ("panoramico", (1536, 864), (1376, 768)),
+                                         ("movil", (864, 1536), (768, 1376))):
         salida = Image.open(io.BytesIO(gem._a_png(png(*crudo), tamano)))
         igual(salida.size, (ancho, alto), f"{tamano}: {crudo} -> {ancho}x{alto}")
 
@@ -178,6 +183,14 @@ def prueba_generar():
           "las referencias van delante y el prompt al final, en su orden")
     igual(llamada["config"].image_config.aspect_ratio, "3:2", "con la proporcion 3:2")
     igual(llamada["config"].image_config.image_size, "1K", "y la resolucion pedida")
+
+    # un plano de un video desde el 26-10: se PIDE 16:9 y sale al lienzo del video
+    doble = _ClienteDoble([respuesta(png(1376, 768))])
+    imagen, meta = con_cliente(doble, lambda: gem.generar(
+        "a cozy kitchen", [ref], quality="low", tamano="panoramico"))
+    igual(doble.llamadas[0]["config"].image_config.aspect_ratio, "16:9",
+          "panoramico: se pide en 16:9")
+    igual(Image.open(io.BytesIO(imagen)).size, (1536, 864), "y sale a 1536x864")
 
     # un 429 frena y se reintenta; la segunda sale
     gem.ESPERA_MAXIMA_S, maximo = 0.01, gem.ESPERA_MAXIMA_S

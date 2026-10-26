@@ -33,6 +33,23 @@ MODELO = "gpt-image-2"
 PRECIO = {"low": 0.006, "medium": 0.041, "high": 0.165}
 TAMANOS = {"apaisado": "1536x1024", "cuadrado": "1024x1024", "vertical": "1024x1536"}
 
+#: LOS LIENZOS DEL VIDEO (16:9 y 9:16, desde el 26-10) no los sabe hacer esta
+#: API: se pide el 3:2 / 2:3 de siempre y se recorta al centro, que es lo mismo
+#: que hacia antes el render con cada plano.
+RECORTES = {"panoramico": ("apaisado", (1536, 864)),
+            "movil": ("vertical", (864, 1536))}
+
+
+def _recortar(png, ancho, alto):
+    """El PNG recortado al centro a ancho x alto."""
+    import io
+    img = Image.open(io.BytesIO(png))
+    x, y = (img.width - ancho) // 2, (img.height - alto) // 2
+    salida = io.BytesIO()
+    img.crop((x, y, x + ancho, y + alto)).save(salida, "PNG")
+    return salida.getvalue()
+
+
 _gasto = {"usd": 0.0, "llamadas": 0}
 
 # ------------------------------------------------------------------ el freno
@@ -593,6 +610,11 @@ def _al_dia(destino, origen):
 
 def generar(prompt, referencias, *, quality="low", tamano="apaisado",
             api_key=None, reintentos=6):
+    if tamano in RECORTES:
+        pedido, (ancho, alto) = RECORTES[tamano]
+        png, meta = generar(prompt, referencias, quality=quality, tamano=pedido,
+                            api_key=api_key, reintentos=reintentos)
+        return _recortar(png, ancho, alto), dict(meta, tamano=f"{ancho}x{alto}")
     # Sin referencias esta llamada NO se puede hacer, y hay que decirlo aqui.
     # Motivo: requests solo pone 'multipart/form-data' cuando files no esta
     # vacio; con la lista vacia cae a 'x-www-form-urlencoded', que es justo lo

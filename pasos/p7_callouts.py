@@ -800,7 +800,8 @@ def capa_de_escena(escena, p, mov=None, banda=None, aspecto=16 / 9,
         # tal cual y va CON la imagen. Su subtitulo, como el de cualquier otro
         # plano, va en la capa quieta -- que es lo que permite que una portada
         # tenga subtitulo sin que las dos se peleen por el mismo sitio.
-        return (_envoltorio_svg(_cabecera_incrustada(escena["capitulo_svg"]),
+        return (_envoltorio_svg(_cabecera_incrustada(escena["capitulo_svg"],
+                                                     lienzo),
                                 lienzo),
                 fija, fichas)
     return capa_vacia(lienzo), fija, fichas
@@ -841,12 +842,12 @@ def _envoltorio_fijo(interior, salida=SALIDA):
             f'viewBox="0 0 {salida[0]} {salida[1]}">{interior}</svg>')
 
 
-def _cabecera_incrustada(ruta_svg):
+def _cabecera_incrustada(ruta_svg, lienzo=TAMANO):
     """Mete la cabecera de capitulo dentro de la capa, escalada al cuadro."""
     with open(ruta_svg, "r", encoding="utf-8") as fh:
         crudo = fh.read()
     interior = crudo[crudo.index(">", crudo.index("<svg")) + 1: crudo.rindex("</svg>")]
-    return (f'<svg x="0" y="0" width="{TAMANO[0]}" height="{TAMANO[1]}" '
+    return (f'<svg x="0" y="0" width="{lienzo[0]}" height="{lienzo[1]}" '
             f'viewBox="0 0 1920 1080" preserveAspectRatio="xMidYMid slice">'
             f'{interior}</svg>')
 
@@ -1191,15 +1192,17 @@ def zonas_de_captura(proyecto, captura, aspecto=16 / 9, minimo=0.05):
                                      captura.get("t_escena"))["fraccion"]
     fraccion = 0.0 if fraccion is None else float(fraccion)
 
+    # la proporcion del PLANO, que ya no es siempre 3:2: la del hyperframe
+    lienzo = tuple(mov.get("hyperframe_px") or TAMANO)
     zonas = []
     for trazo in trazos:
         puntos = trazo.get("puntos") or []
         if not puntos:
             continue
         x1, y1 = punto_en_plano(mov, fraccion, min(p["x"] for p in puntos),
-                                min(p["y"] for p in puntos), TAMANO, aspecto)
+                                min(p["y"] for p in puntos), lienzo, aspecto)
         x2, y2 = punto_en_plano(mov, fraccion, max(p["x"] for p in puntos),
-                                max(p["y"] for p in puntos), TAMANO, aspecto)
+                                max(p["y"] for p in puntos), lienzo, aspecto)
         # un trazo corto (un circulito, un punto) tiene que seguir prohibiendo
         # un area util, no un pixel
         cx, cy = (x1 + x2) / 2, (y1 + y2) / 2

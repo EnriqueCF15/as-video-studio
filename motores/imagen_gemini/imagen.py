@@ -25,9 +25,11 @@ La calidad del Estudio (low | medium | high) se traduce asi (CALIDADES):
 y las hojas de reparto van SIEMPRE a 2K, sea cual sea la calidad: son pocas y
 de ellas depende que el personaje sea el mismo en todo el video.
 
-Tamano: el resto del Estudio espera exactamente lo que daba OpenAI (1536x1024
-apaisado, 1024x1536 vertical, 1024x1024 cuadrado; ver p6_assets.TAMANO). Se
-pide a Gemini la MISMA proporcion (3:2, 2:3, 1:1) y se ajusta al tamano exacto.
+Tamano: se pide a Gemini la proporcion del lienzo y se ajusta al tamano exacto
+(TAMANOS). Los planos de un video nuevo van ya en la del video (panoramico
+16:9, movil 9:16, desde el 26-10; ver `comun.FORMATOS`); las hojas de reparto y
+los videos de antes siguen en lo que daba OpenAI (1536x1024 apaisado, 1024x1536
+vertical, 1024x1024 cuadrado).
 
 Las referencias NO se recortan aqui: el prompt de cada plano las nombra por su
 posicion, y quitar una a ciegas haria que «la imagen 3» fuera otra. Si un
@@ -81,8 +83,10 @@ MODELO_REPARTO = "gemini-3.1-flash-image"
 CALIDADES = {"low": (MODELO_PLANOS, "1K"), "medium": (MODELO_PLANOS, "2K"),
              "high": (MODELO_PLANOS, "4K")}
 
-TAMANOS = {"apaisado": "1536x1024", "cuadrado": "1024x1024", "vertical": "1024x1536"}
-ASPECTOS = {"apaisado": "3:2", "cuadrado": "1:1", "vertical": "2:3"}
+TAMANOS = {"apaisado": "1536x1024", "cuadrado": "1024x1024", "vertical": "1024x1536",
+           "panoramico": "1536x864", "movil": "864x1536"}
+ASPECTOS = {"apaisado": "3:2", "cuadrado": "1:1", "vertical": "2:3",
+            "panoramico": "16:9", "movil": "9:16"}
 
 #: Precio de referencia por imagen (solo la salida, a 1K), como el PRECIO de
 #: imagen_openai: es lo que se ensena antes de generar. Lo que se anota sale de

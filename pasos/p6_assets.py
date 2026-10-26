@@ -1351,6 +1351,11 @@ def planificar(proyecto, params, inventario=None, replantear=False,
     # que lo tenia, no cortar de cero, que daria un tercer reparto distinto.
     if previo is None:
         previo = {} if replantear else plan_actual(proyecto)
+    # EL LIENZO, del plan que ya hubiera AUNQUE SE REPLANTEE: replantear vuelve
+    # a cortar, no a dibujar, y un video planificado en 3:2 sigue en 3:2 (ver
+    # `comun.generacion_heredada`). Solo un video nuevo estrena el 16:9.
+    generacion = p2_brief.comun.generacion_heredada(
+        previo or plan_actual(proyecto), formato["id"])
     # EL CORTE DE ANTES MANDA MIENTRAS EL GUION SEA EL DE ANTES.
     #
     # El reparto optimo se calcula con las MARCAS DE PALABRA, y una voz
@@ -1541,7 +1546,7 @@ def planificar(proyecto, params, inventario=None, replantear=False,
         # anterior a esto no lo trae y es horizontal.
         "formato": formato["id"],
         "resolucion": list(formato["salida"]),
-        "generacion": list(formato["generacion"]),
+        "generacion": generacion,
         "estilo": p["estilo"],
         "narracion": {"meta": ruta_meta, "duracion": meta.get("duracion")},
         "duracion_total": round(escenas[-1]["t_out"], 3) if escenas else 0.0,
@@ -3133,9 +3138,10 @@ def _producir_imagen(nombre, prompt, referencias, destino, p, rehacer=False,
     cache y paga una imagen nueva, porque con el mismo prompt la cache
     devolveria exactamente la que el humano acaba de rechazar.
 
-    `tamano` es el del motor de imagen ('apaisado' | 'vertical'). Los planos lo
-    traen del formato del plan; las hojas de personaje y las piezas van siempre
-    apaisadas, que es como se leen mejor como referencia.
+    `tamano` es el del motor de imagen ('panoramico' | 'movil', o 'apaisado' |
+    'vertical' en los videos de antes del 26-10). Los planos lo traen del
+    lienzo del plan; las hojas de personaje y las piezas van siempre apaisadas
+    (3:2), que es como se leen mejor como referencia y como estan en el banco.
     """
     tamano = tamano or "apaisado"
     firma = medios.huella({"prompt": prompt, "calidad": p["calidad"],
@@ -3604,8 +3610,9 @@ def _generar_escenas(plan, dirs, p, trabajo, toca, unidades, resultados, avisar,
                 # 14 planos con la firma SIN cambiar y su PNG en el banco,
                 # 0,55 $. Es el ultimo resto de la deduccion vieja que el
                 # comentario de `_generar_escenas` da por retirada.
-                tamano = p2_brief.comun.ficha_formato(
-                    plan.get("formato"))["tamano_imagen"]
+                # del LIENZO del plan, no de su formato: un plano de un video
+                # de antes del 26-10 se sigue pidiendo 3:2
+                tamano = p2_brief.comun.tamano_imagen_de_plan(plan)
                 meta = _producir_imagen(sid, prompt,
                                         [r["ruta"] for r in referencias],
                                         destino, p,

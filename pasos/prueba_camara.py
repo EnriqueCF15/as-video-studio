@@ -11,16 +11,25 @@ Prueba del ritmo de camara y de los subtitulos fuera del video (fork, 26-10-2026
   5. SUBTITULOS       auto = fuera en horizontal y dentro en vertical; fuera, la
                       capa va vacia pero las fichas siguen (son el .srt)
   6. EL .SRT          ordenado, sin solapes y con su formato
+  7. EL LIENZO 16:9   los videos nuevos se dibujan en 16:9 (9:16) y quietos se
+                      ven enteros; los de antes siguen en 3:2 al replanificar;
+                      las cartelas componen igual que antes
 
     python pasos\prueba_camara.py
 """
+import io
 import os
 import sys
+import tempfile
+
+from PIL import Image
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import camara  # noqa: E402
+import cartelas  # noqa: E402
+import comun  # noqa: E402
 import medios  # noqa: E402
 import p7_callouts as p7  # noqa: E402
 import p8_render as p8  # noqa: E402
@@ -165,6 +174,74 @@ igual(lineas[:3], ["1", "00:00:00,000 --> 00:00:03,000", "first line"],
 igual(lineas[5], "00:00:03,000 --> 00:00:04,000", "el segundo, tal cual")
 igual(lineas[9], "00:00:05,000 --> 00:00:05,500", "uno muy corto dura al menos medio segundo")
 igual(subtitulos.srt([]), "", "sin subtitulos, vacio")
+
+titulo("7 · el lienzo 16:9 de los videos nuevos (y los de antes, en 3:2)")
+igual(comun.FORMATOS["horizontal"]["generacion"], [1536, 864],
+      "un video nuevo horizontal se dibuja ya en 16:9")
+igual(comun.FORMATOS["vertical"]["generacion"], [864, 1536], "y uno vertical en 9:16")
+igual(comun.generacion_heredada({}, "horizontal"), [1536, 864], "sin plan previo: el 16:9")
+viejo = {"formato": "horizontal", "generacion": [1536, 1024], "escenas": [{"id": "S001"}]}
+igual(comun.generacion_heredada(viejo, "horizontal"), [1536, 1024],
+      "volver a planificar un video de antes NO le cambia el lienzo")
+igual(comun.generacion_heredada({"escenas": [{"id": "S001"}]}, "horizontal"), [1536, 1024],
+      "un plan tan viejo que no guarda lienzo: 3:2")
+igual(comun.generacion_heredada({"formato": "vertical", "escenas": [{"id": "S001"}]},
+                                "vertical"), [1024, 1536], "un vertical de antes: 2:3")
+igual(comun.generacion_heredada(viejo, "vertical"), [864, 1536],
+      "cambiar de formato estrena el lienzo nuevo (se rehace todo de todos modos)")
+igual(comun.tamano_imagen_de_plan(viejo), "apaisado",
+      "un plano de antes se sigue pidiendo 3:2: misma firma, no se paga otra vez")
+igual(comun.tamano_imagen_de_plan({"formato": "vertical"}), "vertical",
+      "un vertical sin lienzo guardado, 2:3")
+igual(comun.tamano_imagen_de_plan({"formato": "horizontal", "generacion": [1536, 864]}),
+      "panoramico", "uno nuevo se pide en 16:9")
+igual(comun.tamano_imagen_de_plan({"formato": "vertical", "generacion": [864, 1536]}),
+      "movil", "y uno vertical nuevo en 9:16")
+
+quieto = {"ventana_ini": [0.0, 0.0, 1.0, 1.0], "ventana_fin": [0.0, 0.0, 1.0, 1.0]}
+igual(tuple(round(v) for v in p7.ventana_en(quieto, 0.5, (1536, 1024), 16 / 9)),
+      (0, 80, 1536, 944), "3:2 quieto: el video pierde 80 px arriba y abajo (el fallo de S068)")
+igual(tuple(round(v) for v in p7.ventana_en(quieto, 0.5, (1536, 864), 16 / 9)),
+      (0, 0, 1536, 864), "16:9 quieto: se ve el plano ENTERO")
+igual(tuple(round(v) for v in p7.ventana_en(quieto, 0.5, (864, 1536), 9 / 16)),
+      (0, 0, 864, 1536), "y en vertical 9:16, igual")
+
+with tempfile.TemporaryDirectory() as tmp:
+    dir_escenas, dir_hyper = os.path.join(tmp, "escenas"), os.path.join(tmp, "hyper")
+    os.makedirs(dir_escenas)
+    Image.new("RGB", (1536, 864), "white").save(os.path.join(dir_escenas, "S001.png"))
+    mov = movimiento.calcular({"escenas": [plano(1, "B001", 3.0, zoom={"de": 1.0, "a": 1.0})]},
+                              dir_escenas, dir_hyper, tmp)[0]
+    igual(mov["hyperframe_px"], [3072, 1728], "el hyperframe de un plano 16:9 es 16:9")
+    igual(tuple(round(v) for v in p7.ventana_en(mov, 1.0, mov["hyperframe_px"], 16 / 9)),
+          (0, 0, 3072, 1728), "y el render, quieto, lo ensena entero")
+    cabecera = os.path.join(tmp, "cab.svg")
+    with open(cabecera, "w", encoding="utf-8") as fh:
+        fh.write('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1920 1080"><rect/></svg>')
+    cierto('width="1536" height="864"' in p7._cabecera_incrustada(cabecera, (1536, 864)),
+           "la portada de capitulo ocupa el lienzo 16:9, no uno 3:2")
+
+ficha = {"plantilla": "definicion",
+         "datos": dict(cartelas.PLANTILLAS["definicion"]["ejemplo"])}
+de_antes = cartelas.svg_capa(ficha, duracion=4.0)
+nueva = cartelas.svg_capa(ficha, duracion=4.0, lienzo=(1536, 864), salida=(1920, 1080))
+cierto('viewBox="0 0 1536 864"' in nueva, "la cartela de un video 16:9 ocupa su lienzo")
+cierto('translate(0.0 -80.0) scale(1)' in nueva,
+       "con la composicion subida 80 px: la banda visible cae sobre el lienzo entero")
+igual(nueva.count("<svg"), 1,
+      "en un <g> y no en un <svg> anidado: en Edge cada <svg> tiene su reloj y el "
+      "render solo para el de fuera (la cartela se escribia al reloj de pared)")
+marca = 'clip-path="url(#ct-caja)">'
+interior = nueva[nueva.index(marca) + len(marca):-len("</g></svg>")]
+cierto(bool(interior) and de_antes.endswith(interior + "</svg>"),
+       "y compone EXACTAMENTE lo mismo que en un video de antes (no se centra como el vertical)")
+
+openai = medios.motor("imagen_openai/imagen.py")
+crudo = io.BytesIO()
+Image.new("RGB", (1536, 1024), "white").save(crudo, "PNG")
+igual(Image.open(io.BytesIO(openai._recortar(crudo.getvalue(), 1536, 864))).size,
+      (1536, 864), "OpenAI no sabe 16:9: se pide 3:2 y se recorta al centro")
+igual(openai.RECORTES["panoramico"][0], "apaisado", "pidiendo el apaisado de siempre")
 
 print()
 if FALLOS:

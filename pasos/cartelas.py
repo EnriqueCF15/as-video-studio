@@ -105,6 +105,11 @@ TAMANO = (1536, 1024)
 #: Lo que de verdad queda en cuadro: el video recorta 16:9 sobre un lienzo 3:2,
 #: asi que arriba y abajo se pierden 80 px. Escribir fuera de esta banda es
 #: escribir donde nadie va a leer.
+#:
+#: Las plantillas COMPONEN SIEMPRE en este 3:2 y en esta banda. En un video con
+#: lienzo 16:9 (1536x864, desde el 26-10) la composicion se anida a escala 1
+#: y subida 80 px (`_svg`): la banda cae justo sobre el lienzo entero y la
+#: cartela sale identica a la de un video de antes.
 BANDA = (0, 80, 1536, 944)
 
 #: Y donde puede haber texto, con margen para respirar. Todo lo que dibuja una
@@ -170,6 +175,12 @@ def seguro_vertical(lienzo, salida, escala=ESCALA_VERTICAL):
     x0 = (w - ancho) / 2.0 + MARGEN_VERTICAL
     x1 = (w + ancho) / 2.0 - MARGEN_VERTICAL
     return (int(round(x0)), SEGURO[1], int(round(x1)), SEGURO[3])
+
+
+def es_alto(lienzo):
+    """Si el lienzo es de video vertical. Uno 16:9 tambien se anida, pero se
+    compone con la region segura de siempre: es tan ancho como TAMANO."""
+    return bool(lienzo) and float(lienzo[1]) > float(lienzo[0])
 
 
 
@@ -1936,6 +1947,8 @@ def _svg(interior, escala=1, lienzo=None, fuera="", salida=None, k=None):
                 f'width="{int(w * escala)}" height="{int(h * escala)}">'
                 f'{fuera}{interior}</svg>')
     lw, lh = int(lienzo[0]), int(lienzo[1])
+    # (Un lienzo 16:9 o 9:16 --videos desde el 26-10-- ya ES la banda visible:
+    # la cuenta de abajo da lo mismo y no recorta nada.)
     # EN LA BANDA VISIBLE, no en el ancho del lienzo. El lienzo vertical es
     # 1024x1536 (2:3) y el video sale a 9:16, mas estrecho: la camara respeta
     # el alto y RECORTA un 8 % por cada lado (p8, `ventana`). Anidado al ancho
@@ -1954,12 +1967,21 @@ def _svg(interior, escala=1, lienzo=None, fuera="", salida=None, k=None):
     alto = h * k
     x = (lw - ancho) / 2.0
     y = (lh - alto) / 2.0
+    # UN <g> Y NO UN <svg> ANIDADO, con el mismo recorte (su caja). En Edge
+    # cada <svg> lleva SU PROPIO RELOJ de animacion, y el render solo para y
+    # adelanta el de fuera (`p8_render`, `svg.setCurrentTime`): anidada, la
+    # cartela se escribia al reloj de pared y cada render la pillaba en otro
+    # punto. Salto al pasar el horizontal a 16:9 (26-10, prueba de repartir
+    # el render: «KM» entraba un fotograma antes o despues); en vertical
+    # pasaba igual desde siempre.
     return (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {lw} {lh}" '
             f'width="{int(lw * escala)}" height="{int(lh * escala)}">'
+            f'<defs><clipPath id="ct-caja"><rect width="{w}" height="{h}"/>'
+            f'</clipPath></defs>'
             f'{fuera}'
-            f'<svg x="{x:.1f}" y="{y:.1f}" width="{ancho:.1f}" height="{alto:.1f}" '
-            f'viewBox="0 0 {w} {h}" preserveAspectRatio="xMidYMid meet">'
-            f'{interior}</svg></svg>')
+            f'<g transform="translate({x:.1f} {y:.1f}) scale({k:g})" '
+            f'clip-path="url(#ct-caja)">'
+            f'{interior}</g></svg>')
 
 
 def svg_fondo(paleta=None, semilla=0, escala=1, lienzo=None):
@@ -2034,7 +2056,9 @@ def svg_capa(ficha, paleta=None, diseno=None, duracion=4.0, semilla=0,
     velo = (_velo(colores, animado=not escrita, primera=primera,
                   tamano=tuple(lienzo) if anidada else None)
             if fondo_de(ficha) == "imagen" else "")
-    seguro = seguro_vertical(lienzo, salida) if anidada else None
+    # la region estrecha y centrada es del VERTICAL; un lienzo 16:9 tambien va
+    # anidado (subido 80 px, ver BANDA) pero compone como siempre
+    seguro = seguro_vertical(lienzo, salida) if anidada and es_alto(lienzo) else None
     cuerpo = _cuerpo(plantilla, datos, colores, diseno, duracion,
                      animado=not escrita, semilla=semilla, tiempos=tiempos,
                      seguro=seguro)
