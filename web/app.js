@@ -9167,7 +9167,16 @@ function vistaVideoLight() {
         h('a', {
           clase: 'boton mini fantasma', href: urlDeVideoLight('render', 'creditos.txt'),
           download: 'creditos.txt',
-        }, 'Créditos')) : null);
+        }, 'Créditos')) : null,
+    // los subtitulos para subirlos a YouTube aparte (fork, 26-10-2026)
+    (hayMp4Light() && ((videoAbierto().fichas.render || {}).salidas || {}).srt)
+      ? conAyuda(
+        'Los subtítulos del vídeo en un fichero .srt. En YouTube Studio: '
+        + 'Subtítulos → Añadir idioma → Subir archivo → «Con sincronización».',
+        h('a', {
+          clase: 'boton mini fantasma', href: urlDeVideoLight('render', 'subtitulos.srt'),
+          download: 'subtitulos.srt',
+        }, 'Subtítulos (.srt)')) : null);
   BARRA_INFERIOR.nodo = pie;
 
   /* EL REPASO VA DEBAJO DEL VÍDEO Y SOLO CUANDO HAY VÍDEO. Antes de eso no hay
@@ -9180,8 +9189,64 @@ function vistaVideoLight() {
      del montaje, así que antes de eso no hay tramos que enseñar. */
   if (versionDe(videoAbierto().fichas.assets || {}) && !trabajoVideoLight()) {
     caja.appendChild(panelMusicaLight());
+    caja.appendChild(panelMontajeLight());
   }
   return caja;
+}
+
+/* CÓMO SE MONTA (fork, 26-10-2026): si los subtítulos van dentro del vídeo y
+   cuánto se mueve la cámara (pasos/camara.py). Viven en los params de
+   callouts: cambiarlos no toca ni una imagen, solo las capas y el MP4, o sea
+   que no cuesta dinero, cuesta tiempo de montaje. */
+const OPCIONES_SUBTITULOS = [
+  { valor: 'auto', nombre: 'No: van en YouTube (sí en los vídeos verticales)' },
+  { valor: 'no', nombre: 'No, nunca' },
+  { valor: 'si', nombre: 'Sí, dentro del vídeo' },
+];
+const OPCIONES_CAMARA = [
+  { valor: 'variada', nombre: 'Variado: quieto casi siempre, zoom donde lo pide el guion' },
+  { valor: 'siempre', nombre: 'Siempre: zoom y paneo en todos los planos (como antes)' },
+  { valor: 'quieta', nombre: 'Quieto: ningún plano se mueve' },
+];
+
+function panelMontajeLight() {
+  const v = videoAbierto();
+  const params = (v.fichas.callouts || {}).params || {};
+  const guardando = APP.light.video.guardandoMontaje;
+  const caja = h('div', { clase: 'repaso montaje-light' });
+  caja.appendChild(h('div', { clase: 'repaso-cab' },
+    h('h3', {}, 'Cómo se monta'),
+    h('span', { clase: 'meta' }, 'subtítulos y movimiento de cámara')));
+  caja.appendChild(campoSelect('Subtítulos dentro del vídeo', params.subtitulos || 'auto',
+    OPCIONES_SUBTITULOS, valor => guardarMontajeLight({ subtitulos: valor }),
+    'Los textos que destacan lo importante (las cartelas) salen siempre. '
+    + 'Los subtítulos se suben aparte a YouTube.'));
+  caja.appendChild(campoSelect('Movimiento de cámara', params.camara || 'variada',
+    OPCIONES_CAMARA, valor => guardarMontajeLight({ camara: valor }),
+    'Variado: el gancho va plano a plano, con cortes secos; los gráficos, los '
+    + 'primeros planos y las cartelas, quietos para que se vean enteros; el zoom '
+    + 'suave, en los planos largos, los tensos y los que abren una parte.'));
+  caja.appendChild(h('div', { clase: 'meta' }, guardando
+    ? h('span', { clase: 'latiendo' }, '⏳ Guardando… no hace falta volver a elegir.')
+    : 'Al cambiarlo, «Regenerar Vídeo» lo aplica. Gratis: no genera imágenes, '
+      + 'solo vuelve a montar.'));
+  return caja;
+}
+
+async function guardarMontajeLight(cambios) {
+  const v = videoAbierto();
+  APP.light.video.guardandoMontaje = true;
+  repintarVideo();
+  try {
+    await pedir(API.params(v.pid, 'callouts'), { method: 'PUT', cuerpo: { params: cambios } });
+    await refrescarFichasLight();
+    await refrescarPlanLight('render', true);
+    toast('guardado · «Regenerar Vídeo» lo aplica al MP4');
+  } catch (e) {
+    toast(e.message, true);
+  }
+  APP.light.video.guardandoMontaje = false;
+  repintarVideo();
 }
 
 /* LO QUE CONVIENE SABER ANTES DE MONTAR, A LA VISTA (revision de la Fase 4).

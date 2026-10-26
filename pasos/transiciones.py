@@ -197,6 +197,12 @@ RANURA_DE_LO_VIEJO = {
     "deslizar": "suave",        # retirada el 18-08-2026; el plan viejo la trae
 }
 
+#: EL CORTE SECO PEDIDO POR LA CAMARA (fork, 26-10-2026). No es la ranura
+#: 'corte' de los planes viejos, que se sigue leyendo como 'suave': esta solo la
+#: pone el ritmo de camara (pasos/camara.py) en el gancho y entre dos planos
+#: quietos del mismo sitio, y el render la aplica tal cual.
+RANURA_SECA = "seco"
+
 #: Cuantas transiciones atras se mira para no repetir familia.
 VENTANA_FAMILIA = 3
 
@@ -267,6 +273,10 @@ def resolver(escenas, params=None, semilla=0):
         if not sid:
             continue
         cruda = str(escena.get("transicion") or "suave")
+        if cruda == RANURA_SECA:
+            salida[sid] = {"tipo": "corte", "shader": None, "duracion": 0.0,
+                           "ranura": RANURA_SECA}
+            continue
         ranura = cruda if cruda in RANURAS else RANURA_DE_LO_VIEJO.get(cruda, "suave")
         # EL CORTE SECO SE RETIRO el 20-08-2026 (decision del usuario: "no me
         # gusta como queda"). El motor del corte ya no lo reparte, pero los

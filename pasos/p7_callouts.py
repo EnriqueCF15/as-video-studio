@@ -43,6 +43,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 # pisara al sujeto. Un subtitulo no flota, asi que no hay
 # nada que colocar -- ni un pixel que mirar.
 
+import camara  # noqa: E402
 import cartelas  # noqa: E402
 import comun  # noqa: E402
 import estadisticas  # noqa: E402
@@ -73,6 +74,16 @@ PARAMS_POR_DEFECTO = {
     # feo: el enrutador del estilo grafico habria escrito ahi, el video habria
     # salido igual, y la correccion habria quedado marcada como aplicada.
     "subtitulo_caja": "auto",
+    # SI LOS SUBTITULOS VAN DENTRO DEL VIDEO (fork, 26-10-2026): auto | si | no.
+    # «auto» es lo que decidio Enrique al publicar el primer video: en
+    # horizontal NO, porque van en YouTube como subtitulos aparte (el .srt), y
+    # en vertical SI, porque en un Short se ven sin sonido. Las cartelas, los
+    # textos que destacan lo importante, no se tocan: esto es solo el pie.
+    # Apagados se siguen calculando (las fichas de cada plano): de ahi sale el
+    # .srt para subirlo.
+    "subtitulos": "auto",
+    # QUE PLANOS SE MUEVEN: variada | siempre | quieta (ver pasos/camara.py).
+    "camara": camara.POR_DEFECTO,
     # Set de estilo de diseno: dibujo | realista | editorial. Lo sugiere la guia
     # de estilo del video (ver diseno_sugerido) y se puede cambiar a mano.
     # Escrito y no DISENO_POR_DEFECTO porque los sets se declaran mas abajo:
@@ -279,10 +290,14 @@ assert DISENO_POR_DEFECTO in SETS_DISENO
 def describir(params):
     """Frase corta con lo que hara el paso con estos parametros."""
     p = _con_defectos(params)
+    if not subtitulos_quemados(p):
+        return (f"Prepara los subtitulos de cada plano para subirlos aparte (no "
+                f"van dentro del video) y calcula la camara en modo "
+                f"{camara.modo_de(p)} sobre hyperframes x{p['escala_hyper']}.")
     return (f"Escribe los subtitulos de cada plano en {p['fuente']} "
             f"(tamano {p['subtitulo_tam']}), sincronizados con la voz y en una "
-            f"banda que es la misma en todo el video, y calcula las ventanas de "
-            f"zoom sobre hyperframes x{p['escala_hyper']}.")
+            f"banda que es la misma en todo el video, y calcula la camara en "
+            f"modo {camara.modo_de(p)} sobre hyperframes x{p['escala_hyper']}.")
 
 
 def _con_defectos(params):
@@ -496,6 +511,16 @@ SUB_ALTURA_VERTICAL = 1.0 / 3.0
 
 def es_vertical(salida=None):
     return bool(salida) and len(salida) >= 2 and float(salida[1] or 0) > float(salida[0] or 0)
+
+
+def subtitulos_quemados(p, salida=None):
+    """Si los subtitulos van DENTRO del video. -> bool (ver PARAMS_POR_DEFECTO)"""
+    valor = str((p or {}).get("subtitulos") or "auto").strip().lower()
+    if valor in ("si", "sí", "true", "1"):
+        return True
+    if valor in ("no", "false", "0"):
+        return False
+    return es_vertical(salida)
 
 
 def banda_subtitulo(salida):
@@ -731,6 +756,11 @@ def capa_fija_de(escena, p, banda=None, salida=SALIDA):
               for x in trozos]
     fichas = [{"tipo": "subtitulo", "texto": x["texto"],
                "desde": x["desde"], "hasta": x["hasta"]} for x in trozos]
+    if not subtitulos_quemados(p, salida):
+        # fuera del video, pero con sus fichas: son las que van al .srt
+        for ficha in fichas:
+            ficha["en_video"] = False
+        return _envoltorio_fijo("", salida), fichas
     return _envoltorio_fijo("".join(x for x in piezas if x), salida), fichas
 
 
@@ -1393,6 +1423,23 @@ def _en_la_banda(svg, ancho, alto):
             f'width="{int(ancho)}" height="{int(alto)}">{interior}</svg>')
 
 
+def _secciones_del_guion(proyecto):
+    """Los bloques del guion que abren seccion (`abre_seccion`). -> list
+
+    Los usa la camara para saber donde acaba el gancho. Sin guion, vacia: la
+    camara corta el gancho por tiempo.
+    """
+    try:
+        ruta = medios.salida_de(proyecto, "guion", claves=("guion",),
+                                patrones=(r"guion\.json",))
+    except Exception:                                          # noqa: BLE001
+        return []
+    guion = medios.leer_json(ruta, {}) if ruta else {}
+    bloques = (guion or {}).get("guion") or []
+    return [b.get("id") for b in bloques
+            if isinstance(b, dict) and b.get("abre_seccion") and b.get("id")]
+
+
 def _semilla_de(plan):
     """La semilla del video, para que el grano de la cartela no cambie solo.
 
@@ -1485,6 +1532,12 @@ def ejecutar(proyecto, params, avisar=None, unidades=None):
     # renderizado.
     banda = banda_subtitulo(salida)
 
+    # LA CAMARA SE DECIDE UNA VEZ PARA EL VIDEO ENTERO: un plano mira a sus
+    # vecinos (cuantos quietos van, si el de antes se movia) y al guion (donde
+    # acaba el gancho). Es gratis y determinista, asi que rehacer unos planos
+    # sueltos da lo mismo que rehacerlos todos.
+    decisiones = camara.decidir(escenas, camara.modo_de(p), _secciones_del_guion(proyecto))
+
     for indice, escena in enumerate(escenas):
         sid = escena["id"]
         uid = f"escena:{sid}"
@@ -1530,9 +1583,11 @@ def ejecutar(proyecto, params, avisar=None, unidades=None):
 
         # el movimiento va primero: la capa necesita saber que trozo del plano
         # sigue en cuadro durante todo el zoom para no rotular fuera de campo
-        entrada = movimiento.calcular({"escenas": [escena]}, dir_escenas,
+        para_motor, ajustes_camara = camara.escena_para_el_motor(escena, decisiones.get(sid))
+        entrada = movimiento.calcular({"escenas": [para_motor]}, dir_escenas,
                                       dirs["hyper"], os.path.join(dir_assets, "sets"),
-                                      int(p["escala_hyper"]))[0]
+                                      int(p["escala_hyper"]), **ajustes_camara)[0]
+        entrada["camara"] = decisiones.get(sid)
         evitar = _zonas_de_unidad(p, uid)
         apagada = _sin_callout(p, uid)
         if cartelas.sobre_imagen(escena):
@@ -1632,6 +1687,8 @@ def ejecutar(proyecto, params, avisar=None, unidades=None):
                 # video. p8 no puede derivarla -- la guia esta en los params de
                 # assets-- y quien la tiene resuelta es este paso.
                 "paleta": paleta_video,
+                # los cortes secos los lee el render (`p8._con_cortes_de_camara`)
+                "camara": decisiones,
                 "movimientos": [medios.leer_json(
                     os.path.join(dirs["movimiento"], f"{e['id']}.json"), {})
                     for e in escenas]}
@@ -1663,7 +1720,10 @@ def ejecutar(proyecto, params, avisar=None, unidades=None):
                "hyperframes": "hyper", "previos": "previo",
                "n_escenas": len(escenas), "avisos": avisos,
                "resumen": (f"{len(escenas)} capas, {trozos} trozos de subtítulo "
-                           f"en {con_texto} planos")}
+                           f"en {con_texto} planos"
+                           + ("" if subtitulos_quemados(p, salida)
+                              else " (fuera del vídeo: van en YouTube)")
+                           + (f" · {camara.resumen(decisiones)}" if decisiones else ""))}
     avisar(1.0, salidas["resumen"])
     # El tiempo REAL de esta tanda, al historico: es lo unico que hace que la
     # barra deje de prometer la tabla del primer dia (ver p6._anotar_tiempo).

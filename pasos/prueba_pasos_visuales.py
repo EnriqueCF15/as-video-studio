@@ -691,6 +691,11 @@ def probar_solo_assets(proyecto, estado, params):
 
 def probar_callouts(proyecto, estado, params):
     print("\n  PASO 7 · capa vectorial y movimiento")
+    # Subtitulos dentro y camara de siempre A MANO: desde el 26-10 en horizontal
+    # van fuera del video y la camara es variada (una cartela va quieta), y aqui
+    # se mira el camino entero de dibujarlos y moverlos. Lo nuevo, en
+    # prueba_camara.
+    params = dict(params or {}, subtitulos="si", camara="siempre")
     resultado = p7_callouts.ejecutar(proyecto, params, avisador("p7"))
     trabajo = proyecto.ruta_trabajo("callouts", crear=False)
     plan = medios.leer_json(medios.salida_de(proyecto, "assets", claves=("plan",),

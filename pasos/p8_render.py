@@ -51,6 +51,7 @@ import cartelas  # noqa: E402
 import estadisticas  # noqa: E402
 import medios  # noqa: E402
 import sonido  # noqa: E402
+import subtitulos  # noqa: E402
 import transiciones  # noqa: E402
 
 PARAMS_POR_DEFECTO = {
@@ -909,6 +910,47 @@ def aviso_de_memoria(libre=None):
             f"montar, o irá muy lento")
 
 
+# ------------------------------------------------- los cortes secos (fork)
+
+def _con_cortes_de_camara(escenas, movimiento):
+    """Las escenas del plan con los cortes secos que pide la camara. -> list
+
+    El ritmo de camara (pasos/camara.py, 26-10) lo decide el paso callouts y lo
+    deja en su movimiento.json; el plan no se toca, porque tocarlo dejaria
+    obsoletas las imagenes. Solo cambia la ranura de transicion de esos planos,
+    y la ven igual el montaje y la mezcla (los efectos de sonido van con la
+    transicion: un corte seco no lleva el suyo).
+    """
+    decisiones = (movimiento or {}).get("camara") or {}
+    if not decisiones:
+        return list(escenas)
+    return [dict(e, transicion=transiciones.RANURA_SECA)
+            if (decisiones.get(e.get("id")) or {}).get("seco") else e
+            for e in escenas]
+
+
+def _srt_del_video(escenas, base_callouts, desfase, idioma=None):
+    """Los subtitulos del video en .srt, para subirlos aparte. -> str
+
+    Los de cada plano son los que calculo el paso callouts (sus fichas, con las
+    cifras ya arregladas y lo corregido a mano), esten o no dentro del video. Un
+    plano sin ellos --las cartelas no llevan-- se trocea aqui con lo mismo,
+    `subtitulos.de_escena`, para que la pista no tenga agujeros.
+    """
+    cues = []
+    for escena in escenas:
+        ficha = medios.leer_json(os.path.join(base_callouts, "movimiento",
+                                              f"{escena.get('id')}.ficha.json"), {}) or {}
+        trozos = [x for x in (ficha.get("elementos") or [])
+                  if x.get("tipo") == "subtitulo"]
+        if not trozos and not escena.get("sigue_a"):
+            trozos = subtitulos.de_escena(escena, idioma=idioma)
+        base = float(escena.get("t_in") or 0) - desfase
+        cues.extend((base + float(x["desde"]), base + float(x["hasta"]), x["texto"])
+                    for x in trozos)
+    return subtitulos.srt(cues)
+
+
 # ------------------------------------------------- escuchar la mezcla (fork)
 
 def escuchar_mezcla(proyecto, params, destino):
@@ -924,7 +966,10 @@ def escuchar_mezcla(proyecto, params, destino):
     ruta_plan = medios.salida_de(proyecto, "assets", claves=("plan",),
                                  patrones=(r"plan\.json",))
     plan = medios.leer_json(ruta_plan, {}) if ruta_plan else {}
-    escenas = (plan or {}).get("escenas") or []
+    ruta_mov = medios.salida_de(proyecto, "callouts", claves=("movimiento",),
+                                patrones=(r"movimiento\.json",))
+    escenas = _con_cortes_de_camara((plan or {}).get("escenas") or [],
+                                    medios.leer_json(ruta_mov, {}) if ruta_mov else {})
     if not escenas:
         raise RuntimeError("todavía no hay planos: la mezcla sigue el corte del vídeo")
     audio = p["audio"] or medios.salida_de(
@@ -1595,7 +1640,8 @@ def ejecutar(proyecto, params, avisar=None, unidades=None, solo_montar=False):
     for ruta in (dir_clips, dir_ultimo, dir_frames):
         os.makedirs(ruta, exist_ok=True)
 
-    escenas = plan.get("escenas") or []
+    escenas = _con_cortes_de_camara(plan.get("escenas") or [],
+                                    medios.leer_json(ruta_mov, {}) or {})
     fps = _fps_del_montaje(proyecto, params,
                            parcial=bool(solo_montar or unidades is not None))
     p["fps"] = fps
@@ -1876,8 +1922,20 @@ def ejecutar(proyecto, params, avisar=None, unidades=None, solo_montar=False):
         medios.escribir_texto(os.path.join(trabajo, "creditos.txt"), hechos["texto"])
         creditos = "creditos.txt"
         avisos.extend(hechos["avisos"])
+    # SUBTITULOS.SRT junto al MP4 (fork, 26-10-2026): con los subtitulos fuera
+    # del video, es lo que se sube a YouTube. Que falle no tumba el video.
+    srt = None
+    try:
+        texto_srt = _srt_del_video(escenas, base_callouts, desfase,
+                                   idioma=plan.get("idioma"))
+        if texto_srt:
+            medios.escribir_texto(os.path.join(trabajo, "subtitulos.srt"), texto_srt)
+            srt = "subtitulos.srt"
+    except Exception as fallo:                                 # noqa: BLE001
+        avisos.append(f"no se ha podido escribir subtitulos.srt ({str(fallo)[:120]})")
     salidas = {"mp4": "video.mp4",
                "creditos": creditos,
+               "srt": srt,
                "duracion": round(duracion, 3),
                "clips": {e["id"]: f"clips/{e['id']}.mp4" for e in escenas},
                "fps": fps, "resolucion": [ancho, alto],

@@ -560,6 +560,33 @@ def de_escena(escena, cap_linea=CAP_LINEA, idioma=None, texto="",
     return salida
 
 
+#: Lo minimo que dura un subtitulo del .srt: menos no da tiempo a leerlo.
+SRT_MINIMO_S = 0.5
+
+
+def _srt_tiempo(segundos):
+    ms = int(round(max(0.0, float(segundos)) * 1000))
+    return f"{ms // 3600000:02d}:{ms // 60000 % 60:02d}:{ms // 1000 % 60:02d},{ms % 1000:03d}"
+
+
+def srt(cues):
+    """El .srt de una lista de [(desde, hasta, texto)] en segundos del video. -> str
+
+    Para subir los subtitulos a YouTube aparte del video (fork, 26-10-2026). Se
+    ordenan, y ninguno pisa al siguiente: un reproductor que encuentra dos a la
+    vez los apila.
+    """
+    limpios = sorted((float(a), float(b), " ".join(str(t).split()))
+                     for a, b, t in cues if str(t).strip())
+    lineas = []
+    for n, (desde, hasta, texto) in enumerate(limpios, 1):
+        hasta = max(hasta, desde + SRT_MINIMO_S)
+        if n < len(limpios):
+            hasta = max(desde + 0.05, min(hasta, limpios[n][0]))
+        lineas.append(f"{n}\n{_srt_tiempo(desde)} --> {_srt_tiempo(hasta)}\n{texto}\n")
+    return "\n".join(lineas)
+
+
 def dos_lineas(texto, medir, ancho_max):
     """Una linea, o DOS lo mas parejas posible. Nunca tres. -> [str, ...]
 

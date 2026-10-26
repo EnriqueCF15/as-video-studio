@@ -74,8 +74,13 @@ ZOOM_MAXIMO = 0.12
 DESLIZ = 0.6
 
 
-def recorrido(escena, de, a, centro, origen_centro):
-    """El zoom y el paneo de un plano segun lo que dura. -> (de, a, c_ini, c_fin)"""
+def recorrido(escena, de, a, centro, origen_centro, zoom_maximo=ZOOM_MAXIMO,
+              paneo=True):
+    """El zoom y el paneo de un plano segun lo que dura. -> (de, a, c_ini, c_fin)
+
+    `zoom_maximo` y `paneo` los baja el ritmo de camara variado (pasos/camara.py,
+    26-10): menos zoom y, fuera de los planos abiertos, sin paneo.
+    """
     try:
         duracion = float(escena.get("t_out") or 0) - float(escena.get("t_in") or 0)
     except (TypeError, ValueError):
@@ -84,12 +89,12 @@ def recorrido(escena, de, a, centro, origen_centro):
             or escena.get("sigue_a")):
         return de, a, centro, centro
     corto, largo = min(de, a), max(de, a)
-    tramo = min(ZOOM_MAXIMO, max(largo - corto, VELOCIDAD_ZOOM * duracion))
+    tramo = min(zoom_maximo, max(largo - corto, VELOCIDAD_ZOOM * duracion))
     if a > de:
         a = round(de + tramo, 4)
     else:
         de = round(a + tramo, 4)
-    if origen_centro != "por_defecto":
+    if origen_centro != "por_defecto" or not paneo:
         return de, a, centro, centro        # un ancla manda donde mira la camara
     cifras = "".join(c for c in str(escena.get("id") or "") if c.isdigit())
     lado = 1 if int(cifras or 0) % 2 == 0 else -1
@@ -112,7 +117,8 @@ def hyperframe(origen, destino, escala=2):
     return grande.size
 
 
-def calcular(plan, dir_escenas, dir_hyper, blockout_dir, escala=2):
+def calcular(plan, dir_escenas, dir_hyper, blockout_dir, escala=2,
+             zoom_maximo=ZOOM_MAXIMO, paneo=True):
     movimientos = []
     for escena in plan["escenas"]:
         sid = escena["id"]
@@ -123,7 +129,8 @@ def calcular(plan, dir_escenas, dir_hyper, blockout_dir, escala=2):
 
         de = float(zoom.get("de", 1.0))
         a = float(zoom.get("a", 1.0))
-        de, a, centro_ini, centro_fin = recorrido(escena, de, a, centro, fuente)
+        de, a, centro_ini, centro_fin = recorrido(escena, de, a, centro, fuente,
+                                                  zoom_maximo, paneo)
         entrada = {
             "id": sid,
             "t_in": escena.get("t_in"),

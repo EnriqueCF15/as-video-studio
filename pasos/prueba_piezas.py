@@ -362,8 +362,10 @@ def prueba_callouts():
     escena_sub = {"id": "S001", "narracion": "one two three",
                   "marcas": [[0.0, 0.4], [0.5, 0.9], [1.0, 1.4]],
                   "t_in": 0.0, "t_out": 3.0}
+    # «si» a mano: desde el 26-10 en horizontal van fuera del video por defecto
+    # (`subtitulos: auto`), y aqui se mira como se dibujan cuando van dentro
     movil, fija, fichas = p7_callouts.capa_de_escena(
-        escena_sub, p7_callouts._con_defectos({}))
+        escena_sub, p7_callouts._con_defectos({"subtitulos": "si"}))
     ok(fichas, f"el plano lleva subtitulo: {len(fichas)} trozo(s)")
     ok("<text" not in movil,
        "la capa que ESCALA no lleva ni una letra del subtitulo: si la llevara, "
