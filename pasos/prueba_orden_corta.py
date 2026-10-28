@@ -199,6 +199,161 @@ guardado = presets_canal.datos_de_params(
 igual((guardado["estilo"].get("cartas"), guardado["estilo"].get("orden")),
       (HISTORIA, "corta"), "guardar el Estilo se las lleva")
 
+titulo("6 · el director en modo historia (fase A, 28-10)")
+import string                                                # noqa: E402
+import catalogo_visual                                       # noqa: E402
+
+
+def huecos(plantilla):
+    return {c for _t, c, _f, _x in string.Formatter().parse(plantilla) if c}
+
+
+H = direccion.INSTRUCCION_HISTORIA
+igual(huecos(H), huecos(direccion.INSTRUCCION),
+      "el encargo corto tiene los mismos huecos que el largo")
+cierto(len(H) < len(direccion.INSTRUCCION) * 0.4,
+       f"y es corto ({len(H)} frente a {len(direccion.INSTRUCCION)})")
+for clave in ("LO LITERAL", "ENTERA", "FLOTANDO", "abrazados", "CARTELA ENCIMA",
+              "letras grandes", "RIZO", "EPOCA", "MASCARA", "split screen:",
+              "SILUETAS", "blank", "THE", "DEAL", "COPIED", "EN OTRO SITIO: ",
+              "(COMO EN:", "(TONO: alegre)", "DEVUELVE ESTE JSON"):
+    cierto(clave in H, f"el encargo corto dice «{clave}»")
+for tecnologia in ("atacante", "banco", "proveedor", "factura", "Berlin", "oro ",
+                   "hacker", "FILM", "investigador"):
+    cierto(tecnologia not in H, f"sin ejemplos de tecnologia («{tecnologia}»)")
+cierto(direccion.modo_historia(CORTA) and not direccion.modo_historia({"guia": GUIA}),
+       "solo la orden corta activa el modo historia")
+estilo_h = direccion._estilo_historia(CORTA)
+cierto("Every person is the same simple doodle figure." in estilo_h
+       and p6_assets.LLENO in estilo_h and "LA GUIA LARGA" not in estilo_h,
+       "al director le llega lo que lee el generador: lo esencial y LLENO")
+VISTO = {}
+
+
+def _sin_llamar(instruccion, *a, **k):
+    VISTO["encargo"] = instruccion
+    return {"planos": {"S007": "A man looks at a pile. (TONO: neutro) (PLANO: medio)"}}
+
+
+_original = direccion._llamar_claude
+direccion._llamar_claude = _sin_llamar
+try:
+    direccion.proponer([dict(ESCENA, carta="medio")], estilo=CORTA, idioma="English")
+    corto = VISTO["encargo"]
+    direccion.proponer([dict(ESCENA)], estilo={"guia": GUIA}, idioma="English")
+    largo = VISTO["encargo"]
+finally:
+    direccion._llamar_claude = _original
+cierto("LAS REGLAS. Cada una salio mal" in corto and "LA GUIA LARGA" not in corto,
+       "con la orden corta, proponer usa el encargo corto")
+cierto("[conjunto]" in corto and "(PLANO: medio)" in corto, "con su bloque de cartas")
+cierto("LO QUE YA VA EN EL PROMPT" in largo, "sin ella, el de siempre")
+linea, aviso = direccion.limpiar_linea(
+    " ".join(["word"] * 80) + " (COMO EN: S040) (TONO: neutro) (PLANO: medio)")
+cierto(aviso and "(COMO EN: S040)" in linea,
+       "recortar una linea larga no le quita el «COMO EN»")
+
+titulo("7 · el catalogo visual en modo historia")
+CH = catalogo_visual.INSTRUCCION_HISTORIA
+igual(huecos(CH), huecos(catalogo_visual.INSTRUCCION),
+      "el catalogo corto tiene los mismos huecos")
+igual(huecos(catalogo_visual.CRITERIO_HISTORIA), huecos(catalogo_visual.CRITERIO),
+      "y su criterio tambien")
+cierto(len(catalogo_visual.CRITERIO_HISTORIA) < len(catalogo_visual.CRITERIO) * 0.5,
+       "el criterio corto es corto")
+todo = CH + catalogo_visual.CRITERIO_HISTORIA + catalogo_visual.ESPECIE_HISTORIA
+for tecnologia in ("Udai", "Saddam", "Jensen", "Pentagon", "Boeing", "Bagdad",
+                   "atacante", "servidor", "banco", "Nvidia", "leather"):
+    cierto(tecnologia not in todo, f"catalogo sin «{tecnologia}»")
+for clave in ("no curl", "1930s American police cap", "cruza las dos listas",
+              "FISICAMENTE", '"reparto"', '"beats"'):
+    cierto(clave in todo, f"el catalogo corto dice «{clave}»")
+import inspect                                               # noqa: E402
+cierto("historia=" in inspect.getsource(catalogo_visual.proponer),
+       "proponer elige el catalogo corto")
+APP = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "app.py"), encoding="utf-8").read()
+cierto("historia=PASOS_MODULOS.p6_assets.orden_corta(" in APP,
+       "y el estudio se lo pide con el Estilo de la orden corta")
+
+titulo("8 · las hojas: rizo y epoca")
+igual(p6_assets.lleva_rizo("bald except for one thin spiral curl on top"), True,
+      "el protagonista lleva rizo")
+for sin in ("bald with no curl and a moustache", "none with a curl",
+            "no spiral curl", "without a curl", "a bowler hat"):
+    igual(p6_assets.lleva_rizo(sin), False, f"«{sin}» no lleva rizo")
+GEORGE = {"nombre": "george_green", "tipo": "reparto",
+          "descripcion": "A stout doodle figure, bald with no curl and a bushy "
+                         "black moustache, wearing a bowler hat."}
+hoja = p6_assets._prompt_reparto(GEORGE, CORTA)
+cierto("NO spiral curl" in hoja, "una hoja sin protagonista prohibe el rizo")
+cierto("true to its period and country" in hoja, "y pide la epoca y el pais")
+cierto("bowler hat." in hoja and "hat.." not in hoja, "sin punto doble")
+for fuera in ("black leather jacket", "Cuando una entrada", "LA GUIA LARGA"):
+    cierto(fuera not in hoja, f"la hoja corta no lleva «{fuera}»")
+TU = dict(GEORGE, descripcion="bald except for one thin spiral curl on top")
+cierto("This is the protagonist" in p6_assets._prompt_reparto(TU, CORTA),
+       "la del protagonista le deja el rizo")
+hoja_larga = p6_assets._prompt_reparto(GEORGE, {"guia": GUIA})
+cierto("NO spiral curl" not in hoja_larga and "LA GUIA LARGA" in hoja_larga,
+       "un Estilo sin orden corta sigue con la hoja de siempre")
+
+titulo("9 · referencias sueltas y la gente sin hoja")
+import tempfile                                              # noqa: E402
+from PIL import Image                                        # noqa: E402
+tmp = tempfile.mkdtemp(prefix="prueba_orden_corta_")
+dirs = {"reparto": os.path.join(tmp, "reparto"), "escenas": os.path.join(tmp, "escenas")}
+for d in dirs.values():
+    os.makedirs(d)
+cache = os.path.join(tmp, "cache")
+rutas = []
+for n in range(8):
+    r = os.path.join(tmp, f"ref{n}.png")
+    Image.new("RGB", (32, 18), (n * 30, 90, 90)).save(r)
+    rutas.append(r)
+PR = {"estilo": dict(CORTA, referencias=rutas)}
+sueltas = p6_assets._referencias_estilo(PR, cache, {}, sueltas=True)
+igual([r["papel"] for r in sueltas],
+      ["estilo"] * p6_assets.MAX_REFERENCIAS_ESTILO_SUELTAS,
+      "en la orden corta van sueltas, seis como mucho")
+lamina = p6_assets._referencias_estilo(PR, cache, {})
+igual([r["papel"] for r in lamina], ["lamina"], "sin eso, en una lamina")
+igual(p6_assets.como_en("Two kids. (COMO EN: s040) (TONO: neutro)"), "S040",
+      "lee el «COMO EN» del director")
+igual(p6_assets.como_en("sin etiqueta"), "", "sin etiqueta, nada")
+cierto("COMO EN" not in p6_assets._con_direccion(
+    "Base.", {"direccion": "She smiles. (COMO EN: S040) (PLANO: medio)"}),
+    "el «COMO EN» no llega al generador (orden larga)")
+cierto("COMO EN" not in corta(dict(ESCENA, prompt=ESCENA["prompt"]
+                                   + " (COMO EN: S006)")),
+       "ni a la orden corta")
+PLAN = {"escenas": [{"id": "S040", "personajes": ["senora"]},
+                    {"id": "S041", "personajes": ["senora"]},
+                    {"id": "S042", "personajes": ["muneco"],
+                     "direccion": "The lady again. (COMO EN: S040)"},
+                    {"id": "S043", "direccion": "x (COMO EN: S050)"}]}
+igual(p6_assets._gente_de_antes(PLAN["escenas"][1], PLAN, dirs), ("S040", ["senora"]),
+      "alguien sin hoja que sale en el plano de antes lo lleva de referencia")
+igual(p6_assets._gente_de_antes(PLAN["escenas"][2], PLAN, dirs), ("S040", []),
+      "el «COMO EN» del director manda")
+igual(p6_assets._gente_de_antes(PLAN["escenas"][3], PLAN, dirs), None,
+      "un plano POSTERIOR no vale")
+Image.new("RGB", (8, 8)).save(os.path.join(dirs["reparto"], "senora.png"))
+igual(p6_assets._gente_de_antes(PLAN["escenas"][1], PLAN, dirs), None,
+      "con hoja ya no hace falta")
+os.remove(os.path.join(dirs["reparto"], "senora.png"))
+Image.new("RGB", (32, 18)).save(os.path.join(dirs["escenas"], "S040.png"))
+refs = p6_assets._referencias_escena(PLAN["escenas"][1], PLAN, dirs, PR, cache, {})
+gente = [r for r in refs if r["papel"] == "gente"]
+igual([(r["plano"], r["quienes"]) for r in gente], [("S040", ["senora"])],
+      "el plano lleva de referencia el de antes, para la gente")
+frase = p6_assets.frase_de_referencia(5, gente[0]) if gente else ""
+cierto("'senora'" in frase and "same face" in frase and "not its place" in frase,
+       "y se lo dice al generador")
+igual([r["papel"] for r in p6_assets._referencias_escena(
+    PLAN["escenas"][1], PLAN, dirs, {"estilo": {"referencias": rutas}}, cache, {})],
+    ["lamina"], "sin orden corta, nada de esto")
+
 print()
 if FALLOS:
     print(f"FALLAN {len(FALLOS)} de {COMPROBACIONES} comprobaciones:")

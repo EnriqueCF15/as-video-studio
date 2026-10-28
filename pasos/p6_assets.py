@@ -1303,6 +1303,18 @@ def carta_dirigida(linea, permitidas):
     return carta if carta in (permitidas or ()) else ""
 
 
+#: «(COMO EN: S040)»: la persona sin hoja de este plano ya salio en S040. Lo
+#: escribe el director en modo historia (fork, 28-10-2026). Paso en el video 2:
+#: la senora de S040 cambio de cara en S041.
+_COMO_EN = re.compile(r"\(\s*COMO\s+EN\s*:\s*([A-Za-z]?\d+)\s*\)", re.I)
+
+
+def como_en(linea):
+    """El plano cuya gente repite este, segun la linea del director, o "". -> str"""
+    casa = _COMO_EN.search(str(linea or ""))
+    return casa.group(1).strip().upper() if casa else ""
+
+
 def _repartir_zoom(escenas, permitidas=None):
     """El zoom de cada plano, alternado. Se juega en el CORTE, sobre la imagen.
 
@@ -2377,8 +2389,9 @@ def _con_direccion(base, escena):
     entra en el prompt (ver `_prompt_escena`).
     """
     linea = " ".join(str(escena.get("direccion") or "").split())
-    # la carta elegida es para `_asignar_cartas`, no para el generador
-    linea = " ".join(_CARTA_DEL_PLANO.sub("", linea).split())
+    # la carta elegida es para `_asignar_cartas`, y «COMO EN» para
+    # `_referencias_escena`: ninguna de las dos es para el generador
+    linea = " ".join(_COMO_EN.sub("", _CARTA_DEL_PLANO.sub("", linea)).split())
     if not linea:
         return base
     return _unir(base, linea)
@@ -2611,6 +2624,20 @@ def frase_de_referencia(indice, ref):
         # adjunta (ver _referencias_escena): decirle con palabras que no
         # copie el contenido de una imagen no basta, y el precio de que no
         # obedezca es que el colegio salga con los muebles del banco.
+    elif ref["papel"] == "gente":
+        # LA MISMA PERSONA SIN HOJA EN EL PLANO DE ANTES (fork, 28-10). Solo
+        # en la orden corta: ver `_gente_de_antes`.
+        quienes = ", ".join(f"'{q}'" for q in ref.get("quienes") or [])
+        lineas.append(
+            f"Reference image {indice} is an earlier shot of this film"
+            + (f" ({ref['plano']})" if ref.get("plano") else "")
+            + ". The people in it who appear again in this shot"
+            + (f" ({quienes})" if quienes else "")
+            + " have no cast sheet: draw them with exactly the same face, "
+              "hair, build and clothes as there. Take nothing else from it: "
+              "not its composition, framing or poses"
+            + (", although it is the same place, so keep its architecture and "
+               "colours." if ref.get("mismo_set") else ", and not its place."))
     elif ref["papel"] == "parecido":
         # El limite duro de esta referencia. Es una FOTO de imagen real, y
         # adjuntarla sin decir esto empuja el dibujo al fotorrealismo, que es
@@ -2820,7 +2847,7 @@ PANTALLA_DIVIDIDA = ("This shot IS a split screen, exactly as the scene says: "
                      "line, each half a full scene of its own.")
 
 #: Las etiquetas que el director deja al final de su linea para el codigo.
-_ETIQUETAS = re.compile(r"\s*\(\s*(?:TONO|PLANO)\s*:[^)]*\)", re.I)
+_ETIQUETAS = re.compile(r"\s*\(\s*(?:TONO|PLANO|COMO\s+EN)\s*:[^)]*\)", re.I)
 
 
 def orden_corta(estilo):
@@ -3164,6 +3191,42 @@ def tapa_la_cara(*textos):
     return any(f" {prenda} " in llano for prenda in _TAPACARAS)
 
 
+def lleva_rizo(descripcion):
+    """Si la descripcion de una entrada del reparto le da el rizo. -> bool"""
+    texto = " ".join(str(descripcion or "").lower().split())
+    if "curl" not in texto:
+        return False
+    return not re.search(r"\b(?:no|without|none with an?)\s+(?:[a-z-]+\s+){0,2}curl",
+                         texto)
+
+
+def _rizo_y_epoca(ficha, estilo):
+    """Lo que las hojas del video 2 se saltaron, dicho en la hoja. -> [str]
+
+    Paso (27-10): `george_green` salio con rizo y pelo, `fantasma_fedora` con
+    rizo y `policia_anoka` con casco de policia ingles en Minnesota. Las tres
+    descripciones decian «no curl» y la epoca; la hoja copio a los munecos de
+    la referencia de estilo. Solo en la orden corta, y lo del rizo solo si el
+    Estilo tiene rizo.
+    """
+    guia = estilo.get("guia") if isinstance(estilo.get("guia"), dict) else {}
+    regla = f"{guia.get('esencial') or ''} {regla_de_especie(estilo)}".lower()
+    lineas = []
+    if "curl" in regla:
+        if lleva_rizo(ficha.get("descripcion")):
+            lineas.append("This is the protagonist: one thin spiral curl on top "
+                          "of the head, exactly as described.")
+        else:
+            lineas.append("Nobody on this sheet is the protagonist: NO spiral "
+                          "curl and no curl of any kind on any head. Men have no "
+                          "hair unless the description gives them some; women "
+                          "have the simple hair the description gives them.")
+    lineas.append("Clothes, hats, uniforms and props are exactly those of the "
+                  "description and true to its period and country: never a "
+                  "uniform, helmet or costume from another country or era.")
+    return lineas
+
+
 def _prompt_reparto(ficha, estilo):
     """Prompt de una hoja de personaje.
 
@@ -3184,7 +3247,13 @@ def _prompt_reparto(ficha, estilo):
                   "its content, its framing or its layout.")
     if estilo.get("prompt"):
         lineas.append(f"Style: {estilo['prompt']}.")
-    lineas.extend(guia_escrita(estilo))
+    if orden_corta(estilo):
+        # la misma poda que el plano: lo esencial, no la guia entera
+        guia = estilo.get("guia") if isinstance(estilo.get("guia"), dict) else {}
+        esencial = " ".join(str(guia.get("esencial") or "").split())
+        lineas.append(esencial or regla_de_especie(estilo))
+    else:
+        lineas.extend(guia_escrita(estilo))
     # DOS FILAS, y la de arriba son caras grandes. La hoja se adjunta luego a
     # cada plano donde sale ese personaje, y de ella se copia la identidad: con
     # figuras de cuerpo entero, cada cara ocupaba 112x139 px del millon largo de
@@ -3195,7 +3264,9 @@ def _prompt_reparto(ficha, estilo):
                   "row: large head-and-shoulders portraits, one per character, "
                   "taking up most of the height of that row. Bottom row: the same "
                   "characters standing, full body, front view, in the same order. "
-                  f"The characters are {ficha['descripcion']}.")
+                  + (f"The characters are {str(ficha['descripcion']).rstrip('. ')}."
+                     if orden_corta(estilo)
+                     else f"The characters are {ficha['descripcion']}."))
     if not ficha.get("grupo"):
         # UNA hoja de UN personaje: sin decirlo, «the characters are...» con una
         # sola descripcion salio como seis monos distintos (02-09-2026), y la
@@ -3205,7 +3276,11 @@ def _prompt_reparto(ficha, estilo):
                       "the same face, hair, clothing and accessories in all of "
                       "them: front view, three-quarter view and profile, never "
                       "six different people.")
-    lineas.extend(clausula_de_especie(estilo))
+    corta = orden_corta(estilo)
+    if not corta:
+        # en la orden corta ya lo dice lo esencial, sin el ejemplo de la
+        # chaqueta de cuero del video de Nvidia
+        lineas.extend(clausula_de_especie(estilo))
     # El molde manda sobre la descripcion, y hay que decirlo: la descripcion la
     # escribe un modelo y se cuela en ella la puesta en escena del guion. Sin esta
     # frase, «seated at desks crowded with screens» pinta las mesas y los monitores
@@ -3248,9 +3323,14 @@ def _prompt_reparto(ficha, estilo):
     if ficha.get("grupo"):
         lineas.append("Show every member of the group side by side, clearly "
                       "different from each other in build, clothes and hair.")
-    bloque = reglas.bloque_prompt("reparto")
-    if bloque:
-        lineas.append(bloque)
+    if corta:
+        # las reglas de la casa (en castellano, con brillos de pantalla) se
+        # quedan fuera, como en el plano: la cara y el grupo ya van arriba
+        lineas.extend(_rizo_y_epoca(ficha, estilo))
+    else:
+        bloque = reglas.bloque_prompt("reparto")
+        if bloque:
+            lineas.append(bloque)
     # LO QUE SE PROHIBE AQUI ES ANOTAR LA HOJA, no que el personaje lleve letras.
     # Decia «No text, no letters, no numbers anywhere» y son dos cosas distintas:
     # una hoja de personaje con flechas y rotulitos de «front view» es una hoja
@@ -3762,7 +3842,9 @@ def _generar_escenas(plan, dirs, p, trabajo, toca, unidades, resultados, avisar,
                     # elige cuales y anade el detalle
                     motor_imagen = medios.motor("imagen_openai/imagen.py")
                     referencias = (
-                        list(_referencias_estilo(p, dirs["cache"], escena_final))
+                        list(_referencias_estilo(
+                            p, dirs["cache"], escena_final,
+                            sueltas=orden_corta(p.get("estilo"))))
                         + [dict(r, ruta=motor_imagen.normalizar(r["ruta"],
                                                                 dirs["cache"]))
                            for r in corregido["referencias"]])
@@ -4125,9 +4207,20 @@ def _lamina_estilo(rutas, destino):
     return destino
 
 
-def _referencias_estilo(p, cache, escena=None):
+#: En la orden corta las de estilo van SUELTAS, como mucho estas. El piloto del
+#: 27-10 usaba UN plano aprobado entero, a sangre, y salio «un abismo de
+#: diferencia»; en una lamina cada plano se queda en un sexto del cuadro. Seis
+#: son las que eligio Enrique el 28-10, y con las hojas y la continuidad cabe
+#: en las 14 imagenes que admite Nano Banana 2.
+MAX_REFERENCIAS_ESTILO_SUELTAS = 6
+
+
+def _referencias_estilo(p, cache, escena=None, sueltas=False):
     """La referencia de estilo de un plano: el moodboard si lo hay, si no los
     fotogramas.
+
+    `sueltas` (orden corta, fork 28-10): sin moodboard, cada referencia va como
+    su propia imagen, y no juntas en una lamina.
 
     El moodboard manda cuando esta APROBADO, y solo entonces: son laminas
     dibujadas por el mismo modelo que luego las imita, asi que hasta que una
@@ -4145,6 +4238,9 @@ def _referencias_estilo(p, cache, escena=None):
             return [{"papel": "lamina", "ruta": imagen.normalizar(tile, cache),
                      "cuantas": len(moodboard.ejes_de_plano(escena)),
                      "moodboard": True}]
+    if sueltas:
+        return [{"papel": "estilo", "ruta": imagen.normalizar(ruta, cache)}
+                for ruta in rutas[:MAX_REFERENCIAS_ESTILO_SUELTAS]]
     rutas = rutas[:MAX_REFERENCIAS_ESTILO]
 
     # Siempre que haya mas de una. No es una opcion: mandar ocho imagenes
@@ -4245,6 +4341,33 @@ def continuidad_de(escena, anteriores, por_id, cuantos=1):
     return mismos[-cuantos:] if cuantos else mismos
 
 
+def _gente_de_antes(escena, plan, dirs):
+    """De que plano anterior se copia la gente SIN HOJA de este. -> (sid, [quien]) | None
+
+    Paso en el video 2: la senora de S040 salio con otra cara en S041. Una hoja
+    fija una cara; sin hoja, lo unico que la fija es el plano donde ya salio.
+    Dos casos, y el del director manda:
+      · «(COMO EN: S040)» al final de su linea (modo historia);
+      · alguien del reparto cuya hoja no esta dibujada y que tambien sale en el
+        plano de justo antes EN EL PLAN (no en la cadena, que es de un sitio).
+    Solo un plano ANTERIOR: uno posterior aun no existe o es de otra tanda.
+    """
+    orden = [e.get("id") for e in (plan or {}).get("escenas") or []]
+    if escena.get("id") not in orden:
+        return None
+    antes = orden[:orden.index(escena["id"])]
+    pedido = como_en(escena.get("direccion"))
+    if pedido in antes:
+        return pedido, []
+    if not antes:
+        return None
+    previo = next((e for e in plan["escenas"] if e.get("id") == antes[-1]), {})
+    sin_hoja = [q for q in escena.get("personajes") or []
+                if q in (previo.get("personajes") or [])
+                and not os.path.exists(os.path.join(dirs["reparto"], f"{q}.png"))]
+    return (antes[-1], sin_hoja) if sin_hoja else None
+
+
 def _referencias_escena(escena, plan, dirs, p, cache, hechas, anteriores=None,
                         notas=None):
     """Estilo, estructura, reparto y continuidad, en ese orden fijo.
@@ -4257,7 +4380,8 @@ def _referencias_escena(escena, plan, dirs, p, cache, hechas, anteriores=None,
     distintas segun el orden de los hilos deja de ser reproducible.
     """
     imagen = medios.motor("imagen_openai/imagen.py")
-    referencias = list(_referencias_estilo(p, cache, escena))
+    corta = orden_corta(p.get("estilo"))
+    referencias = list(_referencias_estilo(p, cache, escena, sueltas=corta))
     # La MISMA ficha con la que se dibujo la hoja (`_assets_necesarios`), que es
     # la unica forma de que el plano y la hoja lean lo mismo: leerlo del catalogo
     # por un lado y de los params por otro es como se acaba con una hoja
@@ -4309,6 +4433,20 @@ def _referencias_escena(escena, plan, dirs, p, cache, hechas, anteriores=None,
             ficha["mismo_set"] = True
             ficha["desde"] = anterior.get("camara") or ""
         referencias.append(ficha)
+    # LA GENTE SIN HOJA QUE VUELVE, solo en la orden corta (fork, 28-10). Si es
+    # el mismo plano que la continuidad de sitio, va una vez, diciendo las dos.
+    gente = _gente_de_antes(escena, plan, dirs) if corta else None
+    if gente:
+        sid, quienes = gente
+        previa = hechas.get(sid) or os.path.join(dirs["escenas"], f"{sid}.png")
+        if os.path.exists(previa):
+            ruta = imagen.normalizar(previa, cache)
+            mismo = [r for r in referencias
+                     if r.get("papel") == "continuidad" and r.get("ruta") == ruta]
+            for r in mismo:
+                referencias.remove(r)
+            referencias.append({"papel": "gente", "ruta": ruta, "plano": sid,
+                                "quienes": quienes, "mismo_set": bool(mismo)})
     # LAS DE LA NOTA VAN LAS ULTIMAS, pegadas al bloque de feedback --que es lo
     # ultimo del prompt y la posicion mas fuerte-- y detras de las de
     # continuidad, que dicen lo contrario que ellas («never their content»).

@@ -490,6 +490,132 @@ Al final de cada linea, despues del tono, escribe el que elijas, tal cual:
 (PLANO: medio)
 """
 
+#: EL ENCARGO «MODO HISTORIA» (fork, 28-10-2026), para el Estilo que pide la orden
+#: corta (`estilo.orden: "corta"`). El de arriba se escribio para videos de
+#: tecnologia y finanzas: sus ejemplos (atacantes, bancos, oro, proveedores) y su
+#: largo se los llevaba el director a un video de historia. En el piloto 1 del
+#: 28-10 el dibujo salio bien y el director invento en 3 de 5 planos. Esto son
+#: las reglas de Enrique y nada mas; lo que lee el codigo se queda igual: el
+#: JSON, «(TONO: ...)», «(PLANO: ...)», «EN OTRO SITIO:», la cartela de encima,
+#: las cartas, las ideas del autor, los sitios y el reparto. Y una etiqueta mas,
+#: «(COMO EN: S040)», para la persona sin hoja que vuelve en el plano siguiente
+#: (la lee `p6_assets.como_en`).
+INSTRUCCION_HISTORIA = """Eres el director de un video de historia animado, en estilo
+doodle, titulado «{titulo}».
+
+El video ya esta cortado en planos, cada uno con su frase de narracion, su sitio
+y su reparto. Tu escribes, para cada plano, QUE SE VE: una linea en INGLES de
+{palabras_maximas} palabras como mucho. Esa linea es la escena que recibe el
+dibujante. El estilo se lo ensenan unas imagenes de referencia, y estas frases
+le llegan siempre (no las repitas):
+
+{estilo}
+
+LOS SITIOS. La descripcion de su sitio entra tal cual en cada plano: lo tuyo
+pasa dentro de ese sitio, sin repetirlo ni contradecirlo.
+
+{sitios}
+{reparto}
+=====================================================================
+LAS REGLAS. Cada una salio mal en un video ya publicado
+=====================================================================
+
+- LO LITERAL. La imagen ensena lo que dice la frase: quien, que hace y donde.
+  Ni un objeto, simbolo o letrero que la frase no nombre.
+- LA GENTE DE LA FRASE SALE ENTERA, con la cara visible y haciendo lo que la
+  frase dice. Si la frase habla de personas, el plano las ensena a ellas, nunca
+  un objeto suelto que «las sugiere». Paso: «una pandilla de ninos que aprendio
+  de los gansteres de los periodicos» salio como un periodico en una aldaba,
+  sin un solo nino.
+- NADA FLOTANDO NI EMPUJADO HACIA LA CAMARA. Lo que alguien lleva lo sujeta
+  junto a su cuerpo. Paso: tres bolsas en primer termino sin nadie que las
+  sujete.
+- LOS OBJETOS GRANDES (un saco, una caja, una calabaza enorme) se llevan
+  abrazados contra el pecho, con las manos ocultas detras: las manos que
+  agarran algo grande salen deformes.
+- UNA CIFRA. Si la idea del plano es una cifra y el plano NO lleva cartela
+  encima, la cifra va en letras grandes dentro del dibujo («$13.5 BILLION»
+  sobre una montana de compras, con alguien mirandola). Si el plano lleva
+  CARTELA ENCIMA, esa cifra o esa frase ya sale en pantalla: no la repitas en
+  el dibujo. Paso: «61 %» dos veces en el mismo plano.
+- EL RIZO EN ESPIRAL ES SOLO DEL PROTAGONISTA («you», tambien «tu en el
+  pasado»). Nadie mas lo lleva: los demas hombres son calvos y se distinguen
+  por la ropa, el gorro o el bigote; las mujeres llevan pelo y pestanas.
+- NADA FUERA DE LA EPOCA NI DE LA FIESTA: ropa, uniformes, edificios y objetos
+  del lugar y del ano de la frase. Paso: un policia de Minnesota con casco de
+  policia ingles; guirnaldas que parecian navidenas en Halloween.
+- UNA MASCARA LEVANTADA O QUITADA deja ver debajo la cara normal del estilo,
+  sin maquillaje ni pintura.
+- PANTALLA DIVIDIDA DE VERDAD cuando la frase (o la idea del autor) la pide:
+  empieza con «split screen:» y di que hay en la mitad izquierda y que en la
+  derecha.
+- NUNCA PERSONAS COMO SOMBRAS O SILUETAS OSCURAS, ni pantallas de ordenador si
+  la frase no habla de ellas.
+- DISTINTO DEL DE AL LADO. Dos planos seguidos no son la misma escena desde
+  otro angulo: o ensenan otra cosa, o el segundo dice que ha cambiado.
+
+LETREROS Y LETRAS
+- Un letrero, cartel, pizarra, portada o titular lleva texto SOLO si la frase
+  nombra algo relevante que ese letrero diria: un lugar, una tienda, una fecha
+  o un dato. Entonces va entre comillas dobles, corto (de una a cuatro
+  palabras), grande y en {idioma}: a shop sign reading "DRY GOODS".
+- NUNCA conviertas en rotulo una palabra suelta o una accion del guion («THE
+  DEAL», «THEY ASKED», «COPIED»): le quita el sentido al plano.
+- Cualquier otro letrero, pizarra, felpudo o pagina se pide «blank», con esa
+  palabra. El dibujante solo escribe lo que va entre comillas.
+
+SI LA FRASE SE VA A OTRO SITIO, el plano se va con ella. Si lo que dice la
+frase no se puede ensenar en su sitio (dice «hoy» y el sitio es de hace siglos,
+o nombra otro pais), empieza la linea con `EN OTRO SITIO: ` y describe tu el
+sitio entero. Un objeto nuevo en el mismo sitio no es irse.
+
+LA MISMA PERSONA EN PLANOS SEGUIDOS. Alguien que NO esta en el reparto (no tiene
+hoja) y vuelve a salir en un plano siguiente: describelo con las mismas palabras
+(edad, pelo, ropa) y acaba la linea de ese segundo plano con la etiqueta
+(COMO EN: <id del plano donde salio antes>). El dibujante recibira aquel plano
+para copiarle la cara y la ropa. Solo entonces: no la pongas por costumbre.
+
+EL TONO. Todo plano con gente acaba con su tono, tal cual, uno de estos cinco:
+(TONO: alegre) (TONO: neutro) (TONO: tenso) (TONO: triste) (TONO: solemne).
+Alegre cuando a quien sale le va bien (es el unico que deja sonreir); neutro
+para explicar, trabajar o mirar (no es enfado); tenso solo con amenaza de
+verdad; triste cuando pierde algo; solemne en un momento grave. Manda la frase
+de ESE plano, no la del tramo.
+{ideas}{cartas}
+=====================================================================
+LOS PLANOS ({cuantos}, y los quiero TODOS)
+=====================================================================
+{planos}
+
+DEVUELVE ESTE JSON:
+
+{{"planos": {{"<id de plano>": "<que se ve en ese plano, en ingles>"}}}}
+
+Los {cuantos} planos, ninguno menos y ninguno de mas.
+"""
+
+
+def modo_historia(estilo):
+    """Si este Estilo usa el encargo corto de historia (el de la orden corta)."""
+    return isinstance(estilo, dict) and str(estilo.get("orden") or "") == "corta"
+
+
+def _estilo_historia(estilo):
+    """Lo que el generador lee SIEMPRE en la orden corta: lo esencial y LLENO.
+
+    En la orden corta la guia entera no viaja (la ensenan las referencias), asi
+    que darsela al director era darle un texto que el dibujante no ve.
+    """
+    try:
+        import p6_assets                                         # noqa: PLC0415
+    except ImportError:                                          # pragma: no cover
+        from . import p6_assets                                  # noqa: PLC0415
+    guia = (estilo or {}).get("guia")
+    guia = guia if isinstance(guia, dict) else {}
+    esencial = " ".join(str(guia.get("esencial") or "").split())
+    esencial = esencial or p6_assets.regla_de_especie(estilo)
+    return "\n\n".join(t for t in (esencial, p6_assets.LLENO) if t)
+
 
 def cartas_legibles(permitidas):
     """El bloque de cartas para el encargo, o "" si el Estilo no limita. -> str"""
@@ -678,8 +804,9 @@ def limpiar_linea(texto):
 
 
 #: Las etiquetas para el codigo que la linea lleva al final: «(TONO: neutro)» y,
-#: si el Estilo limita las cartas, «(PLANO: medio)».
-_ETIQUETAS_FINALES = re.compile(r"\(\s*(?:TONO|PLANO)\s*:[^)]*\)", re.I)
+#: si el Estilo limita las cartas, «(PLANO: medio)»; en modo historia, tambien
+#: «(COMO EN: S040)».
+_ETIQUETAS_FINALES = re.compile(r"\(\s*(?:TONO|PLANO|COMO\s+EN)\s*:[^)]*\)", re.I)
 
 
 def _limpiar(crudo, ids):
@@ -817,14 +944,15 @@ def proponer(escenas, ajuste=None, avisar=None, proyecto_id=None, cwd=None,
             f"repita al de al lado, con {modelo} (esfuerzo {esfuerzo})")
         avance.arrancar()
 
-    instruccion = INSTRUCCION.format(
+    historia = modo_historia(estilo)
+    instruccion = (INSTRUCCION_HISTORIA if historia else INSTRUCCION).format(
         titulo=titulo or "sin titulo",
         palabras_maximas=PALABRAS_MAXIMAS,
         # EL IDIOMA DEL VIDEO, y no es un adorno: ver la regla del rotulo. Si no
         # llega, se dice asi en vez de dejar el hueco: un «{idioma}» crudo en el
         # encargo es peor que una frase que reconoce que no se sabe.
         idioma=idioma or "el del guion que se te da mas abajo",
-        estilo=_estilo_legible(estilo),
+        estilo=_estilo_historia(estilo) if historia else _estilo_legible(estilo),
         sitios=_sitios_legibles(catalogo, dirigibles),
         reparto=_reparto_legible(catalogo, dirigibles),
         cuantos=len(dirigibles),

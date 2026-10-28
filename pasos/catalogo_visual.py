@@ -842,15 +842,137 @@ proporciones a lo que diga la regla. Lo mismo con los grupos.
 """
 
 
-def _especie_legible(regla):
+def _especie_legible(regla, historia=False):
     regla = " ".join(str(regla or "").split())
-    return ESPECIE.format(regla=regla) if regla else ""
+    if not regla:
+        return ""
+    return (ESPECIE_HISTORIA if historia else ESPECIE).format(regla=regla)
+
+
+# ----------------------------------------------- modo historia (fork, 28-10)
+#
+# El mismo recorte que el director (`direccion.INSTRUCCION_HISTORIA`), para el
+# Estilo que pide la orden corta. El criterio de arriba mide unos 13.000
+# caracteres y sus ejemplos son de tecnologia y finanzas (atacantes, bancos,
+# servidores, Nvidia). Este dice lo mismo que lee el codigo -- el mismo JSON,
+# los mismos huecos -- con ejemplos de historia y las dos reglas de las hojas
+# que fallaron en el video 2: el rizo y la epoca.
+
+ESPECIE_HISTORIA = """
+COMO SON LOS PERSONAJES EN ESTE ESTILO (regla del estilo grafico; manda sobre
+la realidad historica):
+  {regla}
+Describe a CADA entrada del reparto YA CONVERTIDA a esa regla, en ingles y en
+una frase: conserva lo que la identifica --edad, bigote o barba, gafas, ropa,
+complexion-- y cambia el cuerpo y las proporciones a lo que diga la regla.
+Lo mismo con los grupos.
+"""
+
+CRITERIO_HISTORIA = """
+COMO SE DECIDE
+Cada frase tendra su imagen. Tu das el andamiaje: quien sale, donde ocurre cada
+tramo y con que tono.
+
+REPARTO
+Cada persona o grupo que aparezca MAS DE UNA VEZ va en el reparto con un
+identificador estable y una descripcion fisica cerrada. De ella se dibuja una
+hoja de personaje que se adjunta a cada plano donde sale.
+
+  - Identificador en minusculas y sin acentos: 'granjero', 'policia_1930s'.
+  - UNA ENTRADA POR ACTOR DEL RELATO: si el guion llama a la misma gente de dos
+    formas («los chavales» y luego «la pandilla»), es UNA entrada.
+  - La descripcion es FISICA y permanente: edad, complexion, bigote o barba,
+    ropa habitual. Nada de estados de animo, acciones, sitio ni luz: la hoja se
+    dibuja sobre un fondo vacio.
+  - EL RIZO EN ESPIRAL ES SOLO DEL PROTAGONISTA («you», tambien «tu en el
+    pasado»). Su descripcion lo dice; la de todos los demas dice «no curl»:
+    los hombres calvos, las mujeres con su pelo sencillo y pestanas. Un
+    fantasma, un disfraz o una sabana tampoco llevan rizo.
+  - LA EPOCA Y EL PAIS MANDAN EN LA ROPA: uniformes, gorros y prendas del sitio
+    y del ano del relato, dichos con precision («a 1930s American police cap»,
+    nunca solo «a police helmet», que sale como el casco de un policia ingles).
+  - Si el guion no describe a alguien, inventalo coherente con la epoca, el
+    oficio y la edad, y apuntalo en 'avisos'. Sin parecidos con personas reales.
+  - La misma persona en dos edades muy distintas son DOS entradas.
+  - 'palabras' son las formas con las que el guion lo nombra.
+  - Los grupos (ninos que piden, vecinos, policias) van con grupo=true, y su
+    descripcion dice como es CADA miembro, para que salgan distinguibles.
+
+SETS — donde ocurre
+Un set es un LUGAR, no un plano. Cambia de sitio cuando el relato cambia de
+sitio o de epoca.
+
+  - Apunta a tramos de {planos_por_set} planos como mucho por sitio seguido.{cuantos_planos}
+  - Ante la duda, abre un sitio nuevo: un sitio de menos son varios planos
+    iguales en el video terminado.
+  - Cuando el guion situa («Irlanda, hace dos mil anos», «un pueblo de
+    Minnesota en 1920»), eso es un sitio con su 'rotulo'.
+  - CADA SITIO QUE DECLARES LO USA ALGUN TRAMO, y cada tramo dice su sitio:
+    cruza las dos listas antes de contestar.
+  - 'luz': hora del dia y fuente de luz.
+  - 'descripcion': como es el lugar en una frase, de que esta hecho y de que
+    epoca es; no que pasa en el. Entra literal en todos sus planos.
+
+REALES — lo que existe de verdad
+Lugares, edificios y objetos con nombre propio que un espectador reconoceria
+(un monumento, una ciudad, un cuadro, un barco). Nada generico ('una casa',
+'una calle') y nadie del reparto. 'buscar' es su nombre en Wikimedia Commons,
+en ingles y sin ambiguedad; 'palabras', como lo nombra el guion. Entre cero y
+diez.
+
+COMPONENTES — un MAPA, cuando el guion cuenta un viaje o una procedencia
+Solo estas regiones: {regiones_mapa}. Coordenadas reales. Como mucho dos o tres.
+
+LUGARES — rotulos de sitios que se nombran ('anoka' -> 'ANOKA, MINNESOTA').
+Solo nombres propios, y solo los que importen.
+
+CAPITULOS — si el guion tiene partes claras, el bloque donde arranca cada una
+con su titulo. Tres o cuatro como mucho; ninguno si es un relato continuo.
+
+BEATS — el guion en tramos
+Tramos de bloques consecutivos que comparten sitio, reparto y tono. Cubren el
+guion ENTERO, sin huecos y sin solaparse.
+
+  - 'tono': alegre, neutro, tenso, triste o solemne. Sin «alegre» nadie sonrie.
+  - 'accion': lo que se VE, una linea, y distinta de la del tramo de al lado.
+    Una idea abstracta (una cifra, una costumbre) se cuenta con gente haciendo
+    algo concreto, nunca con un objeto suelto.
+  - 'personajes' es quien esta FISICAMENTE ahi, no de quien se habla. Alguien
+    generico (un vecino cualquiera) no es nadie del reparto: dejalo vacio.
+"""
+
+#: Los ejemplos del JSON de INSTRUCCION, cambiados por unos de historia. El JSON
+#: es el mismo (lo lee el codigo); solo cambian los ejemplos entre comillas.
+_EJEMPLOS_HISTORIA = (
+    ("'Udai Hussein'", "'George Green'"),
+    ("'el hijo mayor de Saddam'", "'el granjero del pueblo'"),
+    ("'Bagdad, 23:39'", "'Anoka, Minnesota, 1920'"),
+    ("'sede_central', 'pentagono', 'boeing_737'",
+     "'big_ben', 'stonehenge', 'mayflower'"),
+    ("'Sede Central', 'The Pentagon', 'Boeing 737-800'",
+     "'Big Ben', 'Stonehenge', 'Mayflower (ship)'"),
+    ("'the bank', 'the building'", "'the clock tower', 'the ship'"),
+)
+
+
+def _instruccion_historia():
+    texto = INSTRUCCION
+    for viejo, nuevo in _EJEMPLOS_HISTORIA:
+        if viejo not in texto:                                   # pragma: no cover
+            raise RuntimeError(f"catalogo modo historia: falta {viejo!r}")
+        texto = texto.replace(viejo, nuevo)
+    return texto
+
+
+INSTRUCCION_HISTORIA = _instruccion_historia()
 
 
 def proponer(bloques, brief=None, ajuste=None, avisar=None, proyecto_id=None,
              cwd=None, peticion="", planos=0, min_s=None, max_s=None,
-             regla_personajes="", ideas=""):
+             regla_personajes="", ideas="", historia=False):
     """Propone el catalogo visual del video. NO lo guarda: eso lo hace una persona.
+
+    `historia` (fork, 28-10): el encargo corto, para el Estilo de la orden corta.
 
     'bloques' son los del guion, con id y texto, EN ORDEN. Se manda el guion
     entero de una vez a proposito: asignar sitios frase a frase es lo que hace
@@ -874,13 +996,14 @@ def proponer(bloques, brief=None, ajuste=None, avisar=None, proyecto_id=None,
     guion, _ = comun.recortar(_guion_legible(bloques), 90000,
                               "[...guion recortado por longitud...]")
     peticion = " ".join(str(peticion or "").split())
-    instruccion = INSTRUCCION.format(
+    instruccion = (INSTRUCCION_HISTORIA if historia else INSTRUCCION).format(
         titulo=(brief or {}).get("titulo") or "sin titulo",
         tema=(brief or {}).get("resumen") or (brief or {}).get("tema") or "sin brief",
         peticion=PETICION.format(texto=peticion) if peticion else "",
         ideas=ideas_legibles(ideas),
-        especie=_especie_legible(regla_personajes),
-        criterio=CRITERIO.format(planos_por_set=PLANOS_POR_SET,
+        especie=_especie_legible(regla_personajes, historia),
+        criterio=(CRITERIO_HISTORIA if historia else CRITERIO).format(
+                                 planos_por_set=PLANOS_POR_SET,
                                  cuantos_planos=_cuantos_planos(planos, min_s,
                                                                 max_s),
                                  regiones_mapa=", ".join(regiones_de_mapa())

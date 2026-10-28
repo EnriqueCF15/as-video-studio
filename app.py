@@ -3003,7 +3003,11 @@ def _correr_catalogo(avisar, ctx, ajuste, peticion):
                                   params.get("estilo") or {}),
                               # las notas de imagen del autor: quien sale aunque
                               # la narracion lo llame «tu» (fork, 08-10-2026)
-                              ideas=_ideas_visuales().leer(ctx.proyecto))
+                              ideas=_ideas_visuales().leer(ctx.proyecto),
+                              # el encargo corto de historia, con el Estilo de
+                              # la orden corta (fork, 28-10-2026)
+                              historia=PASOS_MODULOS.p6_assets.orden_corta(
+                                  params.get("estilo") or {}))
     ctx.bitacora.anotar("catalogo_propuesto", "assets", {
         "personajes": len(ficha.get("reparto") or {}),
         "sets": len(ficha.get("sets") or {}),
