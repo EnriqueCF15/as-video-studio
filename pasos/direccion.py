@@ -74,9 +74,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import medios  # noqa: E402
 
 try:
-    from . import cli_claude, estadisticas
+    from . import cli_claude, encuadres, estadisticas
 except ImportError:  # ejecutado con la carpeta pasos directamente en sys.path
     import cli_claude
+    import encuadres
     import estadisticas
 
 PASO = "direccion"
@@ -165,6 +166,37 @@ REGLAS QUE NO SE SALTAN:
   vez precisamente para poder hacer esto.
 - NO REPITAS LA NARRACION. Esa frase ya viaja al modelo. Tu dices lo que se VE
   mientras se oye, que casi nunca es lo mismo.
+
+=====================================================================
+LO QUE SE VE ES LO QUE SE DICE
+=====================================================================
+
+Esto salio mal en un video entero (repaso del 27-10) y lo pago quien lo vio:
+
+- LA IMAGEN MUESTRA LITERALMENTE LO QUE DICE LA FRASE: quien, que hace y
+  donde. No inventes objetos, letreros ni simbolos que la frase no nombre.
+  Paso: una parada de autobus con reloj electronico, un sombrero encima de un
+  globo terraqueo, una fecha tachada que nadie habia dicho.
+- UNA IDEA GRANDE SE CUENTA CON UNA ESCENA CLARA, no con objetos sueltos: un
+  gasto enorme es una montana de compras de Halloween con alguien mirandola
+  boquiabierto, una historia que cambia es la gente haciendo lo que la frase
+  dice.
+- SI EL PLANO LLEVA «CARTELA ENCIMA», su cifra o su frase ya salen en pantalla
+  con letra de verdad: no las repitas dentro del dibujo. Paso: «61 %» dos
+  veces en el mismo plano.
+- LETRAS GRANDES DENTRO DEL DIBUJO, SOLO CUANDO APORTAN: una cifra enorme que
+  es la idea del plano y que no esta ya en la cartela, el titular que la frase
+  nombra. Si no aportan, sin letras. Un letrero, una pizarra o un felpudo que
+  no tiene que decir nada se pide «blank», con esa palabra: si no, el
+  generador escribe lo que quiere.
+- NUNCA PERSONAS COMO SOMBRAS O SILUETAS OSCURAS, y nada de pantallas de
+  ordenador ni ventanas de programa salvo que la frase hable de eso. Todo el
+  mundo sale dibujado entero, con luz, en el estilo del video.
+- SI LA FRASE (O LA IDEA DEL AUTOR) PIDE UNA PANTALLA DIVIDIDA, hazla de
+  verdad: empieza con «split screen:» y di que hay en la mitad izquierda y que
+  en la derecha.
+- NADA FUERA DE LA EPOCA NI DE LA FIESTA: en Halloween no hay guirnaldas que
+  parezcan navidenas ni un «25» de calendario.
 
 =====================================================================
 LAS TRES QUE MAS SE ROMPEN, Y LAS TRES SE VIERON EN UN VIDEO MONTADO
@@ -380,7 +412,7 @@ ella:
   · una frase que dice que algo SUBE no se dibuja bajando.
 
 Los dos pasaron de verdad y se vieron en el video montado.
-{ideas}
+{ideas}{cartas}
 =====================================================================
 LOS PLANOS ({cuantos}, y los quiero TODOS)
 =====================================================================
@@ -420,6 +452,51 @@ contradecir el estilo ni el sitio, pero no la cambies por otra tuya.
 >>>
 """
 
+#: EL TIPO DE PLANO LO ELIGE EL DIRECTOR (fork, 28-10-2026), y solo en un Estilo
+#: que limita las cartas (`estilo.cartas`). Sorteada sin mirar la frase, la carta
+#: obligaba a inventar: en el video 2 una silueta a contraluz para «gastan 13.500
+#: millones» y un sitio vacio para «profesores de Oxford». La eleccion vuelve en
+#: la linea como «(PLANO: id)» y la lee `p6_assets._asignar_cartas`.
+CARTAS = """
+=====================================================================
+EL TIPO DE PLANO LO ELIGES TU
+=====================================================================
+
+Este estilo solo usa estos tipos de plano:
+
+{lista}
+
+Cada plano trae uno sorteado. Elige el que mejor cuente SU frase: quien hace
+que, en plano medio; un sitio o un grupo entero, en conjunto; una cara que
+reacciona, en retrato; un objeto que la frase nombra, en detalle; alguien que
+camina o dos que se enfrentan, en perfil. Si el sorteado sirve, quedatelo; varia
+cuando la frase lo permita, pero la frase manda sobre la variedad. Lo que
+describes tiene que caber en ese plano.
+
+Al final de cada linea, despues del tono, escribe el que elijas, tal cual:
+(PLANO: medio)
+"""
+
+
+def cartas_legibles(permitidas):
+    """El bloque de cartas para el encargo, o "" si el Estilo no limita. -> str"""
+    if not permitidas:
+        return ""
+    lista = "\n".join(f"  [{c['id']}] {c['encuadre']}"
+                      for c in encuadres.de_la_lista(permitidas))
+    return CARTAS.format(lista=lista)
+
+
+def _cartela_encima(escena):
+    """Lo que dice la cartela que va ENCIMA de la imagen de este plano, o ""."""
+    ficha = escena.get("cartela")
+    if not isinstance(ficha, dict) or ficha.get("fondo") != "imagen":
+        return ""
+    datos = ficha.get("datos") if isinstance(ficha.get("datos"), dict) else {}
+    partes = [str(v).strip() for k, v in datos.items()
+              if k != "icono" and isinstance(v, (str, int, float)) and str(v).strip()]
+    return " · ".join(partes)
+
 
 def ideas_legibles(texto):
     """El bloque de ideas del autor para el encargo, o "" si no hay. -> str"""
@@ -427,7 +504,7 @@ def ideas_legibles(texto):
     return IDEAS.format(texto=limpio) if limpio else ""
 
 
-def _planos_legibles(escenas, beats=None):
+def _planos_legibles(escenas, beats=None, permitidas=None):
     """Los planos para el agente: donde ocurre, quien sale, QUE PASA y que se narra.
 
     La accion del beat entra aqui como CONTEXTO: es lo que le dice al agente de
@@ -454,8 +531,14 @@ def _planos_legibles(escenas, beats=None):
         gente = ", ".join(escena.get("personajes") or []) or "nadie"
         cabeza = f"[{escena.get('id')}] sitio: {donde} · reparto: {gente}"
         encuadre = str(escena.get("encuadre") or "").strip()
-        if encuadre:
+        if permitidas and escena.get("carta"):
+            # el director elige entre las del Estilo (ver CARTAS)
+            cabeza += f" · plano sorteado: {escena['carta']}"
+        elif encuadre:
             cabeza += f" · encuadre (no lo contradigas): {encuadre}"
+        encima = _cartela_encima(escena)
+        if encima:
+            cabeza += f" · CARTELA ENCIMA (no la repitas): «{encima}»"
         # LO QUE SE DICE VA PRIMERO, y el tramo debajo. El orden no es
         # cosmetica: lo de arriba se lee como el encargo y lo de abajo como el
         # marco. Estaba al reves, y con el al reves salian planos que
@@ -571,10 +654,19 @@ def limpiar_linea(texto):
         return None, f"solo {len(palabras)} palabra(s): no dice nada que dibujar"
     aviso = ""
     if len(palabras) > PALABRAS_MAXIMAS:
-        crudo = " ".join(palabras[:PALABRAS_MAXIMAS]).rstrip(",;:")
+        # el tono y el plano van al final, que es justo lo que se recortaba
+        etiquetas = [m.group(0) for m in _ETIQUETAS_FINALES.finditer(crudo)]
+        cuerpo = _ETIQUETAS_FINALES.sub(" ", crudo).split()
+        crudo = " ".join([" ".join(cuerpo[:PALABRAS_MAXIMAS]).rstrip(",;:")]
+                         + etiquetas)
         aviso = (f"{len(palabras)} palabras, se recorta a {PALABRAS_MAXIMAS}: "
                  f"a partir de ahi vuelve a describir el sitio")
     return crudo, aviso
+
+
+#: Las etiquetas para el codigo que la linea lleva al final: «(TONO: neutro)» y,
+#: si el Estilo limita las cartas, «(PLANO: medio)».
+_ETIQUETAS_FINALES = re.compile(r"\(\s*(?:TONO|PLANO)\s*:[^)]*\)", re.I)
 
 
 def _limpiar(crudo, ids):
@@ -702,6 +794,7 @@ def proponer(escenas, ajuste=None, avisar=None, proyecto_id=None, cwd=None,
         raise RuntimeError("ningun plano de este video genera imagen propia: "
                            "no hay nada que dirigir")
 
+    permitidas = encuadres.permitidas_de(estilo)
     prevision = estadisticas.estimar(PASO, tamano=len(dirigibles), ajuste=elegido)
     avance = None
     if avisar is not None:
@@ -723,7 +816,8 @@ def proponer(escenas, ajuste=None, avisar=None, proyecto_id=None, cwd=None,
         reparto=_reparto_legible(catalogo, dirigibles),
         cuantos=len(dirigibles),
         ideas=ideas_legibles(ideas),
-        planos=_planos_legibles(dirigibles, [b for _, b in pares]))
+        cartas=cartas_legibles(permitidas),
+        planos=_planos_legibles(dirigibles, [b for _, b in pares], permitidas))
 
     arranque = time.time()
     try:

@@ -1262,11 +1262,23 @@ def _asignar_cartas(escenas, p):
 
     Se puede forzar por plano desde la pantalla: `unidades['escena:S007'].carta`.
     Una decision tomada mirando el video manda sobre cualquier reparto.
+
+    Y SI EL ESTILO LIMITA LAS CARTAS (`estilo.cartas`, fork 28-10), solo se
+    reparten esas, y la que eligio el director para la frase -- «(PLANO: medio)»
+    al final de su linea, ver `direccion` -- va detras de la de la persona y
+    delante del sorteo.
     """
-    forzadas = {e["id"]: str(_ajustes_unidad(p, f"escena:{e['id']}").get("carta")
-                             or "") for e in escenas}
+    permitidas = encuadres.permitidas_de(p.get("estilo"))
+    forzadas = {}
+    for escena in escenas:
+        ajustes = _ajustes_unidad(p, f"escena:{escena['id']}")
+        carta = str(ajustes.get("carta") or "")
+        if not carta and permitidas:
+            carta = carta_dirigida(ajustes.get("direccion"), permitidas)
+        if carta:
+            forzadas[escena["id"]] = carta
     cartas = encuadres.repartir(escenas, semilla=p.get("semilla", 0),
-                                forzadas={k: v for k, v in forzadas.items() if v})
+                                forzadas=forzadas, permitidas=permitidas)
     for escena in escenas:
         carta = cartas.get(escena["id"])
         if not carta:
@@ -1279,7 +1291,19 @@ def _asignar_cartas(escenas, p):
     return cartas
 
 
-def _repartir_zoom(escenas):
+#: La carta que eligio el director para un plano, al final de su linea: lo
+#: escribe `direccion` cuando el Estilo limita las cartas.
+_CARTA_DEL_PLANO = re.compile(r"\(\s*PLANO\s*:\s*([a-zA-Z_]+)\s*\)", re.I)
+
+
+def carta_dirigida(linea, permitidas):
+    """El id de la carta que pide la linea del director, si el Estilo la deja. -> str"""
+    casa = _CARTA_DEL_PLANO.search(str(linea or ""))
+    carta = casa.group(1).strip().lower() if casa else ""
+    return carta if carta in (permitidas or ()) else ""
+
+
+def _repartir_zoom(escenas, permitidas=None):
     """El zoom de cada plano, alternado. Se juega en el CORTE, sobre la imagen.
 
     No necesita ninguna caja ni ningun ancla sobre el que centrarse: el
@@ -1288,10 +1312,10 @@ def _repartir_zoom(escenas):
     segmentar = medios.motor("guion/segmentar.py")
     for indice, escena in enumerate(escenas):
         escena["zoom"] = segmentar.alternar_zoom(indice, None)
-    return _informe_cartas(escenas)
+    return _informe_cartas(escenas, permitidas)
 
 
-def _informe_cartas(escenas):
+def _informe_cartas(escenas, permitidas=None):
     """Que ha salido del reparto de cartas.
 
     'planos_repetidos' cuenta planos SEGUIDOS de la misma familia, que es la
@@ -1315,7 +1339,7 @@ def _informe_cartas(escenas):
         # endpoint aparte porque la pantalla ya lee el plan entero: un viaje
         # menos y, sobre todo, imposible que se desincronicen.
         "escalera": [{"id": c["id"], "nombre": c["nombre"]}
-                     for c in encuadres.ESCALERA],
+                     for c in encuadres.de_la_lista(permitidas)],
     }
 
 
@@ -1402,7 +1426,7 @@ def planificar(proyecto, params, inventario=None, replantear=False,
     # libre sobre el SHOT TYPE. Se reparte sobre las escenas YA ordenadas: la
     # regla de no repetir familia mira a los vecinos, no a un plano suelto.
     _asignar_cartas(escenas, p)
-    camaras = _repartir_zoom(escenas)
+    camaras = _repartir_zoom(escenas, encuadres.permitidas_de(p.get("estilo")))
 
     # Las duraciones definitivas ANTES de decidir los rotulos: un plano de menos
     # de tres segundos no admite ninguno, y eso solo se sabe una vez repartidos
@@ -2353,6 +2377,8 @@ def _con_direccion(base, escena):
     entra en el prompt (ver `_prompt_escena`).
     """
     linea = " ".join(str(escena.get("direccion") or "").split())
+    # la carta elegida es para `_asignar_cartas`, no para el generador
+    linea = " ".join(_CARTA_DEL_PLANO.sub("", linea).split())
     if not linea:
         return base
     return _unir(base, linea)
@@ -2736,6 +2762,158 @@ def _ultima_palabra_idioma(idioma):
             f"names and titles of real works.")
 
 
+#: EL CUADRO ES VERTICAL, y hay que decirlo: las referencias de estilo son
+#: apaisadas y sin esta linea el generador compone un plano apaisado dentro de
+#: un lienzo alto, con el sujeto pequeno en medio y aire arriba y abajo. Lo que
+#: se pide es lo que un movil ensena: sujeto grande, centrado, y lo importante en
+#: el tercio central. La usan las dos ordenes, la de siempre y la corta.
+CUADRO_VERTICAL = ("The frame is PORTRAIT (9:16, vertical, for a phone "
+                   "screen): compose for a tall frame. Put the subject large "
+                   "and centred, keep everything important within the middle "
+                   "two thirds of the height, and let the background fill the "
+                   "top and bottom naturally. Never draw black bars, borders "
+                   "or a landscape picture inside the tall frame.")
+
+#: Lo que pide una pantalla dividida, en la frase, la direccion o la escena.
+_PANTALLA_DIVIDIDA = re.compile(r"split[\s-]*screen", re.I)
+
+
+def pide_pantalla_dividida(escena):
+    """Si este plano es una pantalla dividida de verdad. -> bool
+
+    Paso en el video 2 (S027): la frase decia «Split screen. On the left,
+    you...» y el prompt decia a la vez «divide el cuadro» y «never a split
+    screen» (la frase de la lamina). Salio una ventana de ordenador partida.
+    """
+    escena = escena or {}
+    texto = " ".join(str(escena.get(c) or "")
+                     for c in ("narracion", "direccion", "prompt"))
+    return bool(_PANTALLA_DIVIDIDA.search(texto))
+
+
+# ------------------------------------------------- la orden corta (fork, 28-10)
+#
+# La orden de siempre media 19.121 caracteres en S007 del video 2, y la escena
+# empezaba en el 16.924: la guia de estilo entera (con la regla de especie
+# repetida tres veces), las reglas de la casa (con notas internas en castellano
+# que nadie habia escrito para el generador) y dos parrafos sobre rotulos. El
+# 27-10 se rehicieron cuatro planos a mano con una orden de unos 2.000
+# caracteres (`herramientas\escena_nueva.py` del proyecto de Enrique: las
+# referencias, las hojas de personaje y la regla LLENO) y salieron, en sus
+# palabras, «un abismo de diferencia». Esto es esa orden dentro del estudio,
+# para el Estilo que la pida con `estilo.orden: "corta"`: el estilo lo ensenan
+# las imagenes de referencia y la escena va delante. Un Estilo sin esa clave
+# sigue con la orden de siempre, letra por letra.
+
+#: Enrique, 27-10: «nunca mas personas en sombra negra», nada de margenes de
+#: papel vacio, nada que la frase no nombre. Va SIEMPRE en la orden corta.
+LLENO = ("The picture is full-bleed: the drawing fills the whole frame edge to "
+         "edge, with no paper border, no empty margins and no blank band at the "
+         "top or the sides. Every person is drawn in full in this style, clearly "
+         "lit, with a white round head and coloured clothes, never as a dark "
+         "silhouette or shadow, and people in the background are drawn the same "
+         "way, never greyed out. Each named character appears only once. Draw "
+         "only what the scene describes: no extra objects, signs or screens.")
+
+PANTALLA_DIVIDIDA = ("This shot IS a split screen, exactly as the scene says: "
+                     "two halves side by side, separated by one clean vertical "
+                     "line, each half a full scene of its own.")
+
+#: Las etiquetas que el director deja al final de su linea para el codigo.
+_ETIQUETAS = re.compile(r"\s*\(\s*(?:TONO|PLANO)\s*:[^)]*\)", re.I)
+
+
+def orden_corta(estilo):
+    """Si este Estilo pide la orden corta. -> bool"""
+    return isinstance(estilo, dict) and str(estilo.get("orden") or "") == "corta"
+
+
+def _escena_corta(escena):
+    """La escena como la lee el generador en la orden corta, sin etiquetas."""
+    texto = _ETIQUETAS.sub("", str((escena or {}).get("prompt") or ""))
+    texto = texto.replace("SHOT TYPE, and this is not optional:", "Framing:")
+    texto = re.sub(r"\.\s*([.,])", r"\1", texto)
+    return " ".join(texto.split()).rstrip(". ")
+
+
+def _letras_corta(escena, texto, idioma):
+    """Que letras se pueden dibujar: solo las entrecomilladas, y grandes."""
+    frase = str((escena or {}).get("narracion") or "").strip()
+    pedidas = texto.replace(f'"{frase}"', "") if frase else texto
+    nombre = _nombre_en(idioma)
+    if not re.search(r'"[^"]+"', pedidas):
+        return ("No text, letters or numbers anywhere: any sign, board, page, "
+                "label or screen is drawn blank.")
+    return ("The only lettering allowed is the words in double quotes in the "
+            "scene (never the narration line), drawn large and easy to read"
+            + (f", in {nombre}," if nombre else ",") + " spelled correctly. "
+            "Any other sign, board, page, label or screen is drawn blank.")
+
+
+def _prompt_corto(escena, referencias, estilo, feedback="", idioma="",
+                  formato="", fichas_reparto=None):
+    """La orden corta: estilo por las referencias, la escena delante. -> str
+
+    Mismas referencias y mismo orden que la de siempre; cambia el texto. Se
+    queda lo que solo sabe el codigo -- que hoja es de quien, a quien le falta
+    la hoja, la luz, la nota del revisor -- y se van la guia escrita y las
+    reglas de la casa, que repiten lo que las referencias ya ensenan.
+    """
+    guia = estilo.get("guia") if isinstance(estilo.get("guia"), dict) else {}
+    estilos = [i for i, ref in enumerate(referencias, start=1)
+               if ref["papel"] in ("estilo", "lamina")]
+    if estilos:
+        cita = (f"reference image {estilos[0]}" if len(estilos) == 1
+                else f"reference images {estilos[0]} to {estilos[-1]}")
+        lineas = [f"Draw one new illustration for a shot of an animated "
+                  f"documentary, in exactly the same drawing style as {cita}: "
+                  f"copy only the style (line work, colours, shading, paper "
+                  f"texture, the simple round-headed people), never the content "
+                  f"or the composition."]
+    else:
+        lineas = ["Draw one new illustration for a shot of an animated "
+                  "documentary."]
+    for indice, ref in enumerate(referencias, start=1):
+        if ref["papel"] == "lamina":
+            lineas.append(f"Reference image {indice} shows several frames side "
+                          f"by side only so they fit in one image: draw ONE "
+                          f"single picture, never a grid or a collage.")
+    if p2_brief.comun.normalizar_formato(formato) == "vertical":
+        lineas.append(CUADRO_VERTICAL)
+    texto = _escena_corta(escena)
+    if texto:
+        lineas.append(f"Scene: {texto}.")
+    if escena.get("luz"):
+        lineas.append(f"Time of day and lighting: {escena['luz']}.")
+    for indice, ref in enumerate(referencias, start=1):
+        frase = frase_de_referencia(indice, ref)
+        if frase:
+            lineas.append(frase.replace("scene description below",
+                                        "scene description"))
+    con_hoja = {r.get("nombre") for r in referencias
+                if r.get("papel") == "reparto"}
+    for quien in (escena.get("personajes") or []):
+        if quien in con_hoja:
+            continue
+        ficha = (fichas_reparto or {}).get(f"asset:{quien}") or {}
+        descrito = " ".join(str(ficha.get("descripcion") or "").split())
+        if descrito:
+            lineas.append(f"No cast sheet is attached for '{quien}': "
+                          f"draw them from this description -- {descrito}")
+    esencial = " ".join(str(guia.get("esencial") or "").split())
+    esencial = esencial or regla_de_especie(estilo)
+    if esencial:
+        lineas.append(esencial)
+    if pide_pantalla_dividida(escena):
+        lineas.append(PANTALLA_DIVIDIDA)
+    lineas.append(LLENO)
+    lineas.append(_letras_corta(escena, texto, idioma))
+    if feedback:
+        lineas.append(_bloque_feedback(feedback))
+    lineas.append("No watermarks.")
+    return " ".join(lineas)
+
+
 def _prompt_completo(escena, referencias, estilo, feedback="", idioma="",
                      formato="", fichas_reparto=None):
     """Prompt final citando cada referencia por su posicion, como espera la API.
@@ -2743,21 +2921,16 @@ def _prompt_completo(escena, referencias, estilo, feedback="", idioma="",
     `fichas_reparto` es `plan["assets"]`, y sirve para UNA cosa: devolver la
     descripcion de un personaje al que no se le ha podido adjuntar la hoja. Ver
     `_citar_reparto`, que es quien la quito del texto de la escena.
+
+    Si el Estilo pide la orden corta, es esa (`_prompt_corto`).
     """
+    if orden_corta(estilo):
+        return _prompt_corto(escena, referencias, estilo, feedback, idioma,
+                             formato, fichas_reparto)
     reglas = medios.motor("reglas/reglas.py")
     lineas = ["Draw a single illustration for one shot of an animated documentary."]
     if p2_brief.comun.normalizar_formato(formato) == "vertical":
-        # EL CUADRO ES VERTICAL, y hay que decirlo: las referencias de estilo
-        # son apaisadas y sin esta linea el generador compone un plano apaisado
-        # dentro de un lienzo alto, con el sujeto pequeno en medio y aire arriba
-        # y abajo. Lo que se pide es lo que un movil ensena: sujeto grande,
-        # centrado, y lo importante en el tercio central.
-        lineas.append("The frame is PORTRAIT (9:16, vertical, for a phone "
-                      "screen): compose for a tall frame. Put the subject large "
-                      "and centred, keep everything important within the middle "
-                      "two thirds of the height, and let the background fill the "
-                      "top and bottom naturally. Never draw black bars, borders "
-                      "or a landscape picture inside the tall frame.")
+        lineas.append(CUADRO_VERTICAL)
 
     # Las de estilo se citan JUNTAS, en una sola frase. Repetir "match the art
     # style of reference image N" una vez por imagen gasta prompt y, sobre todo,
@@ -2779,7 +2952,8 @@ def _prompt_completo(escena, referencias, estilo, feedback="", idioma="",
             f"Its grid layout is NOT part of the style and must NOT be "
             f"reproduced: your output is ONE single full-bleed illustration of "
             f"one moment. Never draw a grid, a collage, a contact sheet, panels, "
-            f"a split screen, borders, frames or separate boxes.")
+            f"{'' if pide_pantalla_dividida(escena) else 'a split screen, '}"
+            f"borders, frames or separate boxes.")
         # solo si alguien lo ha escrito: el defecto ya no rellena esto con una
         # descripcion generica, que era describirle otro video al generador
         if estilo.get("prompt"):
