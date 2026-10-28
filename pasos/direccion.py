@@ -177,10 +177,21 @@ Esto salio mal en un video entero (repaso del 27-10) y lo pago quien lo vio:
   donde. No inventes objetos, letreros ni simbolos que la frase no nombre.
   Paso: una parada de autobus con reloj electronico, un sombrero encima de un
   globo terraqueo, una fecha tachada que nadie habia dicho.
-- UNA IDEA GRANDE SE CUENTA CON UNA ESCENA CLARA, no con objetos sueltos: un
-  gasto enorme es una montana de compras de Halloween con alguien mirandola
-  boquiabierto, una historia que cambia es la gente haciendo lo que la frase
-  dice.
+- LA GENTE DE LA FRASE SALE, ENTERA Y A LA VISTA, HACIENDO LO QUE LA FRASE
+  DICE. Si la frase habla de personas (una pandilla de ninos, unos vecinos, tu),
+  el plano las ensena a ellas, con la cara visible; nunca un objeto suelto que
+  «las sugiere». Paso (piloto del 28-10): «una pandilla de ninos que aprendio de
+  los gansteres de los periodicos» salio como un periodico enganchado a una
+  aldaba, sin un solo nino.
+- NADA FLOTANDO NI EMPUJADO HACIA LA CAMARA: lo que alguien lleva lo sujeta con
+  sus manos, a la vista, junto a su cuerpo. Paso: tres bolsas de papel en primer
+  termino sin nadie que las sujete.
+- UNA IDEA GRANDE SE CUENTA CON UNA ESCENA CLARA, no con objetos sueltos ni con
+  una cara: un gasto enorme es una montana de compras de Halloween con alguien
+  mirandola boquiabierto, una historia que cambia es la gente haciendo lo que la
+  frase dice. Si la idea es UNA CIFRA y no hay cartela encima, la cifra va en
+  letras grandes dentro del dibujo («$13.5 BILLION» sobre la montana). Paso: el
+  mismo plano salio como una cara gigante y un monton gris, sin cifra.
 - SI EL PLANO LLEVA «CARTELA ENCIMA», su cifra o su frase ya salen en pantalla
   con letra de verdad: no las repitas dentro del dibujo. Paso: «61 %» dos
   veces en el mismo plano.
@@ -467,11 +478,13 @@ Este estilo solo usa estos tipos de plano:
 {lista}
 
 Cada plano trae uno sorteado. Elige el que mejor cuente SU frase: quien hace
-que, en plano medio; un sitio o un grupo entero, en conjunto; una cara que
-reacciona, en retrato; un objeto que la frase nombra, en detalle; alguien que
-camina o dos que se enfrentan, en perfil. Si el sorteado sirve, quedatelo; varia
-cuando la frase lo permita, pero la frase manda sobre la variedad. Lo que
-describes tiene que caber en ese plano.
+que, en plano medio; un sitio o un grupo entero, en conjunto; alguien que
+camina o dos que se enfrentan, en perfil. Retrato SOLO si la frase va de la
+reaccion de una persona, y detalle SOLO si la frase va de un objeto concreto que
+nombra; nunca para una cifra, un grupo o una idea. Ante la duda, medio o
+conjunto. Si el sorteado sirve, quedatelo; varia cuando la frase lo permita,
+pero la frase manda sobre la variedad. Lo que describes tiene que caber en ese
+plano.
 
 Al final de cada linea, despues del tono, escribe el que elijas, tal cual:
 (PLANO: medio)
