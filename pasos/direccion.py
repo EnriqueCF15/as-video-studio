@@ -522,11 +522,19 @@ LAS REGLAS. Cada una salio mal en un video ya publicado
 
 - LO LITERAL. La imagen ensena lo que dice la frase: quien, que hace y donde.
   Ni un objeto, simbolo o letrero que la frase no nombre.
+- LA FRASE MANDA SOBRE EL SITIO Y EL REPARTO. Si la frase dice «you» o
+  «your», sale el protagonista aunque el reparto del plano no lo traiga. Si el
+  sitio no deja ensenar lo que dice la frase (es un fondo vacio, una vista
+  aerea sin gente, un objeto suelto, o trae cosas que la frase no pide), vete
+  con `EN OTRO SITIO: `. Paso: «the bowl in your hands» en una acera con
+  parada de autobus salio como un desconocido con un gorro de fiesta.
 - LA GENTE DE LA FRASE SALE ENTERA, con la cara visible y haciendo lo que la
   frase dice. Si la frase habla de personas, el plano las ensena a ellas, nunca
-  un objeto suelto que «las sugiere». Paso: «una pandilla de ninos que aprendio
-  de los gansteres de los periodicos» salio como un periodico en una aldaba,
-  sin un solo nino.
+  un objeto suelto que «las sugiere». Tambien una cifra de gente («el 61 % de
+  los americanos») se ensena con esa gente haciendo lo que dice la frase, no
+  con casas ni luces. Paso: «una pandilla de ninos que aprendio de los
+  gansteres de los periodicos» salio como un periodico en una aldaba, sin un
+  solo nino.
 - NADA FLOTANDO NI EMPUJADO HACIA LA CAMARA. Lo que alguien lleva lo sujeta
   junto a su cuerpo. Paso: tres bolsas en primer termino sin nadie que las
   sujete.
@@ -566,8 +574,10 @@ LETREROS Y LETRAS
 
 SI LA FRASE SE VA A OTRO SITIO, el plano se va con ella. Si lo que dice la
 frase no se puede ensenar en su sitio (dice «hoy» y el sitio es de hace siglos,
-o nombra otro pais), empieza la linea con `EN OTRO SITIO: ` y describe tu el
-sitio entero. Un objeto nuevo en el mismo sitio no es irse.
+nombra otro pais, o el sitio no tiene donde poner a su gente), empieza la linea
+con `EN OTRO SITIO: ` y describe tu el sitio entero: la descripcion del sitio
+del tramo deja de entrar en ese plano. Un objeto nuevo en el mismo sitio no es
+irse.
 
 LA MISMA PERSONA EN PLANOS SEGUIDOS. Alguien que NO esta en el reparto (no tiene
 hoja) y vuelve a salir en un plano siguiente: describelo con las mismas palabras

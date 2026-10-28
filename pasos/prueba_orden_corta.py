@@ -216,7 +216,8 @@ cierto(len(H) < len(direccion.INSTRUCCION) * 0.4,
 for clave in ("LO LITERAL", "ENTERA", "FLOTANDO", "abrazados", "CARTELA ENCIMA",
               "letras grandes", "RIZO", "EPOCA", "MASCARA", "split screen:",
               "SILUETAS", "blank", "THE", "DEAL", "COPIED", "EN OTRO SITIO: ",
-              "(COMO EN:", "(TONO: alegre)", "DEVUELVE ESTE JSON"):
+              "(COMO EN:", "(TONO: alegre)", "DEVUELVE ESTE JSON",
+              "LA FRASE MANDA SOBRE EL SITIO", "«your»", "cifra de gente"):
     cierto(clave in H, f"el encargo corto dice «{clave}»")
 for tecnologia in ("atacante", "banco", "proveedor", "factura", "Berlin", "oro ",
                    "hacker", "FILM", "investigador"):
