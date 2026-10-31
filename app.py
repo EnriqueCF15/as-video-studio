@@ -4498,6 +4498,9 @@ def proponer_direccion(pid: str, cuerpo: dict = Body(default=None)):
     ctx = contexto(pid)
     datos = _cuerpo(cuerpo)
     por_fase = CLI_CLAUDE.por_defecto_de("direccion")
+    # la escena entera (30-10) dirige por defecto con Sonnet high: ver pasos/escena_entera.py
+    if _direccion().escena_entera.activa((ctx.estado.params("assets") or {}).get("estilo")):
+        por_fase = _direccion().escena_entera.POR_DEFECTO
     ajuste = _ajuste_cli(datos, por_fase["modelo"], por_fase["esfuerzo"])
     trabajo_id = ctx.gestor.lanzar("direccion", _correr_direccion, ctx, ajuste,
                                    paso="assets")

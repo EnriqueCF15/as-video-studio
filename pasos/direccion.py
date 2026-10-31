@@ -74,10 +74,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import medios  # noqa: E402
 
 try:
-    from . import cli_claude, encuadres, estadisticas
+    from . import cli_claude, encuadres, escena_entera, estadisticas
 except ImportError:  # ejecutado con la carpeta pasos directamente en sys.path
     import cli_claude
     import encuadres
+    import escena_entera
     import estadisticas
 
 PASO = "direccion"
@@ -798,6 +799,8 @@ def limpiar_linea(texto):
     crudo = re.sub(r'^["\'`]+|["\'`]+$', "", crudo).strip()
     if not crudo:
         return None, "vacia"
+    if escena_entera.ficha(crudo):
+        return crudo, ""          # la escena entera (30-10) es larga a proposito
     palabras = crudo.split()
     if len(palabras) < PALABRAS_MINIMAS:
         return None, f"solo {len(palabras)} palabra(s): no dice nada que dibujar"
@@ -955,7 +958,12 @@ def proponer(escenas, ajuste=None, avisar=None, proyecto_id=None, cwd=None,
         avance.arrancar()
 
     historia = modo_historia(estilo)
-    instruccion = (INSTRUCCION_HISTORIA if historia else INSTRUCCION).format(
+    # LA ESCENA ENTERA (30-10), solo si el Estilo trae su biblioteca: ver escena_entera.py
+    entera = escena_entera.activa(estilo)
+    biblioteca = escena_entera.cargar(estilo) if entera else None
+    instruccion = escena_entera.encargo(
+        todos, [e["id"] for e in dirigibles], catalogo, titulo, biblioteca
+    ) if entera else (INSTRUCCION_HISTORIA if historia else INSTRUCCION).format(
         titulo=titulo or "sin titulo",
         palabras_maximas=PALABRAS_MAXIMAS,
         # EL IDIOMA DEL VIDEO, y no es un adorno: ver la regla del rotulo. Si no
@@ -981,12 +989,19 @@ def proponer(escenas, ajuste=None, avisar=None, proyecto_id=None, cwd=None,
         raise
     segundos = avance.parar() if avance is not None else time.time() - arranque
 
-    plan, avisos = _limpiar(crudo, {e["id"] for e in dirigibles})
-    for grupo in repetidas(plan, dirigibles):
+    if entera:
+        fichas, avisos = escena_entera.leer_respuesta(
+            crudo, {e["id"] for e in dirigibles}, biblioteca,
+            (catalogo or {}).get("reparto") or {})
+        avisos += escena_entera.comprobar(fichas, dirigibles, catalogo, biblioteca)
+        plan = {sid: escena_entera.linea(f) for sid, f in fichas.items()}
+    else:
+        plan, avisos = _limpiar(crudo, {e["id"] for e in dirigibles})
+    for grupo in ([] if entera else repetidas(plan, dirigibles)):
         avisos.append(f"{' = '.join(grupo)}: misma direccion en varios planos, "
                       f"que es justo lo que esto viene a quitar -- vuelve a "
                       f"pedirla o cambiala a mano")
-    mudos = sin_tono(plan, dirigibles)
+    mudos = [] if entera else sin_tono(plan, dirigibles)
     if mudos:
         avisos.append(f"{len(mudos)} plano(s) con gente no declaran su tono "
                       f"(se quedan con el del tramo, que es el mismo para todo "

@@ -69,6 +69,7 @@ import corrector  # noqa: E402
 import revisor  # noqa: E402
 import cta  # noqa: E402
 import encuadres  # noqa: E402
+import escena_entera  # noqa: E402
 import estadisticas  # noqa: E402
 import medios  # noqa: E402
 import moodboard  # noqa: E402
@@ -2952,6 +2953,9 @@ def _prompt_completo(escena, referencias, estilo, feedback="", idioma="",
     Si el Estilo pide la orden corta, es esa (`_prompt_corto`).
     """
     if orden_corta(estilo):
+        entera = escena_entera.ficha(escena)       # 30-10: la orden del metodo a mano
+        if entera and escena_entera.activa(estilo):
+            return escena_entera.orden(entera, feedback)
         return _prompt_corto(escena, referencias, estilo, feedback, idioma,
                              formato, fichas_reparto)
     reglas = medios.motor("reglas/reglas.py")
@@ -4381,6 +4385,13 @@ def _referencias_escena(escena, plan, dirs, p, cache, hechas, anteriores=None,
     """
     imagen = medios.motor("imagen_openai/imagen.py")
     corta = orden_corta(p.get("estilo"))
+    # LA ESCENA ENTERA (30-10): UNA referencia de su clase y su luz + las hojas que pidio el
+    # director, y nada mas (el dibujante copia lo que ve). Las de la nota siguen detras.
+    entera = escena_entera.ficha(escena) if corta else None
+    if entera and escena_entera.activa(p.get("estilo")):
+        return (escena_entera.referencias(entera, p.get("estilo"), dirs["reparto"],
+                                          lambda ruta: imagen.normalizar(ruta, cache))
+                + _referencias_de_la_nota(escena, dirs, p, cache, notas))
     referencias = list(_referencias_estilo(p, cache, escena, sueltas=corta))
     # La MISMA ficha con la que se dibujo la hoja (`_assets_necesarios`), que es
     # la unica forma de que el plano y la hoja lean lo mismo: leerlo del catalogo
