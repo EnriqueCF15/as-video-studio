@@ -961,6 +961,7 @@ def proponer(escenas, ajuste=None, avisar=None, proyecto_id=None, cwd=None,
     # LA ESCENA ENTERA (30-10), solo si el Estilo trae su biblioteca: ver escena_entera.py
     entera = escena_entera.activa(estilo)
     biblioteca = escena_entera.cargar(estilo) if entera else None
+    marcados = {}
     instruccion = escena_entera.encargo(
         todos, [e["id"] for e in dirigibles], catalogo, titulo, biblioteca
     ) if entera else (INSTRUCCION_HISTORIA if historia else INSTRUCCION).format(
@@ -995,6 +996,17 @@ def proponer(escenas, ajuste=None, avisar=None, proyecto_id=None, cwd=None,
             (catalogo or {}).get("reparto") or {})
         avisos += escena_entera.comprobar(fichas, dirigibles, catalogo, biblioteca)
         plan = {sid: escena_entera.linea(f) for sid, f in fichas.items()}
+        # EL REPASO DE SENTIDO: Opus lee y marca lo que no cuenta la frase. Si falla, se
+        # avisa y la direccion se queda: lo escrito ya esta pagado.
+        if fichas and ajuste.get("repaso", True):
+            repaso = escena_entera.REPASO_POR_DEFECTO
+            try:
+                marcados = escena_entera.leer_repaso(_llamar_claude(
+                    escena_entera.encargo_repaso(fichas, todos, titulo),
+                    repaso["modelo"], repaso["esfuerzo"]), set(fichas))
+            except Exception as error:                            # noqa: BLE001
+                avisos.append(f"el repaso de sentido no se ha podido hacer: {error}")
+            avisos += [f"{sid}: NO CUENTA LA FRASE -- {m}" for sid, m in marcados.items()]
     else:
         plan, avisos = _limpiar(crudo, {e["id"] for e in dirigibles})
     for grupo in ([] if entera else repetidas(plan, dirigibles)):
@@ -1018,6 +1030,7 @@ def proponer(escenas, ajuste=None, avisar=None, proyecto_id=None, cwd=None,
         "ajuste": elegido,
         "segundos": round(segundos, 1),
         "estimacion_s": prevision["segundos"],
+        "marcados": marcados,
     }
 
 

@@ -190,6 +190,55 @@ def leer_respuesta(crudo, ids, biblioteca, reparto):
     return fichas, avisos
 
 
+#: El repaso de sentido (30-10, eleccion de Enrique): la comprobacion de arriba no entiende
+#: la frase. Opus LEE las escenas de Sonnet y solo marca las que no la cuentan.
+REPASO_POR_DEFECTO = {"modelo": "opus", "esfuerzo": "high"}
+REPASO = """Eres el revisor de un video de historia animado titulado «{titulo}». Otro director
+ya escribio la escena que se dibujara en cada plano. Tu trabajo es SOLO avisar de las que no
+cuentan lo que dice su frase, antes de pagar las imagenes. No reescribas nada.
+
+Marca un plano SOLO si pasa alguna de estas cosas:
+- La escena no ensena lo que dice la frase marcada «SE DICE AQUI»: otra persona, otra accion,
+  otro sitio u otra epoca; o el sentido al reves (p. ej. la frase dice que hoy los padres
+  temen a los adultos de la puerta y la escena asusta al que da los dulces).
+- La frase da un giro («but», «and yet», «the fear flipped»...) y la escena se queda con lo de
+  antes del giro.
+- Se inventa algo que la frase no nombra y que le cambia el sentido (un quiosco, un cartel,
+  bocadillos vacios, objetos sueltos).
+- Algo no tiene sentido fisico: flota, esta sobre la raya de una pantalla dividida, sale
+  repetido, una casa rara.
+Si la escena cuenta la frase aunque no sea como tu la harias, NO la marques.
+
+Para cada marcado, una frase corta en castellano sencillo que diga que falla y como
+arreglarlo («S132: hoy los que tienen miedo son los padres de la acera, no el protagonista»).
+
+LOS PLANOS:
+
+{planos}
+
+DEVUELVE ESTE JSON (vacio si todo esta bien):
+
+{{"marcados": {{"<id>": "<que falla y como arreglarlo>"}}}}
+"""
+
+
+def encargo_repaso(fichas, escenas, titulo):
+    """El encargo del repaso de sentido: frase, vecinas y escena de cada plano. -> str"""
+    pos = {e["id"]: i for i, e in enumerate(escenas)}
+    planos = [f"[{sid}]\n{frases_alrededor(escenas, pos[sid])}\n    ESCENA: "
+              f"{f.get('escena', '')}\n    LETRAS: {f.get('letras') or 'ninguna'}"
+              for sid, f in fichas.items() if sid in pos]
+    return REPASO.format(titulo=titulo or "sin titulo", planos="\n\n".join(planos))
+
+
+def leer_repaso(crudo, ids):
+    """-> {sid: motivo} de los planos que el repaso marca."""
+    marcados = crudo.get("marcados") if isinstance(crudo, dict) else None
+    return {str(sid).strip().upper(): " ".join(str(m).split())
+            for sid, m in (marcados or {}).items()
+            if str(sid).strip().upper() in ids and str(m).strip()}
+
+
 def comprobar(fichas, escenas, catalogo, biblioteca):
     """La comprobacion sin Claude de cada escena, ANTES de pagar imagenes. -> [aviso]"""
     por_id = {e["id"]: e for e in escenas}

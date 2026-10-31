@@ -167,6 +167,15 @@ cierto(any("fuera de la biblioteca" in a for a in escena_entera.leer_respuesta(
     {"planos": {"S003": dict(FICHA_S003, estilo="S999")}}, {"S003"}, bib, {})[1]),
     "una referencia que no esta en la biblioteca: aviso")
 
+# 7. EL REPASO DE SENTIDO (Opus lee y marca; aqui sin llamarlo)
+texto = escena_entera.encargo_repaso({"S003": FICHA_S003}, ESCENAS, "Titulo")
+cierto("SE DICE AQUI [S003]" in texto and FICHA_S003["escena"] in texto and "{" not in
+       texto.split("DEVUELVE ESTE JSON")[0], "el repaso lee frase, vecinas y escena")
+igual(escena_entera.leer_repaso({"marcados": {"s003": " al reves ", "S999": "x", "S004": ""}},
+                                {"S003", "S004"}), {"S003": "al reves"},
+      "solo los marcados de los planos pedidos y con motivo")
+igual(escena_entera.leer_repaso("roto", {"S003"}), {}, "una respuesta rota no marca nada")
+
 shutil.rmtree(tmp, ignore_errors=True)
 print()
 if FALLOS:
