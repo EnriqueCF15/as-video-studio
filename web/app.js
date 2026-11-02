@@ -442,6 +442,7 @@ const API = {
   sonidoVetados: pid => `${BASE}/api/proyectos/${encodeURIComponent(pid)}/sonido/vetados`,
   direccion: pid => `${BASE}/api/proyectos/${encodeURIComponent(pid)}/direccion`,
   direccionProponer: pid => `${BASE}/api/proyectos/${encodeURIComponent(pid)}/direccion/proponer`,
+  direccionRehacer: pid => `${BASE}/api/proyectos/${encodeURIComponent(pid)}/direccion/rehacer`,
   notasMontaje: pid => `${BASE}/api/proyectos/${encodeURIComponent(pid)}/montaje/notas`,
   enlaces: () => `${BASE}/api/enlaces`,
   enlace: eid => `${BASE}/api/enlaces/${encodeURIComponent(eid)}`,
@@ -7396,7 +7397,9 @@ function trabajoVideoLight() {
    y en ese hueco el botón seguía encendido: un segundo clic lanzaba otra
    petición. Ahora el botón se apaga en cuanto se pulsa. */
 function ocupadoLight() {
-  return !!trabajoVideoLight() || !!(APP.light.video || {}).lanzando;
+  // «Rehacer con Opus» también: dibujar mientras cambia la escena saldría con la vieja
+  return !!trabajoVideoLight() || !!(APP.light.video || {}).lanzando
+    || !!DIRECCION.trabajo;
 }
 
 /* La barra: a la derecha del botón y ocupando el resto de la franja. Dice por
@@ -8259,6 +8262,8 @@ async function cargarPreviaLight() {
   if (!v.pid || PREVIA.cargando) return;
   PREVIA.cargando = true;
   PREVIA.error = '';
+  // tras una tanda la escena de cada plano puede haber cambiado: se vuelve a leer
+  if (!DIRECCION.trabajo) DIRECCION.ficha = null;
   repintarVideo();
   try {
     PREVIA.ficha = await pedir(`${API.proyecto(v.pid)}/previsualizacion`);
@@ -8648,6 +8653,216 @@ function irAPrimeraObsoleta() {
   if (i >= 0) { PREVIA.i = i; PREVIA.t = 0; repintarVideo(); }
 }
 
+/* «REHACER CON OPUS» (fork, 02-11-2026). Solo con el Estilo de historia (orden
+ * corta + biblioteca de escenas, ver pasos/escena_entera.py). Sonnet escribe la
+ * escena de cada plano y Opus las repasa: los planos que «NO CUENTAN LA FRASE»
+ * salen aquí ARRIBA, a la vista, con su botón para volver a pedirlos a Opus xhigh
+ * con las frases de alrededor delante.
+ *
+ * Rehacer cambia la dirección de ESE plano y nada más: su imagen queda obsoleta y
+ * se vuelve a dibujar con el siguiente «Generar»; las demás no se tocan.
+ *
+ * Se repinta SOLO este bloque (`repintarDireccion`), no la pantalla entera: el
+ * sondeo va cada dos segundos y repintarlo todo se llevaría por delante lo que se
+ * esté escribiendo en el feedback de la imagen. */
+const DIRECCION = { pid: null, ficha: null, cargando: false, error: '', fallo: '',
+  trabajo: null, nodo: null, todos: false };
+
+function direccionDelVideo() {
+  const pid = videoAbierto().pid;
+  if (DIRECCION.pid !== pid) {
+    Object.assign(DIRECCION, { pid, ficha: null, cargando: false, error: '', fallo: '',
+      trabajo: null, todos: false });
+  }
+  return DIRECCION;
+}
+
+function repintarDireccion() {
+  const viejo = DIRECCION.nodo;
+  if (viejo && viejo.isConnected) viejo.replaceWith(panelDireccionLight());
+}
+
+async function cargarDireccionLight() {
+  const d = direccionDelVideo();
+  if (d.cargando) return;
+  d.cargando = true;
+  try {
+    d.ficha = await pedir(API.direccion(d.pid));
+    d.error = '';
+    // un «Rehacer» que venía corriendo (recarga, o mirado desde el móvil) se retoma
+    const vivo = d.ficha.trabajo;
+    if (vivo && vivo.nombre === 'direccion_rehacer' && !d.trabajo) {
+      seguirRehacerDireccion(vivo.id, vivo.unidades || []);
+    }
+  } catch (e) { d.error = e.message; }
+  d.cargando = false;
+  repintarDireccion();
+}
+
+async function rehacerConOpus(ids) {
+  const d = direccionDelVideo();
+  if (d.trabajo || !ids.length) return;
+  if (!window.confirm(`Rehacer ${ids.length === 1 ? 'el plano ' + ids[0]
+    : 'los ' + ids.length + ' planos marcados'} con Opus (esfuerzo xhigh).\n\n`
+    + 'Gasta plan de Claude (unos 30 s por plano), no dinero de Google. Su imagen '
+    + 'se vuelve a dibujar en el próximo «Generar» (≈0,04 $ cada una).\n\n¿Seguir?')) return;
+  d.fallo = '';
+  d.trabajo = { id: null, ids, progreso: 0, mensaje: 'pidiendo…' };
+  pintarLight();          // entera: también se apagan «Generar» y «Montar» del pie
+  try {
+    const r = await pedir(API.direccionRehacer(d.pid), { method: 'POST', cuerpo: { ids } });
+    seguirRehacerDireccion(r.trabajo_id, r.ids || ids);
+  } catch (e) {
+    d.trabajo = null;
+    d.fallo = e.message;
+    pintarLight();
+  }
+}
+
+function seguirRehacerDireccion(tid, ids) {
+  const trabajo = { id: tid, ids, progreso: 0, mensaje: 'lanzando…' };
+  DIRECCION.trabajo = trabajo;
+  const vuelta = async () => {
+    if (DIRECCION.trabajo !== trabajo) return;
+    let datos;
+    try {
+      datos = await pedir(API.trabajo(tid));
+    } catch (e) {
+      trabajo.mensaje = `sin noticias del servidor: ${e.message}`;
+      repintarDireccion();
+      setTimeout(vuelta, 4000);
+      return;
+    }
+    trabajo.progreso = datos.progreso || 0;
+    trabajo.mensaje = datos.publico || datos.mensaje || '';
+    if (['listo', 'error', 'cancelado'].includes(datos.estado)) {
+      DIRECCION.trabajo = null;
+      if (datos.estado === 'listo') {
+        const r = datos.resultado || {};
+        toast(`Rehacer con Opus: ${r.rehechos || 0} de ${(r.pedidos || ids).length} `
+          + 'plano(s) reescritos. Pulsa «Generar» para volver a dibujarlos.');
+      } else {
+        DIRECCION.fallo = datos.error || 'el trabajo se ha cancelado';
+      }
+      // la dirección y las imágenes obsoletas han cambiado: se vuelve a leer todo
+      DIRECCION.ficha = null;
+      try { await recargarVideoAbierto(); } catch (e) { console.error(e); }
+      PREVIA.ficha = null;
+      APP.light.video.vista = 'previa';
+      pintarLight();
+      return;
+    }
+    repintarDireccion();
+    setTimeout(vuelta, 2000);
+  };
+  pintarLight();
+  setTimeout(vuelta, 1000);
+}
+
+function tarjetaPlanoDireccion(p, motivo, avisos, rehecho, bloqueado) {
+  const esc = p.escena || {};
+  const trabajando = (DIRECCION.trabajo || { ids: [] }).ids.includes(p.id);
+  return h('div', { clase: 'plano-direccion' + (motivo ? ' marcado' : '') },
+    h('div', { clase: 'fila' },
+      h('span', { clase: 'id' }, p.id),
+      rehecho ? h('span', { clase: 'meta sigue' }, `rehecho con ${rehecho}`) : null,
+      h('span', { clase: 'crece' }),
+      h('button', {
+        clase: 'mini', disabled: !!bloqueado,
+        title: bloqueado || 'Vuelve a pedir SOLO este plano a Opus xhigh',
+        onclick: () => rehacerConOpus([p.id]),
+      }, trabajando ? 'Rehaciendo…' : 'Rehacer con Opus')),
+    h('div', { clase: 'pista meta' }, `«${p.narracion || ''}»`),
+    motivo ? h('div', { clase: 'motivo' }, `✗ No cuenta la frase: ${motivo}`) : null,
+    (avisos || []).map(a => h('div', { clase: 'meta' }, `⚠ ${a}`)),
+    h('div', { clase: 'escena' }, esc.escena ? `Escena: ${esc.escena}`
+      : (p.direccion || 'sin dirección todavía')),
+    esc.letras ? h('div', { clase: 'meta' }, `Letras: ${esc.letras}`) : null);
+}
+
+function panelDireccionLight() {
+  const d = direccionDelVideo();
+  const nodo = h('div', { clase: 'direccion-opus' });
+  d.nodo = nodo;
+  if (!d.ficha) {
+    if (d.error) {
+      nodo.appendChild(cajaError(`No se ha podido leer la dirección de los planos: ${d.error}`));
+      nodo.appendChild(h('button', {
+        clase: 'mini', onclick: () => { d.error = ''; cargarDireccionLight(); },
+      }, 'Reintentar'));
+    } else if (!d.cargando) setTimeout(cargarDireccionLight, 0);
+    return nodo;
+  }
+  // los demás Estilos no tienen escena entera: aquí no se enseña nada
+  if (!d.ficha.escena_entera) return nodo;
+
+  const av = d.ficha.avisos_escena || {};
+  const marcados = av.marcados || {};
+  const avisos = av.avisos || {};
+  const rehechos = av.rehechos || {};
+  const planos = d.ficha.planos || [];
+  const conMarca = planos.filter(p => marcados[p.id]);
+  const conAvisos = planos.filter(p => !marcados[p.id] && (avisos[p.id] || []).length);
+  const bloqueado = d.trabajo ? 'Opus está trabajando: espera a que acabe'
+    : (ocupadoLight() ? 'hay una tanda en marcha: espera a que acabe' : '');
+  const tarjeta = p => tarjetaPlanoDireccion(p, marcados[p.id], avisos[p.id],
+    rehechos[p.id], bloqueado);
+
+  nodo.appendChild(h('div', { clase: 'light-cab' },
+    h('h3', {}, 'La escena de cada plano'),
+    h('span', { clase: 'meta' },
+      `${planos.filter(p => p.escena).length} de ${planos.length} planos con su escena entera`)));
+
+  /* MIENTRAS TRABAJA, A LA VISTA Y PEGADO ARRIBA: qué hace, por dónde va y qué
+     no hay que tocar. Es lo que pidió Enrique para todo lo que tarda. */
+  if (d.trabajo) {
+    nodo.appendChild(h('div', { clase: 'aviso-trabajo' },
+      h('div', { clase: 'cargando' },
+        `⏳ Cargando… Opus está reescribiendo ${d.trabajo.ids.join(', ')}`
+        + (d.trabajo.progreso ? ` (${Math.round(d.trabajo.progreso * 100)} %)` : '')),
+      d.trabajo.mensaje ? h('div', { clase: 'meta' }, d.trabajo.mensaje) : null,
+      h('div', { clase: 'no-tocar' },
+        '⚠ No cierres el estudio hasta que acabe («Generar» y «Montar» se quedan '
+        + 'apagados mientras tanto). Puedes seguir mirando las imágenes.')));
+  }
+  if (d.fallo) nodo.appendChild(cajaError(`«Rehacer con Opus» no ha podido terminar: ${d.fallo}`));
+
+  if (conMarca.length) {
+    nodo.appendChild(h('div', { clase: 'fila' },
+      h('strong', { clase: 'marcados' },
+        `El repaso de Opus dice que ${conMarca.length} plano(s) NO cuentan su frase`),
+      h('span', { clase: 'crece' }),
+      h('button', {
+        clase: 'primario', disabled: !!bloqueado, title: bloqueado || null,
+        onclick: () => rehacerConOpus(conMarca.map(p => p.id)),
+      }, `Rehacer los marcados con Opus (${conMarca.length})`)));
+    conMarca.forEach(p => nodo.appendChild(tarjeta(p)));
+  } else if (planos.some(p => p.escena)) {
+    nodo.appendChild(h('div', { clase: 'meta' },
+      Object.keys(rehechos).length
+        ? '✓ Ya no queda ningún plano marcado por el repaso de sentido.'
+        : '✓ El repaso de sentido no ha marcado ningún plano.'));
+  }
+  (av.generales || []).forEach(a => nodo.appendChild(h('div', { clase: 'meta' }, `⚠ ${a}`)));
+
+  if (conAvisos.length) {
+    nodo.appendChild(h('details', {},
+      h('summary', {}, `Otros avisos de la comprobación (${conAvisos.length} planos)`),
+      conAvisos.map(tarjeta)));
+  }
+  // «Todos los planos» se pinta al abrirlo: 140 tarjetas cerradas no tienen por qué ir al DOM
+  const todos = h('details', { open: d.todos },
+    h('summary', {}, `Todos los planos (${planos.length})`));
+  if (d.todos) meter(todos, [planos.map(tarjeta)]);
+  todos.addEventListener('toggle', () => {
+    if (todos.open === d.todos) return;
+    d.todos = todos.open;
+    repintarDireccion();
+  });
+  nodo.appendChild(todos);
+  return nodo;
+}
+
 function vistaPreviaLight() {
   const v = videoAbierto();
   const caja = h('div', { clase: 'light-previa' });
@@ -8661,6 +8876,8 @@ function vistaPreviaLight() {
     obsoletasEnLaCabecera(escenas),
     h('span', { clase: 'crece' }),
     costeLight()));
+  // la escena de cada plano y el «Rehacer con Opus», solo con el Estilo de historia
+  caja.appendChild(panelDireccionLight());
 
   if (PREVIA.error) { caja.appendChild(cajaError(PREVIA.error)); return caja; }
   if (!PREVIA.ficha) {
@@ -9002,7 +9219,9 @@ async function guardarNotaEscena(escena) {
  * leen como el mismo gesto. Aqui la etiqueta ya dice lo que hace. */
 function botonRenderizarLight() {
   if (hayMp4Light() && !videoObsoletoLight()) return null;
-  const corriendo = (APP.trabajos[CLAVE_VIDEO_LIGHT] || {}).estado === 'ejecutando';
+  // también mientras «Rehacer con Opus» cambia la escena de algún plano
+  const corriendo = (APP.trabajos[CLAVE_VIDEO_LIGHT] || {}).estado === 'ejecutando'
+    || !!DIRECCION.trabajo;
   /* CON NOTAS SIN APLICAR, ESTE BOTON HACE MENOS que el de al lado: «Aplicar»
      reparte las notas, redibuja lo que toquen y DESPUES monta; esto solo monta,
      o sea que gasta el render entero para dejarte el video sin tus notas. Es la

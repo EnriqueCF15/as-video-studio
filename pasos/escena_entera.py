@@ -239,6 +239,78 @@ def leer_repaso(crudo, ids):
             if str(sid).strip().upper() in ids and str(m).strip()}
 
 
+#: «Rehacer con Opus» (02-11, eleccion de Enrique del 30-10): vuelve a pedir SOLO los planos
+#: que se eligen, con todas las frases delante para que lea las vecinas.
+REHACER_POR_DEFECTO = {"modelo": "opus", "esfuerzo": "xhigh"}
+
+#: Los avisos de la ultima direccion, en un FICHERO del proyecto y no en un param: un param de
+#: las imagenes entra en la firma de cada plano, y un aviso no tiene que rehacer ninguna imagen.
+AVISOS = "direccion_avisos.json"
+NO_CUENTA = "NO CUENTA LA FRASE --"
+_AVISO_DE_PLANO = re.compile(r"^(?P<sid>[A-Z]+\d+):\s*(?P<texto>.*)$", re.S)
+
+
+def repartir_avisos(avisos):
+    """-> ({sid: motivo} del repaso de sentido, {sid: [aviso]}, [avisos sin plano])"""
+    marcados, por_plano, generales = {}, {}, []
+    for aviso in avisos or []:
+        aviso = " ".join(str(aviso).split())
+        casa = _AVISO_DE_PLANO.match(aviso)
+        if not casa:
+            generales.append(aviso)
+        elif casa["texto"].startswith(NO_CUENTA):
+            marcados[casa["sid"]] = casa["texto"][len(NO_CUENTA):].strip()
+        else:
+            por_plano.setdefault(casa["sid"], []).append(casa["texto"])
+    return marcados, por_plano, generales
+
+
+def avisos_tras_dirigir(resultado):
+    """Lo que se guarda tras dirigir el video entero: empieza de cero. -> dict"""
+    marcados, por_plano, generales = repartir_avisos((resultado or {}).get("avisos"))
+    marcados.update((resultado or {}).get("marcados") or {})
+    return {"marcados": marcados, "avisos": por_plano, "generales": generales,
+            "rehechos": {}}
+
+
+def avisos_tras_rehacer(previo, resultado):
+    """Lo que se guarda tras «Rehacer con Opus»: solo cambian los planos REHECHOS. -> dict
+
+    Un plano que se pidio y no volvio sigue marcado: no se ha arreglado."""
+    previo = previo if isinstance(previo, dict) else {}
+    hechos = set(((resultado or {}).get("plan") or {}))
+    _, por_plano, generales = repartir_avisos((resultado or {}).get("avisos"))
+    salida = {
+        "marcados": {s: m for s, m in (previo.get("marcados") or {}).items() if s not in hechos},
+        "avisos": {s: a for s, a in (previo.get("avisos") or {}).items() if s not in hechos},
+        "generales": list(dict.fromkeys(list(previo.get("generales") or []) + generales)),
+        "rehechos": dict(previo.get("rehechos") or {}),
+    }
+    for sid in hechos:
+        if por_plano.get(sid):
+            salida["avisos"][sid] = por_plano[sid]
+    ajuste = (resultado or {}).get("ajuste") or {}
+    for sid in hechos:
+        salida["rehechos"][sid] = f"{ajuste.get('modelo', '')} {ajuste.get('esfuerzo', '')}".strip()
+    return salida
+
+
+def leer_avisos(ruta):
+    try:
+        with open(ruta, encoding="utf-8") as fh:
+            datos = json.load(fh)
+    except (OSError, ValueError):
+        return {"marcados": {}, "avisos": {}, "generales": [], "rehechos": {}}
+    return datos if isinstance(datos, dict) else {}
+
+
+def guardar_avisos(ruta, datos):
+    temporal = ruta + ".tmp"
+    with open(temporal, "w", encoding="utf-8") as fh:
+        json.dump(datos, fh, ensure_ascii=False, indent=1)
+    os.replace(temporal, ruta)
+
+
 def comprobar(fichas, escenas, catalogo, biblioteca):
     """La comprobacion sin Claude de cada escena, ANTES de pagar imagenes. -> [aviso]"""
     por_id = {e["id"]: e for e in escenas}

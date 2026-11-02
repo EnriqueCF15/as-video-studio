@@ -4256,12 +4256,23 @@ def leer_direccion(pid: str):
     escenas = plan_assets.get("escenas") or []
     plan = _plan_de_direccion(ctx)
     dirigibles = [e for e in escenas if direccion.dirigible(e)]
+    # LA ESCENA ENTERA (30-10): sus avisos y lo marcado por el repaso de sentido, para que
+    # la pantalla saque arriba los planos que no cuentan la frase (botón «Rehacer con Opus»)
+    entera = direccion.escena_entera.activa((ctx.estado.params("assets") or {}).get("estilo"))
+    vivos = [t for t in ctx.gestor.listar(activos=True)
+             if t.get("nombre") in ("direccion", "direccion_rehacer")]
     return {
         "plan": plan,
+        "escena_entera": entera,
+        "avisos_escena": (direccion.escena_entera.leer_avisos(_ruta_avisos_escena(ctx))
+                          if entera else None),
+        "trabajo": vivos[0] if vivos else None,
         "planos": [{"id": e["id"], "set": e.get("set") or e.get("componente"),
                     "personajes": e.get("personajes") or [],
                     "narracion": e.get("narracion") or "",
-                    "direccion": plan.get(e["id"], "")}
+                    "direccion": plan.get(e["id"], ""),
+                    "escena": (direccion.escena_entera.ficha(plan.get(e["id"], ""))
+                               if entera else None)}
                    for e in dirigibles],
         "dirigibles": len(dirigibles),
         "total": len(escenas),
@@ -4269,6 +4280,10 @@ def leer_direccion(pid: str):
         "repetidas": direccion.repetidas(plan, dirigibles),
         "resumen": direccion.describir(plan, dirigibles),
     }
+
+
+def _ruta_avisos_escena(ctx):
+    return ctx.proyecto.ruta(_direccion().escena_entera.AVISOS)
 
 
 def _guardar_direccion_por_unidad(ctx, plan):
@@ -4483,8 +4498,73 @@ def _correr_direccion(avisar, ctx, ajuste, aplicar=False):
     if aplicar and isinstance(ficha.get("plan"), dict):
         _guardar_direccion_por_unidad(ctx, ficha["plan"])
         ficha["aplicado"] = True
+        # la escena entera deja sus avisos para la pantalla («Rehacer con Opus»)
+        if direccion.escena_entera.activa(assets.get("estilo")):
+            direccion.escena_entera.guardar_avisos(
+                _ruta_avisos_escena(ctx), direccion.escena_entera.avisos_tras_dirigir(ficha))
     avisar(1.0, f"{ficha.get('dirigidos')} de {ficha.get('planos')} planos dirigidos")
     return ficha
+
+
+def _correr_rehacer_direccion(avisar, ctx, ids, ajuste):
+    """«Rehacer con Opus» (02-11): reescribe SOLO esos planos y los guarda, sin tocar los
+    demás."""
+    direccion = _direccion()
+    assets = ctx.estado.params("assets") or {}
+    plan_assets = _plan_de_planos(ctx, avisar)
+    escenas = (plan_assets or {}).get("escenas") or []
+    if not escenas:
+        raise RuntimeError("no hay planos todavía: corta la narración antes")
+    ficha = direccion.rehacer(
+        escenas, ids, ajuste=ajuste, avisar=avisar, proyecto_id=ctx.id,
+        titulo=(assets.get("titulo") or ctx.proyecto.id),
+        estilo=(assets.get("estilo") or (plan_assets or {}).get("estilo") or {}),
+        catalogo=(assets.get("catalogo") or (plan_assets or {}).get("catalogo") or {}))
+    if ficha.get("plan"):
+        # EL PLAN ENTERO con los rehechos encima: `_guardar_direccion_por_unidad` fusiona
+        # DENTRO de cada plano, pero quita la dirección de los que no se le pasan
+        _guardar_direccion_por_unidad(ctx, {**_plan_de_direccion(ctx), **ficha["plan"]})
+    ruta = _ruta_avisos_escena(ctx)
+    direccion.escena_entera.guardar_avisos(ruta, direccion.escena_entera.avisos_tras_rehacer(
+        direccion.escena_entera.leer_avisos(ruta), ficha))
+    ctx.bitacora.anotar("direccion_rehacer", "assets", {
+        "pedidos": ficha.get("pedidos"), "rehechos": sorted(ficha.get("plan") or {}),
+        "ajuste": ajuste, "segundos": ficha.get("segundos")})
+    avisar(1.0, f"{ficha.get('rehechos')} de {len(ficha.get('pedidos') or [])} planos "
+                f"reescritos con {ficha['ajuste']['modelo']}")
+    return ficha
+
+
+@app.post("/api/proyectos/{pid}/direccion/rehacer", status_code=202)
+def rehacer_direccion(pid: str, cuerpo: dict = Body(default=None)):
+    """«Rehacer con Opus»: vuelve a pedir SOLO los planos `ids` al director «escena
+    entera», con Opus xhigh y todas las frases delante. Solo para el Estilo con biblioteca.
+
+    Las imágenes de esos planos quedan obsoletas (su dirección ha cambiado) y se vuelven a
+    dibujar en el próximo «Generar»; las demás no se tocan.
+    """
+    ctx = contexto(pid)
+    datos = _cuerpo(cuerpo)
+    ids = [str(s).strip().upper() for s in (datos.get("ids") or []) if str(s).strip()]
+    if not ids:
+        raise ErrorApi(400, "hace falta 'ids': la lista de planos que se rehacen")
+    entera = _direccion().escena_entera
+    if not entera.activa((ctx.estado.params("assets") or {}).get("estilo")):
+        raise ErrorApi(409, "«Rehacer con Opus» es solo para el Estilo de historia "
+                            "(el que lleva orden corta y biblioteca de escenas)")
+    vivos = ctx.gestor.listar(activos=True)
+    if vivos:
+        raise ErrorApi(409, f"hay {len(vivos)} trabajo(s) en marcha en este vídeo: espera a "
+                            f"que acaben para no pisar los planos que se están dibujando",
+                       {"trabajo_id": vivos[0]["id"]})
+    por_fase = entera.REHACER_POR_DEFECTO
+    ajuste = _ajuste_cli(datos, por_fase["modelo"], por_fase["esfuerzo"])
+    trabajo_id = ctx.gestor.lanzar("direccion_rehacer", _correr_rehacer_direccion, ctx, ids,
+                                   ajuste, paso="assets", unidades=ids)
+    _registrar_trabajo(trabajo_id, ctx.id)
+    return {"trabajo_id": trabajo_id, "ajuste": ajuste, "ids": ids,
+            "trabajo": ctx.gestor.estado(trabajo_id),
+            "eventos": f"/api/trabajos/{trabajo_id}/eventos"}
 
 
 @app.post("/api/proyectos/{pid}/direccion/proponer", status_code=202)

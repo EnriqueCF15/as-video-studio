@@ -1345,6 +1345,31 @@ video { width: 100%; border-radius: 9px; border: 1px solid var(--linea); backgro
 .plano-direccion .id { font-weight: 700; }
 .plano-direccion .pista { margin: 2px 0 6px; }
 
+/* «Rehacer con Opus» (fork, 02-11-2026): la escena de cada plano encima de las
+   imágenes, con los que NO cuentan su frase arriba y en color de aviso. */
+.direccion-opus:empty { display: none; }
+.direccion-opus {
+  border: 1px solid var(--linea); border-radius: 10px; padding: 10px 12px;
+  margin: 0 0 14px; display: flex; flex-direction: column; gap: 8px;
+}
+.direccion-opus h3 { font-size: 15px; margin: 0; }
+.direccion-opus .marcados { color: var(--aviso); }
+.direccion-opus details summary { cursor: pointer; color: var(--tenue); font-size: 13px; }
+.direccion-opus details[open] { display: flex; flex-direction: column; gap: 8px; }
+.plano-direccion {
+  border: 1px solid var(--linea-suave); border-radius: 8px; padding: 8px 10px;
+  background: var(--hueco);
+}
+.plano-direccion.marcado { border-color: var(--aviso-borde); }
+.plano-direccion .motivo { color: var(--aviso); font-weight: 600; margin: 2px 0 4px; }
+.plano-direccion .escena { font-size: 13px; line-height: 1.4; }
+.direccion-opus .aviso-trabajo {
+  position: sticky; top: 0; z-index: 5; border: 1px solid var(--acento-borde);
+  border-radius: 8px; padding: 8px 10px; background: var(--panel);
+}
+.direccion-opus .aviso-trabajo .cargando { color: var(--acento); font-weight: 600; }
+.direccion-opus .no-tocar { color: var(--aviso); font-size: 13px; margin-top: 3px; }
+
 /* ------------------------------------ un aviso que lleva a donde se arregla
  * Un aviso que dice «S025: 13 palabras se comen 4 planos» y te deja a cuarenta
  * planos de scroll de su cuadro de texto dice QUÉ pasa y no DÓNDE se arregla.

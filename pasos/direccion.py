@@ -1034,6 +1034,76 @@ def proponer(escenas, ajuste=None, avisar=None, proyecto_id=None, cwd=None,
     }
 
 
+PASO_REHACER = "direccion_rehacer"
+
+
+def rehacer(escenas, ids, ajuste=None, avisar=None, proyecto_id=None, titulo="",
+            estilo=None, catalogo=None):
+    """«Rehacer con Opus» (02-11): vuelve a pedir SOLO los planos `ids` al director
+    «escena entera». NO escribe en params: devuelve {plan, avisos, ...} de esos planos.
+
+    El encargo lleva TODAS las escenas, para que cada plano lea sus frases vecinas, pero
+    solo pide los elegidos. Sin repaso de sentido detras: Opus xhigh es el que se usa para
+    arreglar lo que el repaso marco.
+    """
+    if not escena_entera.activa(estilo):
+        raise RuntimeError("«Rehacer con Opus» es solo para el Estilo con biblioteca de "
+                           "escenas (orden corta + biblioteca)")
+    ajuste = ajuste or {}
+    modelo = ajuste.get("modelo") or escena_entera.REHACER_POR_DEFECTO["modelo"]
+    esfuerzo = ajuste.get("esfuerzo") or escena_entera.REHACER_POR_DEFECTO["esfuerzo"]
+    elegido = {"modelo": modelo, "esfuerzo": esfuerzo}
+
+    todos = [e for e in (escenas or []) if e.get("id")]
+    validos = {e["id"] for e in todos if dirigible(e)}
+    pedidos = []
+    for sid in ids or []:
+        sid = str(sid).strip().upper()
+        if sid in validos and sid not in pedidos:
+            pedidos.append(sid)
+    if not pedidos:
+        raise RuntimeError("ninguno de esos planos lleva imagen propia: no hay nada que rehacer")
+
+    biblioteca = escena_entera.cargar(estilo)
+    prevision = estadisticas.estimar(PASO_REHACER, tamano=len(pedidos), ajuste=elegido)
+    avance = None
+    if avisar is not None:
+        avance = estadisticas.Avance(
+            avisar, 0.05, 0.9, prevision,
+            f"reescribiendo {', '.join(pedidos[:6])}{'…' if len(pedidos) > 6 else ''} "
+            f"con {modelo} (esfuerzo {esfuerzo}), con las frases de alrededor delante")
+        avance.arrancar()
+    instruccion = escena_entera.encargo(todos, pedidos, catalogo, titulo, biblioteca)
+    arranque = time.time()
+    try:
+        crudo = _llamar_claude(instruccion, modelo, esfuerzo, avance)
+    except BaseException:
+        if avance is not None:
+            avance.parar()
+        estadisticas.anotar(PASO_REHACER, time.time() - arranque, ok=False, ajuste=elegido,
+                            proyecto=proyecto_id, resultado="error")
+        raise
+    segundos = avance.parar() if avance is not None else time.time() - arranque
+
+    fichas, avisos = escena_entera.leer_respuesta(
+        crudo, set(pedidos), biblioteca, (catalogo or {}).get("reparto") or {})
+    avisos += escena_entera.comprobar(fichas, todos, catalogo, biblioteca)
+    plan = {sid: escena_entera.linea(f) for sid, f in fichas.items()}
+    estadisticas.anotar(PASO_REHACER, segundos, tamano=len(pedidos), ajuste=elegido,
+                        proyecto=proyecto_id, unidades=len(plan),
+                        detalle={"modelo": modelo, "esfuerzo": esfuerzo,
+                                 "planos": len(pedidos), "rehechos": len(plan)})
+    return {
+        "plan": plan,
+        "avisos": avisos,
+        "pedidos": pedidos,
+        "rehechos": len(plan),
+        "ajuste": elegido,
+        "segundos": round(segundos, 1),
+        "estimacion_s": prevision["segundos"],
+    }
+
+
 def describir(plan, escenas=None):
     """Frase corta para la pantalla."""
     plan = plan or {}

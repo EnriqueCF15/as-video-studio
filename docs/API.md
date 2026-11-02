@@ -152,6 +152,7 @@ Reglas que valen para toda la API y no se repiten en cada fila:
 | `GET` | `/api/proyectos/{pid}/direccion` | Qué se ve en cada plano: lo dirigido, y los planos que lo admiten. |
 | `PUT` | `/api/proyectos/{pid}/direccion` | Guarda qué se ve en cada plano. Un texto vacío la quita. |
 | `POST` | `/api/proyectos/{pid}/direccion/proponer` | Escribe qué se ve en cada plano, con TODOS los planos delante de una vez. |
+| `POST` | `/api/proyectos/{pid}/direccion/rehacer` | «Rehacer con Opus»: vuelve a pedir SOLO los planos `ids` al director «escena entera», con Opus xhigh y todas las frases delante. |
 
 ## Sonido y transiciones
 

@@ -176,6 +176,67 @@ igual(escena_entera.leer_repaso({"marcados": {"s003": " al reves ", "S999": "x",
       "solo los marcados de los planos pedidos y con motivo")
 igual(escena_entera.leer_repaso("roto", {"S003"}), {}, "una respuesta rota no marca nada")
 
+# 8. «REHACER CON OPUS» (02-11): solo los planos pedidos, con todas las frases delante
+pedido = {}
+
+
+def _claude_falso(instruccion, modelo, esfuerzo, avance=None):
+    pedido.update(instruccion=instruccion, modelo=modelo, esfuerzo=esfuerzo)
+    return {"planos": {"S003": dict(FICHA_S003), "S004": dict(FICHA_S003)}}
+
+
+direccion._llamar_claude = _claude_falso
+direccion.estadisticas.anotar = lambda *a, **k: None     # sin tocar el historico real
+hecho = direccion.rehacer(ESCENAS, ["s003", "S003", "S999"], estilo=HISTORIA,
+                          catalogo=CATALOGO, titulo="Titulo")
+igual((pedido["modelo"], pedido["esfuerzo"]), ("opus", "xhigh"), "por defecto, Opus xhigh")
+igual(hecho["pedidos"], ["S003"], "solo los planos que existen, sin repetir")
+igual(sorted(hecho["plan"]), ["S003"], "lo que no se pidio (S004) no se guarda")
+igual(hecho["plan"]["S003"], linea, "vuelve como la linea de la direccion")
+cierto("SE DICE AQUI [S003]" in pedido["instruccion"] and "antes [S002]" in pedido["instruccion"]
+       and "despues [S004]" in pedido["instruccion"], "lee las frases vecinas")
+cierto("[S002] sitio del estudio" not in pedido["instruccion"], "pero solo pide el elegido")
+igual(hecho["avisos"], [], "la escena aprobada pasa la comprobacion")
+sin_bol_falso = lambda *a, **k: {"planos": {"S003": dict(sin_bol)}}  # noqa: E731
+direccion._llamar_claude = sin_bol_falso
+cierto(any(a.startswith("S003:") and "bowl" in a for a in direccion.rehacer(
+    ESCENAS, ["S003"], estilo=HISTORIA, catalogo=CATALOGO)["avisos"]),
+    "lo rehecho tambien pasa por la comprobacion")
+igual(direccion.rehacer(ESCENAS, ["S003"], ajuste={"modelo": "sonnet", "esfuerzo": "high"},
+                        estilo=HISTORIA, catalogo=CATALOGO)["ajuste"],
+      {"modelo": "sonnet", "esfuerzo": "high"}, "el ajuste se puede cambiar")
+for malo, que in (({"orden": "corta"}, "sin biblioteca"), (HISTORIA, "sin planos validos")):
+    try:
+        direccion.rehacer(ESCENAS, ["S999"] if malo is HISTORIA else ["S003"], estilo=malo)
+        cierto(False, f"rehacer {que} tiene que negarse")
+    except RuntimeError:
+        cierto(True, f"rehacer {que} se niega")
+
+# 9. LOS AVISOS QUE VE LA PANTALLA (fichero del proyecto, no param)
+tras = escena_entera.avisos_tras_dirigir({
+    "avisos": ["S003: NO CUENTA LA FRASE -- el bol no sale", "S004: falta el bol",
+               "S004: algo flota", "2 plano(s) se han quedado sin direccion: S005, S006"],
+    "marcados": {"S006": "inventa un quiosco"}})
+igual(tras["marcados"], {"S003": "el bol no sale", "S006": "inventa un quiosco"},
+      "los NO CUENTA LA FRASE van a marcados")
+igual(tras["avisos"], {"S004": ["falta el bol", "algo flota"]}, "los demas, por plano")
+igual(tras["generales"], ["2 plano(s) se han quedado sin direccion: S005, S006"],
+      "los que no son de un plano, aparte")
+despues = escena_entera.avisos_tras_rehacer(dict(tras, avisos={"S003": ["viejo"],
+                                                               "S004": ["falta el bol"]}), {
+    "plan": {"S003": linea}, "avisos": ["S003: le falta algo"],
+    "ajuste": {"modelo": "opus", "esfuerzo": "xhigh"}})
+igual(despues["marcados"], {"S006": "inventa un quiosco"},
+      "el rehecho deja de estar marcado; el que no volvio, sigue")
+igual(despues["avisos"], {"S003": ["le falta algo"], "S004": ["falta el bol"]},
+      "sus avisos son los nuevos y los demas no se tocan")
+igual(despues["rehechos"], {"S003": "opus xhigh"}, "queda dicho con que se rehizo")
+ruta = os.path.join(tmp, escena_entera.AVISOS)
+escena_entera.guardar_avisos(ruta, despues)
+igual(escena_entera.leer_avisos(ruta), despues, "el fichero va y vuelve")
+igual(escena_entera.leer_avisos(os.path.join(tmp, "no.json"))["marcados"], {},
+      "sin fichero, nada marcado")
+
 shutil.rmtree(tmp, ignore_errors=True)
 print()
 if FALLOS:
