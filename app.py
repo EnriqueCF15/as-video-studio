@@ -4099,8 +4099,9 @@ def proponer_plan_cartelas(pid: str, cuerpo: dict = Body(default=None)):
     datos = _cuerpo(cuerpo)
     por_fase = CLI_CLAUDE.por_defecto_de("plan_cartelas")
     ajuste = _ajuste_cli(datos, por_fase["modelo"], por_fase["esfuerzo"])
+    # `aplicar` (02-11): guarda el plan como la tanda, sin dibujar los planos
     trabajo_id = ctx.gestor.lanzar("plan_cartelas", _correr_plan_cartelas, ctx,
-                                   ajuste, paso="assets")
+                                   ajuste, bool(datos.get("aplicar")), paso="assets")
     _registrar_trabajo(trabajo_id, ctx.id)
     return {"trabajo_id": trabajo_id, "ajuste": ajuste,
             "trabajo": ctx.gestor.estado(trabajo_id),
@@ -4582,8 +4583,10 @@ def proponer_direccion(pid: str, cuerpo: dict = Body(default=None)):
     if _direccion().escena_entera.activa((ctx.estado.params("assets") or {}).get("estilo")):
         por_fase = _direccion().escena_entera.POR_DEFECTO
     ajuste = _ajuste_cli(datos, por_fase["modelo"], por_fase["esfuerzo"])
+    # `aplicar` (02-11): guarda la direccion y sus avisos como la tanda, sin
+    # dibujar los planos (para un piloto de 3-5 antes del resto)
     trabajo_id = ctx.gestor.lanzar("direccion", _correr_direccion, ctx, ajuste,
-                                   paso="assets")
+                                   bool(datos.get("aplicar")), paso="assets")
     _registrar_trabajo(trabajo_id, ctx.id)
     return {"trabajo_id": trabajo_id, "ajuste": ajuste,
             "trabajo": ctx.gestor.estado(trabajo_id),

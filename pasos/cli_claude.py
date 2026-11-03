@@ -902,7 +902,7 @@ def escribiendo(instruccion, modelo=MODELO_POR_DEFECTO,
                 esfuerzo=ESFUERZO_POR_DEFECTO, tiempo_max_s=0,
                 base_tiempo_s=600, herramientas_vetadas=(), avance=None,
                 para="la llamada", que="la respuesta", carpetas=(),
-                herramientas_permitidas=()):
+                herramientas_permitidas=(), con_sobre=False):
     """Como `ejecutar`, pero el agente ESCRIBE su JSON y aqui se lee. -> dict.
 
     La instruccion NO tiene que decir como entregarlo: se le anade el cierre
@@ -915,6 +915,9 @@ def escribiendo(instruccion, modelo=MODELO_POR_DEFECTO,
     Sin esto, Read de una ruta fuera del directorio de trabajo pide permiso y en
     headless eso es colgarse. Se pasan las carpetas que EXISTEN: una ruta
     inventada aborta el CLI entero antes de arrancar.
+
+    Con `con_sobre` devuelve (dict, sobre del CLI): lo necesita quien lleva el
+    medidor de coste enganchado, que cuenta los tokens del sobre.
     """
     import json                                                # noqa: PLC0415
     import shutil                                              # noqa: PLC0415
@@ -932,7 +935,7 @@ def escribiendo(instruccion, modelo=MODELO_POR_DEFECTO,
             extra += ["--add-dir", os.path.abspath(ruta)]
     carpeta = tempfile.mkdtemp(prefix="cli_salida_")
     try:
-        ejecutar(instruccion + CIERRE.format(fichero=FICHERO_SALIDA),
+        _, sobre = ejecutar(instruccion + CIERRE.format(fichero=FICHERO_SALIDA),
                  modelo=modelo, esfuerzo=esfuerzo, cwd=carpeta,
                  tiempo_max_s=tiempo_max_s, base_tiempo_s=base_tiempo_s,
                  herramientas_vetadas=vetadas, permisos="acceptEdits",
@@ -949,7 +952,7 @@ def escribiendo(instruccion, modelo=MODELO_POR_DEFECTO,
     finally:
         shutil.rmtree(carpeta, ignore_errors=True)
     try:
-        return json.loads(crudo)
+        datos = json.loads(crudo)
     except ValueError:
         # con vallas de markdown o una frase delante: se rescata igual que se
         # rescata la respuesta de cualquier otro agente
@@ -957,4 +960,5 @@ def escribiendo(instruccion, modelo=MODELO_POR_DEFECTO,
             from . import comun                                # noqa: PLC0415
         except ImportError:                          # pasos/ suelto en sys.path
             import comun                                       # noqa: PLC0415
-        return comun.extraer_json(crudo, que)
+        datos = comun.extraer_json(crudo, que)
+    return (datos, sobre) if con_sobre else datos

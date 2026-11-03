@@ -237,6 +237,27 @@ igual(escena_entera.leer_avisos(ruta), despues, "el fichero va y vuelve")
 igual(escena_entera.leer_avisos(os.path.join(tmp, "no.json"))["marcados"], {},
       "sin fichero, nada marcado")
 
+# 02-11: hojas FIJAS de la biblioteca (los modelos del muneco de Enrique)
+os.makedirs(os.path.join(tmp, "bib", "personajes"))
+Image.new("RGB", (32, 18)).save(os.path.join(tmp, "bib", "personajes", "medieval.png"))
+with open(os.path.join(tmp, "bib", "biblioteca.json"), encoding="utf-8") as fh:
+    bib_fija = json.load(fh)
+bib_fija["personajes"] = {"muneco_medieval": {"imagen": "personajes/medieval.png",
+                                              "alias": ["muneco_medieval", "Muneco_Campesino"]},
+                          "roto": {"imagen": "personajes/no_existe.png", "alias": ["muneco_roto"]}}
+with open(os.path.join(tmp, "bib", "biblioteca.json"), "w", encoding="utf-8") as fh:
+    json.dump(bib_fija, fh)
+cierto(str(escena_entera.hoja_fija(HISTORIA, "muneco_medieval")).endswith("medieval.png"),
+       "un nombre del reparto que esta en los alias da la hoja fija")
+cierto(str(escena_entera.hoja_fija(HISTORIA, "muneco_campesino")).endswith("medieval.png"),
+       "los alias no distinguen mayusculas")
+igual(escena_entera.hoja_fija(HISTORIA, "madre_campesina"), None,
+      "un personaje sin modelo se sigue dibujando")
+igual(escena_entera.hoja_fija(HISTORIA, "muneco_roto"), None,
+      "un modelo cuya imagen no existe no se usa")
+igual(escena_entera.hoja_fija({"orden": "corta"}, "muneco_medieval"), None,
+      "sin biblioteca no hay hojas fijas")
+
 shutil.rmtree(tmp, ignore_errors=True)
 print()
 if FALLOS:

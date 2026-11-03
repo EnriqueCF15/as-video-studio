@@ -152,6 +152,13 @@ LLENO = """The picture is full-bleed: the drawing fills the whole frame edge to 
 REGLAS_PROTA = """only the protagonist from the first character sheet has a thin spiral curl, nobody else; nobody floats."""
 
 HOJAS_PROTA = ('muneco', 'muneco_mendigo', 'muneco_1930s')
+
+
+def es_prota(hoja):
+    """Si la hoja es el protagonista: `muneco` o cualquier `muneco_<epoca>` (02-11: en el
+    video 3 es `muneco_medieval`, y con la lista cerrada daba 74 avisos falsos)."""
+    hoja = str(hoja or "")
+    return hoja in HOJAS_PROTA or hoja.startswith("muneco_")
 PROHIBIDAS = ("black field", "blank speech bubble", "empty speech bubble", "silhouette",
               "shadow figure", "in shadow", "computer", "laptop", "monitor", "terminal window",
               "garland", "calendar", "christmas", "holly", "fir tree", "pine tree", "wrinkle",
@@ -193,12 +200,12 @@ def revisar(ficha, frase="", cartela="", reparto=None, sid="", estilos=None, pis
         avisos.append(f"referencia de estilo «{ficha.get('estilo')}» fuera de la lista")
 
     # el rizo
-    con_prota = any(h in HOJAS_PROTA for h in hojas)
+    con_prota = any(es_prota(h) for h in hojas)
     if con_prota and "only" not in reglas and "the only one" not in reglas:
         avisos.append("sale el protagonista pero las reglas no dicen que SOLO el lleva el rizo")
     if not con_prota and "nobody has a spiral curl" not in reglas:
         avisos.append("no sale el protagonista y las reglas no dicen «nobody has a spiral curl»")
-    if con_prota and hojas[0] not in HOJAS_PROTA and "first character sheet" in reglas:
+    if con_prota and not es_prota(hojas[0]) and "first character sheet" in reglas:
         avisos.append("las reglas dan el rizo a la primera hoja, y la primera no es el protagonista")
     if "spiral" in bajo or re.search(r"\b(?:a|his|her|thin)\s+curl\b", bajo):
         avisos.append("la escena habla de un rizo: eso va solo en las reglas")
@@ -269,7 +276,7 @@ def revisar(ficha, frase="", cartela="", reparto=None, sid="", estilos=None, pis
                                   bajo)):
             avisos.append("calle sin decir que el adulto de la casa va sin disfraz")
     # 30-10 (Sonnet, S003): lo que el sitio pone en las manos del protagonista
-    con_prota = any(h in HOJAS_PROTA for h in hojas)
+    con_prota = any(es_prota(h) for h in hojas)
     for cosa in ("bowl",):
         if con_prota and cosa in pista.lower() and cosa not in bajo:
             avisos.append(f"el sitio tiene «{cosa}» y la escena no lo pone")

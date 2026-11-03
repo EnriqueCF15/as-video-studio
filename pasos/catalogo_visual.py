@@ -33,6 +33,7 @@ PROPONER NO ES APROBAR
 Esto devuelve una propuesta. Lo que entra en los params es lo que una persona
 aprueba.
 """
+import json
 import os
 import re
 import sys
@@ -59,6 +60,9 @@ SISTEMA = ("Responde exclusivamente con el objeto JSON pedido, sin texto "
 
 HERRAMIENTAS_VETADAS = ("Bash", "Read", "Write", "Edit", "NotebookEdit", "Glob",
                         "Grep", "WebFetch", "WebSearch", "Task", "TodoWrite")
+#: Las que se vetan cuando entrega escribiendo: Read, Write y Edit hacen falta.
+HERRAMIENTAS_ESCRIBIENDO = tuple(h for h in HERRAMIENTAS_VETADAS
+                                 if h not in ("Read", "Write", "Edit"))
 
 # Tope de planos seguidos en el mismo sitio. No es un capricho: cada plano lleva
 # el anterior como referencia, asi que encadenar muchos en el mismo set es lo que
@@ -1059,10 +1063,16 @@ def _llamar_claude(instruccion, modelo, esfuerzo, cwd, avance=None):
 
     El medidor engancha POR NOMBRE (nucleo/coste.py). Renombrarla desconecta el
     contador en silencio, que es la peor forma de romperlo.
+
+    ENTREGA ESCRIBIENDO UN FICHERO (fork, 02-11-2026), como la direccion: con el
+    guion del video 3 (140 bloques) la respuesta en el mensaje llego cortada --
+    solo la segunda mitad, ilegible -- tras diez minutos de Opus. Se devuelve
+    como texto para que quien llama la lea igual que antes. `cwd` ya no se usa:
+    `escribiendo` corre en su carpeta temporal.
     """
-    return cli_claude.ejecutar(
-        instruccion, modelo=modelo, esfuerzo=esfuerzo, cwd=cwd,
+    datos, sobre = cli_claude.escribiendo(
+        instruccion, modelo=modelo, esfuerzo=esfuerzo,
         tiempo_max_s=0, base_tiempo_s=TIEMPO_BASE_S,
-        sistema=SISTEMA, herramientas_vetadas=HERRAMIENTAS_VETADAS,
-        extra=["--no-session-persistence"], avance=avance,
-        para="el catalogo visual")
+        herramientas_vetadas=HERRAMIENTAS_ESCRIBIENDO, avance=avance,
+        para="el catalogo visual", que="el catalogo", con_sobre=True)
+    return json.dumps(datos, ensure_ascii=False), sobre

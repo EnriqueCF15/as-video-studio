@@ -56,6 +56,23 @@ def cargar(estilo):
         return json.load(fh)
 
 
+def hoja_fija(estilo, nombre):
+    """La hoja de personaje FIJA de la biblioteca para ese nombre del reparto, o None.
+
+    02-11 (video 3, peticion de Enrique): sus modelos del muneco (hoy y por epocas) van en
+    `personajes/` de la biblioteca con los nombres que suele usar el catalogo (`alias`); el
+    estudio copia esa hoja en vez de inventarla, y no paga imagen."""
+    ruta = carpeta(estilo)
+    if not ruta:
+        return None
+    nombre = str(nombre or "").strip().lower()
+    for ficha in (cargar(estilo).get("personajes") or {}).values():
+        if nombre in [str(a).lower() for a in ficha.get("alias") or []]:
+            imagen = os.path.join(ruta, ficha.get("imagen") or "")
+            return imagen if os.path.isfile(imagen) else None
+    return None
+
+
 def frases_alrededor(escenas, indice):
     """Las frases de antes y de despues, marcadas, y la del plano en medio."""
     lineas = []

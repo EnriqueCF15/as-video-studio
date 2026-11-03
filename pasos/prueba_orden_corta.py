@@ -198,6 +198,17 @@ guardado = presets_canal.datos_de_params(
     {"assets": {"estilo": {"guia": GUIA, "cartas": HISTORIA, "orden": "corta"}}})
 igual((guardado["estilo"].get("cartas"), guardado["estilo"].get("orden")),
       (HISTORIA, "corta"), "guardar el Estilo se las lleva")
+cambios = presets_canal.cambios_para(
+    {"tipo": "estilo", "datos": {"guia": GUIA, "orden": "corta",
+                                 "biblioteca": "biblioteca_historia"}},
+    {"assets": {"estilo": {}}})
+igual(cambios["assets"]["estilo"].get("biblioteca"), "biblioteca_historia",
+      "aplicar el Estilo pone la biblioteca de escenas")
+guardado = presets_canal.datos_de_params(
+    {"assets": {"estilo": {"guia": GUIA, "orden": "corta",
+                           "biblioteca": "biblioteca_historia"}}})
+igual(guardado["estilo"].get("biblioteca"), "biblioteca_historia",
+      "guardar el Estilo se lleva la biblioteca")
 
 titulo("6 · el director en modo historia (fase A, 28-10)")
 import string                                                # noqa: E402

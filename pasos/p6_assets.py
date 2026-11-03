@@ -2398,6 +2398,18 @@ def _con_direccion(base, escena):
     return _unir(base, linea)
 
 
+#: Animales que pueden tener hoja propia (la vaca del video 3).
+_ANIMAL = re.compile(r"\b(?:cow|cows|cattle|ox|oxen|bull|calf|horse|pony|donkey|mule|pig|"
+                     r"sheep|lamb|goat|dog|cat|hen|chicken|goose|geese|duck)s?\b", re.I)
+
+
+def es_animal(descripcion):
+    """Si la hoja es de un animal: lo dice el PRINCIPIO de la descripcion («The family
+    cow drawn...»), no cualquier mencion («a farmer leading his cow»). -> bool"""
+    texto = " ".join(str(descripcion or "").split()[:4])
+    return bool(_ANIMAL.search(texto))
+
+
 def regla_de_especie(estilo):
     """Lo que el estilo dice de COMO SON los personajes, o "".
 
@@ -3293,6 +3305,13 @@ def _prompt_reparto(ficha, estilo):
                   "mentioned in that description: it describes where these "
                   "characters appear in the film, not what this sheet shows. Draw "
                   "only the characters, evenly lit, on an empty flat background.")
+    if es_animal(ficha.get("descripcion")):
+        # 02-11 (video 3): la regla del estilo («cabeza redonda, sin cuello...»)
+        # mandaba sobre la descripcion y «the family cow» salio como una nina
+        lineas.append("This character is an ANIMAL, not a person: draw it on four "
+                      "legs with the animal's own head, snout, ears and tail, in the "
+                      "drawing style of the style sheet. The rules about people's "
+                      "heads, faces and clothes do not apply to it.")
     if ficha.get("feedback"):
         # la nota del revisor sobre ESTA hoja: sin esto se pagaba una hoja
         # nueva con el mismo prompt y salia una variacion de lo mismo
@@ -3760,6 +3779,13 @@ def _generar_escenas(plan, dirs, p, trabajo, toca, unidades, resultados, avisar,
                          != _texto_clave(escena)))
                 with cerrojo:
                     resultados[uid] = ficha
+                continue
+            if not pedida and unidades is not None:
+                # PEDIR UNOS PLANOS DIBUJA ESOS, aunque los demas aun no existan.
+                # 02-11 (video 3): el piloto de 5 planos se puso a dibujar los
+                # 201 porque «lo que no existe se genera» valia tambien con
+                # unidades; se corto en 21 planos (~0,7 USD). Lo que queda sin
+                # imagen sale como pendiente y lo hace la tanda.
                 continue
 
             if cartelas.sin_imagen(escena):
@@ -4882,7 +4908,15 @@ def ejecutar(proyecto, params, avisar=None, unidades=None, solo_assets=False,
                (indice + 1, len(pendientes)))
         if ficha["tipo"] == "reparto":
             destino = os.path.join(dirs["reparto"], f"{ficha['nombre']}.png")
-            if pedido(uid) or not os.path.exists(destino):
+            fija = escena_entera.hoja_fija(p.get("estilo"), ficha["nombre"])
+            if fija and (pedido(uid) or not os.path.exists(destino)):
+                # la hoja de la biblioteca (el modelo de Enrique): se copia, no se dibuja
+                from PIL import Image                          # noqa: PLC0415
+                Image.open(fija).convert("RGB").save(destino)
+                resultados[uid] = {"tipo": "reparto", "origen": "biblioteca",
+                                   "png": os.path.relpath(destino, trabajo),
+                                   "fija": os.path.basename(fija), "coste": 0.0}
+            elif pedido(uid) or not os.path.exists(destino):
                 prompt = _prompt_reparto(ficha, p["estilo"])
                 # a una hoja de personaje le tocan los ejes de personas: la
                 # cara y los cuerpos, que es lo que esa hoja tiene que fijar

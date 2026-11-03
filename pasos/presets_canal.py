@@ -140,7 +140,7 @@ TIPOS = {
         # preset dijera que tiene referencias dibujadas que nadie ha mirado.
         "claves": ("referencias", "guia", "url", "moodboard",
                    "calidad", "min_s", "max_s", "min_s_rotulos",
-                   "cartas", "orden"),
+                   "cartas", "orden", "biblioteca"),
         "pasos": ("assets",),
     },
     # El id se queda en 'rotulos' aunque ya no haya rotulos: es la clave con la
@@ -1054,9 +1054,10 @@ def cambios_para(ficha, params_actuales=None):
             estilo["referencias"] = rutas
         if datos.get("guia"):
             estilo["guia"] = copy.deepcopy(datos["guia"])
-        # las cartas de plano que deja usar y la orden corta (fork, 28-10): van
-        # DENTRO de 'estilo', que es lo que leen el prompt y el director
-        for clave in ("cartas", "orden"):
+        # las cartas de plano que deja usar, la orden corta (fork, 28-10) y la
+        # biblioteca de escenas (02-11): van DENTRO de 'estilo', que es lo que
+        # leen el prompt y el director; sin 'biblioteca' no hay «escena entera»
+        for clave in ("cartas", "orden", "biblioteca"):
             if datos.get(clave):
                 estilo[clave] = copy.deepcopy(datos[clave])
         cambios["assets"] = {"estilo": estilo}
@@ -1147,7 +1148,8 @@ def datos_de_params(params_por_paso, incluir=ORDEN):
 
     if "estilo" in incluir:
         bloque = {}
-        for clave in ("referencias", "guia", "url", "cartas", "orden"):
+        for clave in ("referencias", "guia", "url", "cartas", "orden",
+                      "biblioteca"):
             if estilo.get(clave):
                 bloque[clave] = copy.deepcopy(estilo[clave])
         for clave in ("calidad", "min_s", "max_s", "min_s_rotulos"):
