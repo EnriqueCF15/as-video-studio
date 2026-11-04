@@ -711,9 +711,12 @@ def prueba_http(cliente, proyecto):
         ok("event: coste" in recibido, "y empuja el coste al conectarse")
 
     seccion("HTTP: se ejecuta callouts de verdad")
+    # «camara: siempre»: el plano de esta prueba es el ultimo del video, y con
+    # la camara variada (fork, 26-10) el ultimo va quieto. Lo que se prueba
+    # aqui es que la frase de la captura cuente el zoom, asi que tiene que haberlo.
     respuesta, ficha = cliente.post(
         f"/api/proyectos/{pid}/pasos/callouts/ejecutar",
-        {"params": {"previsualizar": False}})
+        {"params": {"previsualizar": False, "camara": "siempre"}})
     igual(respuesta.status_code, 202, "callouts arranca")
     final = esperar_trabajo(cliente, ficha["trabajo_id"])
     igual(final["estado"], "listo", f"callouts termina bien: {final.get('error')}")

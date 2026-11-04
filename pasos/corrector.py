@@ -246,20 +246,36 @@ def preparar(nota, escena, catalogo, estilo_legible, regla_especie, inventario,
     arranque = time.time()
     avisar(0.05, f"{escena.get('id')}: el corrector esta leyendo la nota y las "
                  f"imagenes")
-    try:
-        texto, _sobre = cli_claude.ejecutar(
-            instruccion, modelo=modelo, esfuerzo=esfuerzo, cwd=cwd,
-            tiempo_max_s=0, base_tiempo_s=TIEMPO_BASE_S, sistema=SISTEMA,
-            herramientas_vetadas=HERRAMIENTAS_VETADAS,
-            herramientas_permitidas=HERRAMIENTAS_PERMITIDAS,
-            extra=["--no-session-persistence"],
-            para=f"el corrector del plano {escena.get('id')}")
-        datos = comun.extraer_json(texto, "la respuesta del corrector")
-    except Exception as fallo:                                   # noqa: BLE001
-        return {"error": f"{type(fallo).__name__}: {fallo}"[:300],
-                "segundos": round(time.time() - arranque, 1)}
+    # UNA RESPUESTA ILEGIBLE SE PIDE OTRA VEZ, UNA SOLA (fork, 04-11-2026). Con
+    # el corrector obligatorio, un JSON roto en un plano paraba la tanda entera:
+    # paso en el video 3 con S125, y suele ser cosa de esa respuesta, no del
+    # plano. Un fallo del CLI (sin cupo, sin sesion) no se repite: insistir no
+    # lo arregla y gastaria otra espera.
+    datos, fallo_lectura = None, ""
+    for intento in (1, 2):
+        try:
+            texto, _sobre = cli_claude.ejecutar(
+                instruccion, modelo=modelo, esfuerzo=esfuerzo, cwd=cwd,
+                tiempo_max_s=0, base_tiempo_s=TIEMPO_BASE_S, sistema=SISTEMA,
+                herramientas_vetadas=HERRAMIENTAS_VETADAS,
+                herramientas_permitidas=HERRAMIENTAS_PERMITIDAS,
+                extra=["--no-session-persistence"],
+                para=f"el corrector del plano {escena.get('id')}")
+        except Exception as fallo:                               # noqa: BLE001
+            return {"error": f"{type(fallo).__name__}: {fallo}"[:300],
+                    "segundos": round(time.time() - arranque, 1)}
+        try:
+            datos = comun.extraer_json(texto, "la respuesta del corrector")
+        except Exception as fallo:                               # noqa: BLE001
+            datos, fallo_lectura = None, f"{type(fallo).__name__}: {fallo}"
+        if isinstance(datos, dict):
+            break
+        fallo_lectura = fallo_lectura or "la respuesta no es un objeto"
+        if intento == 1:
+            avisar(0.05, f"{escena.get('id')}: la respuesta del corrector no se "
+                         f"ha podido leer; se le pide otra vez")
     if not isinstance(datos, dict):
-        return {"error": "la respuesta no es un objeto",
+        return {"error": f"{fallo_lectura} (también al repetirla)"[:300],
                 "segundos": round(time.time() - arranque, 1)}
 
     alcance = str(datos.get("alcance") or "").strip().lower()

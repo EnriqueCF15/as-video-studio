@@ -268,6 +268,54 @@ def prueba_reintento():
         ok(nueva["revisor"]["error"] == "OAuth", "el error del revisor queda apuntado")
 
 
+def prueba_corrector_reintenta():
+    seccion("el corrector pide otra vez una respuesta ilegible, UNA vez (04-11, S125)")
+    import corrector                                        # noqa: PLC0415
+    png = _png_temporal()
+    escena = {"id": "S125", "narracion": "ten boxes", "personajes": []}
+    inventario = [{"ruta": png, "que": "el plano", "clase": "plano"}]
+    buena = json.dumps({"alcance": "retoque", "escena": "Ten boxes in one row.",
+                        "personajes": [], "referencias": []})
+    llamadas = []
+
+    def respuestas(*textos):
+        def ejecutar(instruccion, **kw):
+            llamadas.append(kw.get("para"))
+            texto = textos[min(len(llamadas), len(textos)) - 1]
+            if isinstance(texto, Exception):
+                raise texto
+            return texto, {}
+        return ejecutar
+
+    try:
+        with Parche(cli_claude, ejecutar=respuestas("{\"escena\": roto", buena)):
+            ficha = corrector.preparar("TEN boxes", escena, {}, "  estilo", "", inventario)
+        igual(len(llamadas), 2, "un JSON roto se pide otra vez")
+        igual((ficha or {}).get("escena"), "Ten boxes in one row.",
+              "y vale la segunda respuesta")
+
+        llamadas.clear()
+        with Parche(cli_claude, ejecutar=respuestas("nada de json", "tampoco")):
+            ficha = corrector.preparar("TEN boxes", escena, {}, "  estilo", "", inventario)
+        igual(len(llamadas), 2, "solo se repite una vez")
+        ok("también al repetirla" in (ficha or {}).get("error", ""),
+           "si sigue ilegible vuelve como error (y la tanda se para como antes)")
+
+        llamadas.clear()
+        with Parche(cli_claude, ejecutar=respuestas(
+                RuntimeError("Failed to authenticate: OAuth session expired"), buena)):
+            ficha = corrector.preparar("TEN boxes", escena, {}, "  estilo", "", inventario)
+        igual(len(llamadas), 1, "un fallo del CLI no se repite")
+        ok("OAuth" in (ficha or {}).get("error", ""), "y vuelve como error")
+
+        llamadas.clear()
+        with Parche(cli_claude, ejecutar=respuestas(buena)):
+            ficha = corrector.preparar("TEN boxes", escena, {}, "  estilo", "", inventario)
+        igual(len(llamadas), 1, "una respuesta buena a la primera no se repite")
+    finally:
+        os.remove(png)
+
+
 def prueba_resumen():
     seccion("lo que dijo el revisor sale en el resumen de la tanda")
     resultados = {
@@ -300,6 +348,7 @@ def main():
     prueba_modos()
     prueba_bloqueo()
     prueba_reintento()
+    prueba_corrector_reintenta()
     prueba_resumen()
 
     print("\n" + "=" * 70)

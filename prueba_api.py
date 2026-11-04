@@ -408,6 +408,19 @@ def probar_ejecucion(cliente, base, pid):
     igual(respuesta.status_code, 409, "no se puede lanzar dos veces el mismo paso")
     igual(repetido.get("trabajo_id"), tid, "el 409 devuelve el trabajo que ya corre")
 
+    # los botones de despues tambien esperan (fork, 04-11-2026): dos trabajos de
+    # voz a la vez se borraban la carpeta de trabajo el uno al otro
+    for ruta, cuerpo in ((f"/api/proyectos/{pid}/voz/bloques/regrabar", {"tomas": ["B001_a1"]}),
+                         (f"/api/proyectos/{pid}/voz/secciones/SB01/regrabar", {}),
+                         (f"/api/proyectos/{pid}/direccion/proponer", {})):
+        respuesta, otro = cliente.post(ruta, cuerpo)
+        sigue = (cliente.get(f"/api/trabajos/{tid}")[1] or {}).get("estado") not in (
+            "listo", "error", "cancelado")
+        ok(respuesta.status_code == 409 or not sigue,
+           f"{ruta.split(pid)[1]} con otro trabajo en marcha da 409 ({respuesta.status_code})")
+        if respuesta.status_code == 409:
+            igual((otro or {}).get("trabajo_id"), tid, "y devuelve el trabajo que corre")
+
     tipo, eventos = leer_sse(base, tid)
     ok("text/event-stream" in tipo, f"el SSE se sirve como event-stream ({tipo})")
     ok(len(eventos) >= 1, "el SSE emite al menos un evento")

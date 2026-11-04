@@ -1220,6 +1220,29 @@ def probar_render(proyecto, estado, params):
        "el MP4 se vuelve a montar con el clip nuevo")
     estado.completar("render", parcial["salidas"], parcial["unidades"])
 
+    # UN CLIP NO PEDIDO QUE YA NO CUADRA SE REHACE (fork, 04-11-2026): en el
+    # video 3, S095 se monto con su clip viejo porque solo se miraban los
+    # pedidos. Se simula un clip viejo cambiandole la huella al ultimo plano.
+    print("      un clip no pedido que ya no cuadra se rehace y se dice")
+    viejo = plan["escenas"][-1]["id"]
+    ok(len(plan["escenas"]) >= 4, "hay planos de sobra para no tocar el pedido ni su siguiente")
+    with open(os.path.join(proyecto.ruta_paso("render"), f"clips/{viejo}.mp4"
+                           + p8_render.EXT_HUELLA), "w", encoding="utf-8") as fh:
+        fh.write("huella-de-un-clip-viejo")
+    otra_vez = p8_render.ejecutar(proyecto, params, avisador("p8"),
+                                  unidades=[f"escena:{objetivo}"])
+    rehechos = [uid for uid, ficha in otra_vez["todas"].items()
+                if ficha.get("origen") == "renderizado"]
+    ok(f"escena:{viejo}" in rehechos,
+       f"el clip viejo no pedido se rehace ({rehechos})")
+    ok(f"escena:{viejo}" in otra_vez["unidades"], "y se sella como rehecho")
+    ok(any(viejo in aviso and "no cuadraban" in aviso for aviso in otra_vez["avisos"]),
+       "y se dice en los avisos")
+    ok(not any(f"escena:{e['id']}" in rehechos for e in plan["escenas"][2:-1]
+               if e["id"] != objetivo and f"escena:{e['id']}" not in parcial["unidades"]),
+       "los que cuadran se siguen conservando")
+    estado.completar("render", otra_vez["salidas"], otra_vez["unidades"])
+
     # LA BANDA SONORA VA LA ULTIMA, y no es capricho: vuelve a ejecutar el paso
     # entero, y `sembrar_trabajo` recopia la version activa al trabajo -- o sea
     # que le cambia la fecha a TODOS los clips. Puesta antes, la comprobacion de

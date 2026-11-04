@@ -792,6 +792,46 @@ def _cola_negra(clips, trabajo, fps, calidad, segundos=COLA_NEGRO_S):
         return clips
     return list(clips) + [negro]
 
+def _fotogramas_de_clip(clip):
+    """Cuantos fotogramas tiene un clip segun su cabecera, o None si no se sabe."""
+    try:
+        salida = subprocess.run(
+            [medios.ffprobe(), "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=nb_frames", "-of", "default=nw=1:nk=1", clip],
+            capture_output=True, text=True, timeout=60, **medios.SIN_VENTANA)
+        return int(salida.stdout.strip())
+    except Exception:                                          # noqa: BLE001
+        return None
+
+
+def _comprobar_duraciones(escenas, clips, fps, tolerancia=1):
+    """ANTES DE UNIR: cada clip dura lo que dice el plan, o no se monta.
+
+    Fork, 04-11-2026. Un clip que no cuadra con su plano (de otro corte, de
+    otra version) desfasa la voz de TODO lo que va detras, y en un video de 20
+    minutos eso no se ve hasta que alguien lo mira entero: paso con S095 en el
+    video 3. Medido en sus 201 clips: cada uno tiene exactamente los fotogramas
+    del plan, asi que un fotograma de margen basta. Los que faltan no se miran
+    aqui: los dice `_concatenar`, con su nombre.
+    """
+    malos = []
+    for escena, clip in zip(escenas, clips):
+        if not os.path.exists(clip):
+            continue
+        esperados = max(1, round(float(escena["t_out"]) * fps)
+                        - round(float(escena["t_in"]) * fps))
+        tiene = _fotogramas_de_clip(clip)
+        if tiene is not None and abs(tiene - esperados) > tolerancia:
+            malos.append(f"{escena['id']} ({tiene / fps:.2f} s y el plan dice "
+                         f"{esperados / fps:.2f} s)")
+    if malos:
+        raise RuntimeError(
+            f"no se monta el vídeo: {len(malos)} clip(s) no duran lo que dice el "
+            f"plan y desfasarían la voz: {', '.join(malos[:6])}"
+            + (f" y {len(malos) - 6} más" if len(malos) > 6 else "")
+            + ". Vuelve a renderizar esos planos (unidades «escena:S###»).")
+
+
 def _concatenar(clips, destino, audio, desfase, trabajo, musica=None,
                 efectos=None, duracion=0.0, lufs=None, cama=False,
                 ajuste_db=0.0, fps=12, calidad="media", efectos_db=0.0):
@@ -1703,6 +1743,7 @@ def ejecutar(proyecto, params, avisar=None, unidades=None, solo_montar=False):
     clips = []
     tareas = []
     huellas = {}
+    desfasados = []
     for indice, escena in enumerate(escenas):
         sid = escena["id"]
         uid = f"escena:{sid}"
@@ -1715,20 +1756,37 @@ def ejecutar(proyecto, params, avisar=None, unidades=None, solo_montar=False):
 
         # SOLO MONTAR: ningun plano se renderiza, se reutilizan todos sus clips.
         # Si falta alguno se dice al concatenar, con su nombre.
-        if solo_montar or (pedidas is not None and uid not in pedidas
-                           and os.path.exists(clip)):
+        if solo_montar:
             resultados[uid] = {"clip": os.path.relpath(clip, trabajo),
                                "frames": total, "origen": "conservado"}
             huellas[sid] = huella_guardada(clip)
             continue
 
+        # UN PLANO NO PEDIDO TAMBIEN SE MIRA (fork, 04-11-2026). Antes se
+        # conservaba sin mas, y el estado solo pide lo que EL cree cambiado: en
+        # el video 3 un script movio cortes en plan.json por fuera del estudio, y
+        # S095 se monto con su clip viejo -- 3 s mas corto y todo desfasado desde
+        # el 9:49. Ahora se conserva solo si su huella (que lleva los tiempos)
+        # sigue siendo la del clip; si no, se redibuja y se dice. Sin movimiento
+        # o sin hyperframe no se puede calcular: se conserva como antes.
+        no_pedido = pedidas is not None and uid not in pedidas and os.path.exists(clip)
         mov = movimientos.get(sid)
         if not mov:
+            if no_pedido:
+                resultados[uid] = {"clip": os.path.relpath(clip, trabajo),
+                                   "frames": total, "origen": "conservado"}
+                huellas[sid] = huella_guardada(clip)
+                continue
             raise RuntimeError(f"{sid}: el paso callouts no dejo movimiento")
         hyper = mov.get("hyperframe")
         hyper = (hyper if hyper and os.path.isabs(hyper)
                  else os.path.join(base_callouts, hyper or ""))
         if not os.path.exists(hyper):
+            if no_pedido:
+                resultados[uid] = {"clip": os.path.relpath(clip, trabajo),
+                                   "frames": total, "origen": "conservado"}
+                huellas[sid] = huella_guardada(clip)
+                continue
             raise RuntimeError(f"{sid}: falta el hyperframe {hyper}")
         capa = os.path.join(base_callouts, mov.get("capa") or "")
         svg = ""
@@ -1757,10 +1815,13 @@ def ejecutar(proyecto, params, avisar=None, unidades=None, solo_montar=False):
                                 fps, (ancho, alto), p["calidad_video"], paleta,
                                 huellas.get(previo, ""), fotogramas=fotogramas)
         huellas[sid] = huella
-        if pedidas is None and huella_guardada(clip) == huella:
+        if (pedidas is None or no_pedido) and huella_guardada(clip) == huella:
             resultados[uid] = {"clip": os.path.relpath(clip, trabajo),
                                "frames": total, "origen": "conservado"}
             continue
+        if no_pedido:
+            desfasados.append(sid)
+            pedidas.add(uid)            # se rehace, asi que se sella con los pedidos
 
         tareas.append({
             "huella": huella,
@@ -1885,6 +1946,7 @@ def ejecutar(proyecto, params, avisar=None, unidades=None, solo_montar=False):
         ajuste_efectos = float(p.get("efectos_db") or 0.0)
     except (TypeError, ValueError):
         ajuste_efectos = 0.0
+    _comprobar_duraciones(escenas, clips, fps)
     _concatenar(clips, destino, audio, desfase, trabajo, musica=pista_musica,
                 efectos=pista_efectos, duracion=largo_con_cola,
                 lufs=p.get("musica_lufs"), cama=cama, ajuste_db=ajuste_musica,
@@ -1913,6 +1975,14 @@ def ejecutar(proyecto, params, avisar=None, unidades=None, solo_montar=False):
             + "): llevan la transición cocida sobre el último fotograma del "
               "plano anterior, que ha cambiado. No rehacerlos dejaría un "
               "fogonazo en ese corte. No cuesta dinero: es recodificar.")
+    if desfasados:
+        avisos.append(
+            f"{len(desfasados)} clip(s) no pedidos se han rehecho porque ya no "
+            f"cuadraban con el plan ({', '.join(desfasados[:6])}"
+            + (f" y {len(desfasados) - 6} más" if len(desfasados) > 6 else "")
+            + "): algo cambió sus tiempos, su imagen o su capa sin que el estudio "
+              "lo marcara. Montarlos viejos habría desfasado el vídeo. No cuesta "
+              "dinero: es recodificar.")
     if faltan_temas:
         avisos.append(f"faltan en el banco {len(faltan_temas)} tema(s) de la "
                       f"banda sonora ({', '.join(str(t) for t in faltan_temas[:3])}): "

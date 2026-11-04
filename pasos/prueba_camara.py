@@ -246,6 +246,49 @@ igual(Image.open(io.BytesIO(openai._recortar(crudo.getvalue(), 1536, 864))).size
       (1536, 864), "OpenAI no sabe 16:9: se pide 3:2 y se recorta al centro")
 igual(openai.RECORTES["panoramico"][0], "apaisado", "pidiendo el apaisado de siempre")
 
+titulo("ANTES DE UNIR: cada clip dura lo que dice el plan (04-11, S095 del video 3)")
+carpeta = tempfile.mkdtemp(prefix="estudio_duraciones_")
+escenas_d = [{"id": "S001", "t_in": 0.0, "t_out": 4.0},
+             {"id": "S002", "t_in": 4.0, "t_out": 9.0},
+             {"id": "S003", "t_in": 9.0, "t_out": 12.0}]
+clips_d = []
+for e in escenas_d:
+    ruta = os.path.join(carpeta, f"{e['id']}.mp4")
+    open(ruta, "wb").close()
+    clips_d.append(ruta)
+cuadros = {"S001": 100, "S002": 125, "S003": 75}
+original = p8._fotogramas_de_clip
+p8._fotogramas_de_clip = lambda c: cuadros[os.path.basename(c)[:4]]
+try:
+    p8._comprobar_duraciones(escenas_d, clips_d, 25)
+    cierto(True, "si todos cuadran, se monta")
+    cuadros["S002"] = 50                        # el clip viejo: 2 s donde el plan dice 5
+    try:
+        p8._comprobar_duraciones(escenas_d, clips_d, 25)
+        cierto(False, "un clip que no cuadra para el montaje")
+    except RuntimeError as fallo:
+        cierto("S002" in str(fallo) and "S001" not in str(fallo),
+               "un clip que no cuadra para el montaje y se dice cual")
+    cuadros["S002"] = 126
+    p8._comprobar_duraciones(escenas_d, clips_d, 25)
+    cierto(True, "un fotograma de mas o de menos se tolera")
+    p8._fotogramas_de_clip = lambda c: None
+    p8._comprobar_duraciones(escenas_d, clips_d, 25)
+    cierto(True, "si ffprobe no sabe decirlo, no se bloquea el montaje")
+    os.remove(clips_d[1])
+    p8._fotogramas_de_clip = lambda c: 1
+    try:
+        p8._comprobar_duraciones(escenas_d[1:2], clips_d[1:2], 25)
+        cierto(True, "un clip que falta lo dice _concatenar, no esta comprobacion")
+    except RuntimeError:
+        cierto(False, "un clip que falta lo dice _concatenar, no esta comprobacion")
+finally:
+    p8._fotogramas_de_clip = original
+for ruta in clips_d:
+    if os.path.exists(ruta):
+        os.remove(ruta)
+os.rmdir(carpeta)
+
 print()
 if FALLOS:
     print(f"FALLAN {len(FALLOS)} de {COMPROBACIONES} comprobaciones:")

@@ -396,6 +396,24 @@ def _trabajo_activo(ctx, paso_id):
     return None
 
 
+def _exigir_sin_trabajos(ctx, que):
+    """409 si hay CUALQUIER trabajo en marcha en este video.
+
+    Fork, 04-11-2026. «Ejecutar» ya miraba `_trabajo_activo`, pero los botones
+    de despues (voz por bloques y secciones, direccion, banda y mapa musical)
+    no: dos trabajos de voz a la vez comparten la carpeta de trabajo, y
+    `preparar_trabajo` la BORRA al empezar, asi que el segundo le quitaba al
+    primero lo que estaba haciendo. Una direccion «aplicada» en mitad de una
+    tanda mezclaba escenas viejas y nuevas. Es la misma regla que ya usa
+    «Rehacer con Opus»: de uno en uno.
+    """
+    vivos = ctx.gestor.listar(activos=True)
+    if vivos:
+        raise ErrorApi(409, f"hay {len(vivos)} trabajo(s) en marcha en este vídeo "
+                            f"({vivos[0].get('nombre')}): espera a que acabe antes de "
+                            f"{que}", {"trabajo_id": vivos[0]["id"]})
+
+
 def _unidades_pedidas(cuerpo):
     crudo = cuerpo.get("unidades")
     if crudo is None:
@@ -2020,6 +2038,7 @@ def reescribir_bloques_guion(pid: str, cuerpo: dict = Body(default=None)):
 def regrabar_seccion(pid: str, seccion_id: str, cuerpo: dict = Body(default=None)):
     """Regraba una seccion de la toma, con microcambio si se pide."""
     ctx = contexto(pid)
+    _exigir_sin_trabajos(ctx, "regrabar una sección de la voz")
     if PASOS_MODULOS is None:
         raise ErrorApi(503, f"los pasos no se han podido cargar: {ERROR_PASOS}")
     datos = _cuerpo(cuerpo)
@@ -2116,6 +2135,7 @@ def probar_bloques_voz(pid: str, cuerpo: dict = Body(default=None)):
     (opcional; si no, el de su tramo), "tomas": 1-4, "etiqueta": "a"}
     """
     ctx = contexto(pid)
+    _exigir_sin_trabajos(ctx, "grabar tomas de prueba de la voz")
     if PASOS_MODULOS is None:
         raise ErrorApi(503, f"los pasos no se han podido cargar: {ERROR_PASOS}")
     datos = _cuerpo(cuerpo)
@@ -2178,6 +2198,7 @@ def regrabar_bloques_voz(pid: str, cuerpo: dict = Body(default=None)):
     No graba nada: lo que se cose es exactamente lo que se ha oido.
     """
     ctx = contexto(pid)
+    _exigir_sin_trabajos(ctx, "coser tomas en la voz")
     if PASOS_MODULOS is None:
         raise ErrorApi(503, f"los pasos no se han podido cargar: {ERROR_PASOS}")
     datos = _cuerpo(cuerpo)
@@ -4577,6 +4598,7 @@ def proponer_direccion(pid: str, cuerpo: dict = Body(default=None)):
     razonables y repetidas.
     """
     ctx = contexto(pid)
+    _exigir_sin_trabajos(ctx, "dirigir los planos")
     datos = _cuerpo(cuerpo)
     por_fase = CLI_CLAUDE.por_defecto_de("direccion")
     # la escena entera (30-10) dirige por defecto con Sonnet high: ver pasos/escena_entera.py
@@ -5794,6 +5816,7 @@ def montar_banda_sonora(pid: str, cuerpo: dict = Body(default=None)):
     queda el que mejor deja libre la banda de la voz — medido, no escuchado.
     """
     ctx = contexto(pid)
+    _exigir_sin_trabajos(ctx, "montar la banda sonora")
     sonido = _sonido()
     datos = _cuerpo(cuerpo)
     # los tramos se pueden pasar retocados desde avanzadas (otro ánimo), pero el
@@ -5907,6 +5930,7 @@ def proponer_mapa_musical(pid: str, cuerpo: dict = Body(default=None)):
     {"montar": true} (por defecto), monta la banda con el. 0 $ de Google.
     """
     ctx = contexto(pid)
+    _exigir_sin_trabajos(ctx, "hacer el mapa musical")
     datos = _cuerpo(cuerpo)
     if not _sonido().hay_musica():
         raise ErrorApi(409, _sonido().falta_musica_texto())
