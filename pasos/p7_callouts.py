@@ -43,6 +43,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 # pisara al sujeto. Un subtitulo no flota, asi que no hay
 # nada que colocar -- ni un pixel que mirar.
 
+import camara  # noqa: E402
 import cartelas  # noqa: E402
 import comun  # noqa: E402
 import estadisticas  # noqa: E402
@@ -73,6 +74,16 @@ PARAMS_POR_DEFECTO = {
     # feo: el enrutador del estilo grafico habria escrito ahi, el video habria
     # salido igual, y la correccion habria quedado marcada como aplicada.
     "subtitulo_caja": "auto",
+    # SI LOS SUBTITULOS VAN DENTRO DEL VIDEO (fork, 26-10-2026): auto | si | no.
+    # «auto» es lo que decidio Enrique al publicar el primer video: en
+    # horizontal NO, porque van en YouTube como subtitulos aparte (el .srt), y
+    # en vertical SI, porque en un Short se ven sin sonido. Las cartelas, los
+    # textos que destacan lo importante, no se tocan: esto es solo el pie.
+    # Apagados se siguen calculando (las fichas de cada plano): de ahi sale el
+    # .srt para subirlo.
+    "subtitulos": "auto",
+    # QUE PLANOS SE MUEVEN: variada | siempre | quieta (ver pasos/camara.py).
+    "camara": camara.POR_DEFECTO,
     # Set de estilo de diseno: dibujo | realista | editorial. Lo sugiere la guia
     # de estilo del video (ver diseno_sugerido) y se puede cambiar a mano.
     # Escrito y no DISENO_POR_DEFECTO porque los sets se declaran mas abajo:
@@ -279,10 +290,14 @@ assert DISENO_POR_DEFECTO in SETS_DISENO
 def describir(params):
     """Frase corta con lo que hara el paso con estos parametros."""
     p = _con_defectos(params)
+    if not subtitulos_quemados(p):
+        return (f"Prepara los subtitulos de cada plano para subirlos aparte (no "
+                f"van dentro del video) y calcula la camara en modo "
+                f"{camara.modo_de(p)} sobre hyperframes x{p['escala_hyper']}.")
     return (f"Escribe los subtitulos de cada plano en {p['fuente']} "
             f"(tamano {p['subtitulo_tam']}), sincronizados con la voz y en una "
-            f"banda que es la misma en todo el video, y calcula las ventanas de "
-            f"zoom sobre hyperframes x{p['escala_hyper']}.")
+            f"banda que es la misma en todo el video, y calcula la camara en "
+            f"modo {camara.modo_de(p)} sobre hyperframes x{p['escala_hyper']}.")
 
 
 def _con_defectos(params):
@@ -496,6 +511,16 @@ SUB_ALTURA_VERTICAL = 1.0 / 3.0
 
 def es_vertical(salida=None):
     return bool(salida) and len(salida) >= 2 and float(salida[1] or 0) > float(salida[0] or 0)
+
+
+def subtitulos_quemados(p, salida=None):
+    """Si los subtitulos van DENTRO del video. -> bool (ver PARAMS_POR_DEFECTO)"""
+    valor = str((p or {}).get("subtitulos") or "auto").strip().lower()
+    if valor in ("si", "sí", "true", "1"):
+        return True
+    if valor in ("no", "false", "0"):
+        return False
+    return es_vertical(salida)
 
 
 def banda_subtitulo(salida):
@@ -731,6 +756,11 @@ def capa_fija_de(escena, p, banda=None, salida=SALIDA):
               for x in trozos]
     fichas = [{"tipo": "subtitulo", "texto": x["texto"],
                "desde": x["desde"], "hasta": x["hasta"]} for x in trozos]
+    if not subtitulos_quemados(p, salida):
+        # fuera del video, pero con sus fichas: son las que van al .srt
+        for ficha in fichas:
+            ficha["en_video"] = False
+        return _envoltorio_fijo("", salida), fichas
     return _envoltorio_fijo("".join(x for x in piezas if x), salida), fichas
 
 
@@ -770,7 +800,8 @@ def capa_de_escena(escena, p, mov=None, banda=None, aspecto=16 / 9,
         # tal cual y va CON la imagen. Su subtitulo, como el de cualquier otro
         # plano, va en la capa quieta -- que es lo que permite que una portada
         # tenga subtitulo sin que las dos se peleen por el mismo sitio.
-        return (_envoltorio_svg(_cabecera_incrustada(escena["capitulo_svg"]),
+        return (_envoltorio_svg(_cabecera_incrustada(escena["capitulo_svg"],
+                                                     lienzo),
                                 lienzo),
                 fija, fichas)
     return capa_vacia(lienzo), fija, fichas
@@ -811,12 +842,12 @@ def _envoltorio_fijo(interior, salida=SALIDA):
             f'viewBox="0 0 {salida[0]} {salida[1]}">{interior}</svg>')
 
 
-def _cabecera_incrustada(ruta_svg):
+def _cabecera_incrustada(ruta_svg, lienzo=TAMANO):
     """Mete la cabecera de capitulo dentro de la capa, escalada al cuadro."""
     with open(ruta_svg, "r", encoding="utf-8") as fh:
         crudo = fh.read()
     interior = crudo[crudo.index(">", crudo.index("<svg")) + 1: crudo.rindex("</svg>")]
-    return (f'<svg x="0" y="0" width="{TAMANO[0]}" height="{TAMANO[1]}" '
+    return (f'<svg x="0" y="0" width="{lienzo[0]}" height="{lienzo[1]}" '
             f'viewBox="0 0 1920 1080" preserveAspectRatio="xMidYMid slice">'
             f'{interior}</svg>')
 
@@ -1161,15 +1192,17 @@ def zonas_de_captura(proyecto, captura, aspecto=16 / 9, minimo=0.05):
                                      captura.get("t_escena"))["fraccion"]
     fraccion = 0.0 if fraccion is None else float(fraccion)
 
+    # la proporcion del PLANO, que ya no es siempre 3:2: la del hyperframe
+    lienzo = tuple(mov.get("hyperframe_px") or TAMANO)
     zonas = []
     for trazo in trazos:
         puntos = trazo.get("puntos") or []
         if not puntos:
             continue
         x1, y1 = punto_en_plano(mov, fraccion, min(p["x"] for p in puntos),
-                                min(p["y"] for p in puntos), TAMANO, aspecto)
+                                min(p["y"] for p in puntos), lienzo, aspecto)
         x2, y2 = punto_en_plano(mov, fraccion, max(p["x"] for p in puntos),
-                                max(p["y"] for p in puntos), TAMANO, aspecto)
+                                max(p["y"] for p in puntos), lienzo, aspecto)
         # un trazo corto (un circulito, un punto) tiene que seguir prohibiendo
         # un area util, no un pixel
         cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
@@ -1237,6 +1270,56 @@ def capa_fija_vacia(salida=SALIDA):
             f'width="{salida[0]}" height="{salida[1]}"></svg>')
 
 
+#: Si una cartela no cabe ni empezando al principio del plano, se escribe en
+#: esta parte del plano y el resto queda para leerla.
+PARTE_PARA_ESCRIBIR = 0.4
+
+
+def _sigue_despues(escenas, sid):
+    """Si el plano siguiente CONTINUA la cartela de `sid` (ya escrita, quieta)."""
+    escenas = list(escenas or [])
+    for indice, escena in enumerate(escenas):
+        if escena.get("id") == sid and indice + 1 < len(escenas):
+            siguiente = escenas[indice + 1]
+            escritura = siguiente.get("escritura")
+            return bool((isinstance(escritura, dict) and escritura.get("continua"))
+                        or (siguiente.get("cartela") or {}).get("sigue_a"))
+    return False
+
+
+def tiempos_que_caben(tiempos, escritura, duracion, sigue_despues=False):
+    """Los tiempos de escritura de una cartela, adelantados si no da para leerla.
+
+    El plan pone cada palabra cuando la voz la dice, y si asi no queda tiempo
+    para leerla lo declara (`falta`) y pide seguir en el plano siguiente
+    (`dos_planos`). Cuando el siguiente NO la continua, la cartela se escribia al
+    final del plano y se cortaba recien escrita: la de S075 empezaba a los 5 s de
+    8,3 (fork, repaso 4 del 17-10-2026: «la animacion del texto entra tarde y da
+    poco tiempo para leer»). Aqui se adelanta lo justo para que acabe de
+    escribirse con su `cola` de lectura por delante: primero moviendolo todo
+    (mismo ritmo) y, si ni empezando en el corte llega, apretando el ritmo.
+    """
+    tiempos = [float(t) for t in (tiempos or [])]
+    escritura = escritura if isinstance(escritura, dict) else {}
+    if (not tiempos or sigue_despues
+            or float(escritura.get("falta") or 0.0) <= 0.01):
+        return tiempos
+    duracion = float(duracion)
+    cola = float(escritura.get("cola") or 0.0)
+    objetivo = duracion - cola
+    if objetivo < duracion * PARTE_PARA_ESCRIBIR:
+        objetivo = duracion * PARTE_PARA_ESCRIBIR
+    if tiempos[-1] <= objetivo:
+        return tiempos
+    adelanto = tiempos[-1] - objetivo
+    if tiempos[0] - adelanto >= 0:
+        return [round(t - adelanto, 3) for t in tiempos]
+    tramo = tiempos[-1] - tiempos[0]
+    if tramo <= 0:
+        return [0.0 for _ in tiempos]
+    return [round((t - tiempos[0]) * objetivo / tramo, 3) for t in tiempos]
+
+
 #: Cuanto se amplia el fondo de una cartela frente al lienzo de generacion. Es
 #: el mismo x2 que el hyperframe de un plano dibujado, y por el mismo motivo: la
 #: pagina de render lo coloca a ese tamano.
@@ -1280,7 +1363,9 @@ def _capa_de_cartela(escena, paleta, diseno, dirs, trabajo, svg_ruta, mov_ruta,
     escritura = escena.get("escritura") if isinstance(escena.get("escritura"), dict) else {}
     continua = bool(escritura.get("continua")) or bool(
         (escena.get("cartela") or {}).get("sigue_a"))
-    tiempos = list(escritura.get("tiempos") or [])
+    tiempos = tiempos_que_caben(
+        escritura.get("tiempos"), escritura, duracion,
+        _sigue_despues((plan or {}).get("escenas"), sid))
     if not tiempos and not continua:
         # Con los VECINOS: una cartela destila una frase, y una frase casi nunca
         # empieza justo donde empieza el plano en el que cuelga (PENDIENTE 12).
@@ -1341,6 +1426,23 @@ def _en_la_banda(svg, ancho, alto):
             f'width="{int(ancho)}" height="{int(alto)}">{interior}</svg>')
 
 
+def _secciones_del_guion(proyecto):
+    """Los bloques del guion que abren seccion (`abre_seccion`). -> list
+
+    Los usa la camara para saber donde acaba el gancho. Sin guion, vacia: la
+    camara corta el gancho por tiempo.
+    """
+    try:
+        ruta = medios.salida_de(proyecto, "guion", claves=("guion",),
+                                patrones=(r"guion\.json",))
+    except Exception:                                          # noqa: BLE001
+        return []
+    guion = medios.leer_json(ruta, {}) if ruta else {}
+    bloques = (guion or {}).get("guion") or []
+    return [b.get("id") for b in bloques
+            if isinstance(b, dict) and b.get("abre_seccion") and b.get("id")]
+
+
 def _semilla_de(plan):
     """La semilla del video, para que el grano de la cartela no cambie solo.
 
@@ -1383,6 +1485,13 @@ def ejecutar(proyecto, params, avisar=None, unidades=None):
         os.makedirs(ruta, exist_ok=True)
 
     escenas = plan.get("escenas") or []
+    # EL IDIOMA DE LOS SUBTITULOS, del texto del video si nadie lo ha puesto:
+    # los params de callouts no traen `idioma`, asi que llegaba None y
+    # `medios.cifras_en` leia con las tablas de los DOS idiomas. En un video en
+    # ingles, «once» (una vez) salia «11» (fork, 10-10-2026).
+    if not p.get("idioma"):
+        p["idioma"] = medios.idioma_de(
+            " ".join(str(e.get("narracion") or "") for e in escenas), defecto=None)
     pedidas = set(unidades) if unidades is not None else None
     movimiento = medios.motor("render_video/movimiento.py")
     # EL FORMATO DEL VIDEO, del plan: el cuadro de salida, el
@@ -1425,6 +1534,12 @@ def ejecutar(proyecto, params, avisar=None, unidades=None):
     # exactamente la misma, que es lo que sostiene que lo aprobado sea lo
     # renderizado.
     banda = banda_subtitulo(salida)
+
+    # LA CAMARA SE DECIDE UNA VEZ PARA EL VIDEO ENTERO: un plano mira a sus
+    # vecinos (cuantos quietos van, si el de antes se movia) y al guion (donde
+    # acaba el gancho). Es gratis y determinista, asi que rehacer unos planos
+    # sueltos da lo mismo que rehacerlos todos.
+    decisiones = camara.decidir(escenas, camara.modo_de(p), _secciones_del_guion(proyecto))
 
     for indice, escena in enumerate(escenas):
         sid = escena["id"]
@@ -1471,9 +1586,11 @@ def ejecutar(proyecto, params, avisar=None, unidades=None):
 
         # el movimiento va primero: la capa necesita saber que trozo del plano
         # sigue en cuadro durante todo el zoom para no rotular fuera de campo
-        entrada = movimiento.calcular({"escenas": [escena]}, dir_escenas,
+        para_motor, ajustes_camara = camara.escena_para_el_motor(escena, decisiones.get(sid))
+        entrada = movimiento.calcular({"escenas": [para_motor]}, dir_escenas,
                                       dirs["hyper"], os.path.join(dir_assets, "sets"),
-                                      int(p["escala_hyper"]))[0]
+                                      int(p["escala_hyper"]), **ajustes_camara)[0]
+        entrada["camara"] = decisiones.get(sid)
         evitar = _zonas_de_unidad(p, uid)
         apagada = _sin_callout(p, uid)
         if cartelas.sobre_imagen(escena):
@@ -1485,7 +1602,8 @@ def ejecutar(proyecto, params, avisar=None, unidades=None):
                 escena.get("escritura"), dict) else {}
             continua = bool(escritura.get("continua")) or bool(
                 (escena.get("cartela") or {}).get("sigue_a"))
-            tiempos = list(escritura.get("tiempos") or [])
+            tiempos = tiempos_que_caben(escritura.get("tiempos"), escritura,
+                                        duracion_c, _sigue_despues(escenas, sid))
             if not tiempos and not continua:
                 antes, despues = cartelas.vecinos_de(escenas, sid)
                 tiempos = cartelas.tiempos_dichos(escena["cartela"], escena,
@@ -1572,6 +1690,8 @@ def ejecutar(proyecto, params, avisar=None, unidades=None):
                 # video. p8 no puede derivarla -- la guia esta en los params de
                 # assets-- y quien la tiene resuelta es este paso.
                 "paleta": paleta_video,
+                # los cortes secos los lee el render (`p8._con_cortes_de_camara`)
+                "camara": decisiones,
                 "movimientos": [medios.leer_json(
                     os.path.join(dirs["movimiento"], f"{e['id']}.json"), {})
                     for e in escenas]}
@@ -1603,7 +1723,10 @@ def ejecutar(proyecto, params, avisar=None, unidades=None):
                "hyperframes": "hyper", "previos": "previo",
                "n_escenas": len(escenas), "avisos": avisos,
                "resumen": (f"{len(escenas)} capas, {trozos} trozos de subtítulo "
-                           f"en {con_texto} planos")}
+                           f"en {con_texto} planos"
+                           + ("" if subtitulos_quemados(p, salida)
+                              else " (fuera del vídeo: van en YouTube)")
+                           + (f" · {camara.resumen(decisiones)}" if decisiones else ""))}
     avisar(1.0, salidas["resumen"])
     # El tiempo REAL de esta tanda, al historico: es lo unico que hace que la
     # barra deje de prometer la tabla del primer dia (ver p6._anotar_tiempo).

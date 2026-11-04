@@ -51,6 +51,7 @@ import cartelas  # noqa: E402
 import estadisticas  # noqa: E402
 import medios  # noqa: E402
 import sonido  # noqa: E402
+import subtitulos  # noqa: E402
 import transiciones  # noqa: E402
 
 PARAMS_POR_DEFECTO = {
@@ -123,6 +124,49 @@ CALIDADES = {
     "baja": {"crf": "26", "preset": "veryfast"},
 }
 
+# ------------------------------------------------ lo que pide YouTube al subir
+#
+# Medido el 21-10-2026 con ffprobe sobre el MP4 del video de historia y
+# comparado con la guia de subida de YouTube (support.google.com/youtube/
+# answer/1722171): el video estaba bien (H.264 High, 4:2:0, faststart, CRF 16),
+# pero el audio salia a 96 kHz y 196 kbps -- `loudnorm` trabaja a 192 kHz y el
+# AAC baja a lo maximo que admite, 96 -- y el color, convertido y etiquetado
+# como BT.601, que es lo que ffmpeg hace por defecto con un JPEG. La guia pide
+# 48 kHz, 384 kbps en estereo y BT.709 en matriz, transferencia y primarios.
+
+AUDIO_HZ = 48000
+AUDIO_KBPS = "384k"
+
+#: Las tres etiquetas de color del MP4. Van con una conversion que las cumpla
+#: (`_filtro_color`): etiquetar BT.709 lo convertido con BT.601 cambia los
+#: colores en vez de arreglarlos.
+ETIQUETAS_709 = ["-colorspace", "bt709", "-color_primaries", "bt709",
+                 "-color_trc", "bt709"]
+
+
+def _filtro_color(extension):
+    """La conversion a YUV de TV con la matriz BT.709. -> valor de `-vf`
+
+    Un JPEG llega como YUV de rango completo con la matriz BT.601 (la del
+    JPEG); un PNG, como RGB. Los dos salen igual: rango de TV, BT.709, 4:2:0.
+    """
+    if extension == "jpg":
+        return ("scale=in_range=pc:out_range=tv:in_color_matrix=bt601:"
+                "out_color_matrix=bt709,format=yuv420p")
+    return "scale=out_range=tv:out_color_matrix=bt709,format=yuv420p"
+
+
+def _es_709(clip):
+    """Si el clip ya va en BT.709. Los de antes del 21-10 van en BT.601."""
+    try:
+        salida = subprocess.run(
+            [medios.ffprobe(), "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=color_space", "-of", "default=nw=1:nk=1", clip],
+            capture_output=True, text=True, timeout=60, **medios.SIN_VENTANA)
+    except Exception:                                          # noqa: BLE001
+        return False
+    return salida.stdout.strip() == "bt709"
+
 
 # ------------------------------------------- en que se guarda cada fotograma
 #
@@ -174,7 +218,9 @@ EXT_HUELLA = ".huella"
 #: Se sube A MANO cuando cambie COMO se dibuja un clip (el codigo, no sus
 #: datos): con otra version ninguna huella vieja vale y se redibuja todo.
 #: 2 (06-10): fotogramas en JPEG y 25 fps. 3: el JPEG pasa a rango de TV al codificar.
-VERSION_HUELLA = 3
+#: 4 (21-10): color en BT.709 (matriz y etiquetas). Un clip viejo va en BT.601 y
+#: la concatenacion es `-c:v copy`: mezclarlos daria dos colores en un video.
+VERSION_HUELLA = 4
 
 _HUELLAS_FICHERO = {}
 
@@ -615,12 +661,12 @@ def _codificar(dir_frames, destino, fps, calidad):
     # que es como salia siempre desde los PNG. Sin convertirlo, el MP4 salia
     # marcado «yuvj420p / pc» y cada reproductor lo pinta a su manera; con esto
     # sale igual que antes y mas fiel a la imagen (medido: 48,6 dB contra 47,8).
-    rango = (["-vf", "scale=in_range=pc:out_range=tv"] if extension == "jpg" else [])
+    # Y CON LA MATRIZ BT.709 (21-10): ver «lo que pide YouTube al subir».
     orden = [medios.ffmpeg(), "-y", "-loglevel", "error",
              "-framerate", str(fps), "-i", os.path.join(dir_frames, f"f%05d.{extension}"),
-             *rango,
+             "-vf", _filtro_color(extension),
              "-c:v", "libx264", "-preset", ajustes["preset"], "-crf", ajustes["crf"],
-             "-pix_fmt", "yuv420p", "-r", str(fps), destino]
+             "-pix_fmt", "yuv420p", *ETIQUETAS_709, "-r", str(fps), destino]
     proceso = subprocess.run(orden, capture_output=True, text=True, timeout=3600,
                              **medios.SIN_VENTANA)
     if proceso.returncode != 0 or not os.path.exists(destino):
@@ -680,7 +726,13 @@ COLA_NEGRO_S = 3.0
 #: Y el negro ENTRA desde el ultimo fotograma en vez de aparecer de golpe. Es
 #: el mismo motivo por el que existe la cola: cortar en seco de un dibujo a
 #: negro se lee como que el fichero se ha roto.
-ENTRADA_NEGRO_S = 0.8
+#:
+#: 0 DESDE EL 03-11-2026 (Enrique: «que siempre acabe en imagen»): el ultimo
+#: plano es la pantalla final de YouTube --SUBSCRIBE dibujado arriba y la
+#: derecha libre para los videos recomendados-- y YouTube pone sus elementos
+#: encima. La cola se queda (mas tiempo de pantalla final), pero es el ultimo
+#: fotograma QUIETO, sin fundir a negro.
+ENTRADA_NEGRO_S = 0.0
 
 
 def _cola_negra(clips, trabajo, fps, calidad, segundos=COLA_NEGRO_S):
@@ -716,10 +768,20 @@ def _cola_negra(clips, trabajo, fps, calidad, segundos=COLA_NEGRO_S):
             capture_output=True, text=True, timeout=120, **medios.SIN_VENTANA)
         if sacar.returncode != 0 or not os.path.exists(fotograma):
             return clips
+        # CON EL COLOR DE LOS CLIPS: la concatenacion no recodifica, y un
+        # «solo montar» puede juntar clips viejos (BT.601) con esta cola
+        # sin entrada no hay fundido: el ultimo fotograma, quieto
+        fundido = [f"fade=t=out:st=0:d={entrada:g}:color=black"] if entrada > 0 else []
+        if _es_709(ultimo):
+            color = ["-vf", ",".join(fundido + [_filtro_color('png')]), *ETIQUETAS_709]
+        elif fundido:
+            color = ["-vf", fundido[0]]
+        else:
+            color = []
         hacer = subprocess.run(
             [medios.ffmpeg(), "-y", "-loglevel", "error", "-loop", "1",
              "-framerate", str(fps), "-t", f"{segundos:g}", "-i", fotograma,
-             "-vf", f"fade=t=out:st=0:d={entrada:g}:color=black",
+             *color,
              "-c:v", "libx264", "-preset", ajustes["preset"],
              "-crf", ajustes["crf"], "-pix_fmt", "yuv420p", "-r", str(fps),
              "-an", negro],
@@ -729,6 +791,46 @@ def _cola_negra(clips, trabajo, fps, calidad, segundos=COLA_NEGRO_S):
     except Exception:                                       # noqa: BLE001
         return clips
     return list(clips) + [negro]
+
+def _fotogramas_de_clip(clip):
+    """Cuantos fotogramas tiene un clip segun su cabecera, o None si no se sabe."""
+    try:
+        salida = subprocess.run(
+            [medios.ffprobe(), "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=nb_frames", "-of", "default=nw=1:nk=1", clip],
+            capture_output=True, text=True, timeout=60, **medios.SIN_VENTANA)
+        return int(salida.stdout.strip())
+    except Exception:                                          # noqa: BLE001
+        return None
+
+
+def _comprobar_duraciones(escenas, clips, fps, tolerancia=1):
+    """ANTES DE UNIR: cada clip dura lo que dice el plan, o no se monta.
+
+    Fork, 04-11-2026. Un clip que no cuadra con su plano (de otro corte, de
+    otra version) desfasa la voz de TODO lo que va detras, y en un video de 20
+    minutos eso no se ve hasta que alguien lo mira entero: paso con S095 en el
+    video 3. Medido en sus 201 clips: cada uno tiene exactamente los fotogramas
+    del plan, asi que un fotograma de margen basta. Los que faltan no se miran
+    aqui: los dice `_concatenar`, con su nombre.
+    """
+    malos = []
+    for escena, clip in zip(escenas, clips):
+        if not os.path.exists(clip):
+            continue
+        esperados = max(1, round(float(escena["t_out"]) * fps)
+                        - round(float(escena["t_in"]) * fps))
+        tiene = _fotogramas_de_clip(clip)
+        if tiene is not None and abs(tiene - esperados) > tolerancia:
+            malos.append(f"{escena['id']} ({tiene / fps:.2f} s y el plan dice "
+                         f"{esperados / fps:.2f} s)")
+    if malos:
+        raise RuntimeError(
+            f"no se monta el vídeo: {len(malos)} clip(s) no duran lo que dice el "
+            f"plan y desfasarían la voz: {', '.join(malos[:6])}"
+            + (f" y {len(malos) - 6} más" if len(malos) > 6 else "")
+            + ". Vuelve a renderizar esos planos (unidades «escena:S###»).")
+
 
 def _concatenar(clips, destino, audio, desfase, trabajo, musica=None,
                 efectos=None, duracion=0.0, lufs=None, cama=False,
@@ -790,7 +892,10 @@ def _concatenar(clips, destino, audio, desfase, trabajo, musica=None,
         # SIN `-shortest`: la locucion acaba antes que el video --le sobran los
         # tres segundos de cola-- y con el la salida se recortaba ahi, que es
         # exactamente quitar lo que se acaba de anadir. Manda el video.
-        orden += ["-c:v", "copy", "-c:a", "aac", "-b:a", "192k"]
+        # 48 kHz y 384 kbps, lo que pide YouTube: sin `-ar` salia a 96 kHz
+        # (lo que deja `loudnorm`) y a 192 kbps
+        orden += ["-c:v", "copy", "-c:a", "aac", "-b:a", AUDIO_KBPS,
+                  "-ar", str(AUDIO_HZ)]
     else:
         orden += ["-c", "copy"]
     # +faststart: el indice del MP4 (el atomo `moov`) al PRINCIPIO en vez de al
@@ -854,6 +959,47 @@ def aviso_de_memoria(libre=None):
             f"montar, o irá muy lento")
 
 
+# ------------------------------------------------- los cortes secos (fork)
+
+def _con_cortes_de_camara(escenas, movimiento):
+    """Las escenas del plan con los cortes secos que pide la camara. -> list
+
+    El ritmo de camara (pasos/camara.py, 26-10) lo decide el paso callouts y lo
+    deja en su movimiento.json; el plan no se toca, porque tocarlo dejaria
+    obsoletas las imagenes. Solo cambia la ranura de transicion de esos planos,
+    y la ven igual el montaje y la mezcla (los efectos de sonido van con la
+    transicion: un corte seco no lleva el suyo).
+    """
+    decisiones = (movimiento or {}).get("camara") or {}
+    if not decisiones:
+        return list(escenas)
+    return [dict(e, transicion=transiciones.RANURA_SECA)
+            if (decisiones.get(e.get("id")) or {}).get("seco") else e
+            for e in escenas]
+
+
+def _srt_del_video(escenas, base_callouts, desfase, idioma=None):
+    """Los subtitulos del video en .srt, para subirlos aparte. -> str
+
+    Los de cada plano son los que calculo el paso callouts (sus fichas, con las
+    cifras ya arregladas y lo corregido a mano), esten o no dentro del video. Un
+    plano sin ellos --las cartelas no llevan-- se trocea aqui con lo mismo,
+    `subtitulos.de_escena`, para que la pista no tenga agujeros.
+    """
+    cues = []
+    for escena in escenas:
+        ficha = medios.leer_json(os.path.join(base_callouts, "movimiento",
+                                              f"{escena.get('id')}.ficha.json"), {}) or {}
+        trozos = [x for x in (ficha.get("elementos") or [])
+                  if x.get("tipo") == "subtitulo"]
+        if not trozos and not escena.get("sigue_a"):
+            trozos = subtitulos.de_escena(escena, idioma=idioma)
+        base = float(escena.get("t_in") or 0) - desfase
+        cues.extend((base + float(x["desde"]), base + float(x["hasta"]), x["texto"])
+                    for x in trozos)
+    return subtitulos.srt(cues)
+
+
 # ------------------------------------------------- escuchar la mezcla (fork)
 
 def escuchar_mezcla(proyecto, params, destino):
@@ -869,7 +1015,10 @@ def escuchar_mezcla(proyecto, params, destino):
     ruta_plan = medios.salida_de(proyecto, "assets", claves=("plan",),
                                  patrones=(r"plan\.json",))
     plan = medios.leer_json(ruta_plan, {}) if ruta_plan else {}
-    escenas = (plan or {}).get("escenas") or []
+    ruta_mov = medios.salida_de(proyecto, "callouts", claves=("movimiento",),
+                                patrones=(r"movimiento\.json",))
+    escenas = _con_cortes_de_camara((plan or {}).get("escenas") or [],
+                                    medios.leer_json(ruta_mov, {}) if ruta_mov else {})
     if not escenas:
         raise RuntimeError("todavía no hay planos: la mezcla sigue el corte del vídeo")
     audio = p["audio"] or medios.salida_de(
@@ -1540,7 +1689,8 @@ def ejecutar(proyecto, params, avisar=None, unidades=None, solo_montar=False):
     for ruta in (dir_clips, dir_ultimo, dir_frames):
         os.makedirs(ruta, exist_ok=True)
 
-    escenas = plan.get("escenas") or []
+    escenas = _con_cortes_de_camara(plan.get("escenas") or [],
+                                    medios.leer_json(ruta_mov, {}) or {})
     fps = _fps_del_montaje(proyecto, params,
                            parcial=bool(solo_montar or unidades is not None))
     p["fps"] = fps
@@ -1593,6 +1743,7 @@ def ejecutar(proyecto, params, avisar=None, unidades=None, solo_montar=False):
     clips = []
     tareas = []
     huellas = {}
+    desfasados = []
     for indice, escena in enumerate(escenas):
         sid = escena["id"]
         uid = f"escena:{sid}"
@@ -1605,20 +1756,37 @@ def ejecutar(proyecto, params, avisar=None, unidades=None, solo_montar=False):
 
         # SOLO MONTAR: ningun plano se renderiza, se reutilizan todos sus clips.
         # Si falta alguno se dice al concatenar, con su nombre.
-        if solo_montar or (pedidas is not None and uid not in pedidas
-                           and os.path.exists(clip)):
+        if solo_montar:
             resultados[uid] = {"clip": os.path.relpath(clip, trabajo),
                                "frames": total, "origen": "conservado"}
             huellas[sid] = huella_guardada(clip)
             continue
 
+        # UN PLANO NO PEDIDO TAMBIEN SE MIRA (fork, 04-11-2026). Antes se
+        # conservaba sin mas, y el estado solo pide lo que EL cree cambiado: en
+        # el video 3 un script movio cortes en plan.json por fuera del estudio, y
+        # S095 se monto con su clip viejo -- 3 s mas corto y todo desfasado desde
+        # el 9:49. Ahora se conserva solo si su huella (que lleva los tiempos)
+        # sigue siendo la del clip; si no, se redibuja y se dice. Sin movimiento
+        # o sin hyperframe no se puede calcular: se conserva como antes.
+        no_pedido = pedidas is not None and uid not in pedidas and os.path.exists(clip)
         mov = movimientos.get(sid)
         if not mov:
+            if no_pedido:
+                resultados[uid] = {"clip": os.path.relpath(clip, trabajo),
+                                   "frames": total, "origen": "conservado"}
+                huellas[sid] = huella_guardada(clip)
+                continue
             raise RuntimeError(f"{sid}: el paso callouts no dejo movimiento")
         hyper = mov.get("hyperframe")
         hyper = (hyper if hyper and os.path.isabs(hyper)
                  else os.path.join(base_callouts, hyper or ""))
         if not os.path.exists(hyper):
+            if no_pedido:
+                resultados[uid] = {"clip": os.path.relpath(clip, trabajo),
+                                   "frames": total, "origen": "conservado"}
+                huellas[sid] = huella_guardada(clip)
+                continue
             raise RuntimeError(f"{sid}: falta el hyperframe {hyper}")
         capa = os.path.join(base_callouts, mov.get("capa") or "")
         svg = ""
@@ -1647,10 +1815,13 @@ def ejecutar(proyecto, params, avisar=None, unidades=None, solo_montar=False):
                                 fps, (ancho, alto), p["calidad_video"], paleta,
                                 huellas.get(previo, ""), fotogramas=fotogramas)
         huellas[sid] = huella
-        if pedidas is None and huella_guardada(clip) == huella:
+        if (pedidas is None or no_pedido) and huella_guardada(clip) == huella:
             resultados[uid] = {"clip": os.path.relpath(clip, trabajo),
                                "frames": total, "origen": "conservado"}
             continue
+        if no_pedido:
+            desfasados.append(sid)
+            pedidas.add(uid)            # se rehace, asi que se sella con los pedidos
 
         tareas.append({
             "huella": huella,
@@ -1695,6 +1866,7 @@ def ejecutar(proyecto, params, avisar=None, unidades=None, solo_montar=False):
             tarea["anterior"] = None
 
     if tareas:
+        inicio_dibujo = time.time()
         lotes = _repartir_lotes(tareas, _cuantos_lotes(p, len(tareas)))
         if len(lotes) <= 1:
             # UN SOLO PLANO (o el modo en fila): no hace falta sacar un proceso
@@ -1713,6 +1885,17 @@ def ejecutar(proyecto, params, avisar=None, unidades=None, solo_montar=False):
         if faltan:
             raise RuntimeError(f"no se renderizaron {len(faltan)} plano(s): "
                                f"{', '.join(faltan[:6])}")
+        # LO QUE CUESTA DIBUJAR, POR FOTOGRAMA (fork, Fase 5): de aqui sale el
+        # «montar el MP4 ~1 h» que se ensena antes de encargar un video largo.
+        # Solo con una tanda que merezca la pena medir: dos planos rehechos no
+        # dicen nada de lo que tarda un video entero.
+        dibujados = sum(int(t["frames"]) for t in tareas)
+        if dibujados >= 300:
+            estadisticas.anotar("render_dibujo", time.time() - inicio_dibujo,
+                                tamano=dibujados,
+                                detalle={"lotes": len(lotes), "fps": fps,
+                                         "fotogramas": fotogramas},
+                                proyecto=getattr(proyecto, "id", None))
 
     if not p["conservar_frames"]:
         shutil.rmtree(dir_frames, ignore_errors=True)
@@ -1763,6 +1946,7 @@ def ejecutar(proyecto, params, avisar=None, unidades=None, solo_montar=False):
         ajuste_efectos = float(p.get("efectos_db") or 0.0)
     except (TypeError, ValueError):
         ajuste_efectos = 0.0
+    _comprobar_duraciones(escenas, clips, fps)
     _concatenar(clips, destino, audio, desfase, trabajo, musica=pista_musica,
                 efectos=pista_efectos, duracion=largo_con_cola,
                 lufs=p.get("musica_lufs"), cama=cama, ajuste_db=ajuste_musica,
@@ -1791,6 +1975,14 @@ def ejecutar(proyecto, params, avisar=None, unidades=None, solo_montar=False):
             + "): llevan la transición cocida sobre el último fotograma del "
               "plano anterior, que ha cambiado. No rehacerlos dejaría un "
               "fogonazo en ese corte. No cuesta dinero: es recodificar.")
+    if desfasados:
+        avisos.append(
+            f"{len(desfasados)} clip(s) no pedidos se han rehecho porque ya no "
+            f"cuadraban con el plan ({', '.join(desfasados[:6])}"
+            + (f" y {len(desfasados) - 6} más" if len(desfasados) > 6 else "")
+            + "): algo cambió sus tiempos, su imagen o su capa sin que el estudio "
+              "lo marcara. Montarlos viejos habría desfasado el vídeo. No cuesta "
+              "dinero: es recodificar.")
     if faltan_temas:
         avisos.append(f"faltan en el banco {len(faltan_temas)} tema(s) de la "
                       f"banda sonora ({', '.join(str(t) for t in faltan_temas[:3])}): "
@@ -1809,8 +2001,20 @@ def ejecutar(proyecto, params, avisar=None, unidades=None, solo_montar=False):
         medios.escribir_texto(os.path.join(trabajo, "creditos.txt"), hechos["texto"])
         creditos = "creditos.txt"
         avisos.extend(hechos["avisos"])
+    # SUBTITULOS.SRT junto al MP4 (fork, 26-10-2026): con los subtitulos fuera
+    # del video, es lo que se sube a YouTube. Que falle no tumba el video.
+    srt = None
+    try:
+        texto_srt = _srt_del_video(escenas, base_callouts, desfase,
+                                   idioma=plan.get("idioma"))
+        if texto_srt:
+            medios.escribir_texto(os.path.join(trabajo, "subtitulos.srt"), texto_srt)
+            srt = "subtitulos.srt"
+    except Exception as fallo:                                 # noqa: BLE001
+        avisos.append(f"no se ha podido escribir subtitulos.srt ({str(fallo)[:120]})")
     salidas = {"mp4": "video.mp4",
                "creditos": creditos,
+               "srt": srt,
                "duracion": round(duracion, 3),
                "clips": {e["id"]: f"clips/{e['id']}.mp4" for e in escenas},
                "fps": fps, "resolucion": [ancho, alto],

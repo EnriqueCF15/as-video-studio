@@ -102,6 +102,13 @@ def prueba_catalogo():
     ok("arranque misterioso/misterioso" in presets.resumen_de(
         {"tipo": "musica", "datos": {"animos_arco": animos}}),
        "y su resumen dice que pide el arranque")
+    # LA ESTRUCTURA DEL VIDEO (fork, Fase 5) viaja en el bloque guion, al paso guion
+    cambios = presets.cambios_para({"tipo": "guion", "datos": {"estructura": "lista"}})
+    igual((cambios.get("guion") or {}).get("estructura"), "lista",
+          "la estructura del estilo se aplica al paso guion")
+    igual((presets.datos_de_params({"guion": {"estructura": "cronologica"}})
+           .get("guion") or {}).get("estructura"), "cronologica",
+          "y se lee de vuelta al congelar el estilo")
     igual(presets.resumen_de({"tipo": "musica", "datos": {}}), "animos de siempre",
           "sin tabla, el resumen dice que son los animos de siempre")
     ok("?" not in presets.resumen_de({"tipo": "musica", "datos": {"animos_arco": animos}}),
@@ -169,6 +176,15 @@ def prueba_estilo():
        "las referencias guardadas apuntan al banco, no al proyecto de origen")
     ok(all(os.path.exists(r) for r in guardado["datos"]["referencias"]),
        "y los ficheros estan de verdad ahi")
+    # guardarlo OTRA VEZ (cambiar la voz de un canal lo hace) no puede
+    # renombrarlos: los videos hechos con el estilo apuntan a esas rutas
+    presets.guardar("estilo", "Cartoon plano", dict(guardado["datos"]),
+                    miniatura=guardado["datos"]["referencias"][2], pid=ficha["id"])
+    otra_vez = presets.leer(ficha["id"])["datos"]["referencias"]
+    igual(otra_vez, guardado["datos"]["referencias"],
+          "guardar de nuevo deja las mismas rutas (antes: 00_ -> 00_00_)")
+    ok(all(os.path.exists(r) for r in otra_vez),
+       "y siguen en el disco: un video hecho con el estilo las encuentra")
     ok(os.path.basename(ficha["miniatura"]).endswith("f2.png"),
        "la miniatura es el fotograma que se eligio, no siempre el primero")
     ok(ficha["hay_miniatura"], "y la interfaz sabe que la hay")

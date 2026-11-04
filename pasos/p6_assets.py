@@ -66,8 +66,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import cartelas  # noqa: E402
 import corrector  # noqa: E402
+import revisor  # noqa: E402
 import cta  # noqa: E402
 import encuadres  # noqa: E402
+import escena_entera  # noqa: E402
 import estadisticas  # noqa: E402
 import medios  # noqa: E402
 import moodboard  # noqa: E402
@@ -712,9 +714,196 @@ def _ultima_nota(valor):
     return {}
 
 
+def _nota_vigente(valor):
+    """El texto de la nota que manda AHORA sobre un plano: la ultima.
+
+    Era `_texto_feedback`, que une TODO el historial con « | ». Con el corrector
+    funcionando el agente lo desenredaba; sin el, el generador recibia las
+    cuatro vueltas a la vez y se contradecian: medido el 12-10-2026 en S042, la
+    primera nota pedia «tres filas de diez casillas», la tercera «una fila
+    numerada» y la cuarta «simbolos», todas juntas al final del prompt, y salio
+    mal cuatro veces. Con solo la ultima, a la primera. Es lo que `_ultima_nota`
+    ya decia que habia que hacer.
+    """
+    if isinstance(valor, list):
+        return str(_ultima_nota(valor).get("texto") or "").strip()
+    return _texto_feedback(valor)
+
+
 def _corrector_activo(p):
     """Si este proyecto usa el corrector. Se apaga con `corrector: "no"`."""
     return str((p or {}).get("corrector") or "agente").strip().lower() != "no"
+
+
+def _corrector_obligatorio(p):
+    """Si un fallo del corrector PARA la tanda en vez de dibujar sin el.
+
+    Por defecto si: lo pidio el canal el 12-10-2026, despues de una tarde
+    entera de imagenes rehechas sin filtro porque la sesion del CLI habia
+    caducado y el corrector fallaba en silencio. `corrector: "si_puede"`
+    vuelve a lo de antes (si falla, se dibuja por el camino de siempre).
+    """
+    return str((p or {}).get("corrector") or "agente").strip().lower() != "si_puede"
+
+
+def _revisor_modo(p):
+    """Que imagenes mira el revisor (revisor.py) despues de dibujarlas.
+
+    «notas» (por defecto): las que se rehacen porque alguien escribio una nota,
+    que es donde se repetian las vueltas. «todo»: cualquier imagen nueva (en
+    una tanda de 220 planos son 220 llamadas al CLI). «no»: apagado.
+    """
+    modo = str((p or {}).get("revisor") or "notas").strip().lower()
+    return modo if modo in ("notas", "todo", "no") else "notas"
+
+
+def _toca_revisar(p, nota, pedida):
+    modo = _revisor_modo(p)
+    if modo == "no":
+        return False
+    return True if modo == "todo" else bool(nota and pedida)
+
+
+def _necesita_claude(escenas, p, unidades, forzar):
+    """Si esta tanda va a pedirle algo a Claude al dibujar. -> bool
+
+    Lo pide si hay algun plano pedido con nota (corrector y revisor) o si el
+    revisor mira todo y hay algo que dibujar. Sin eso no se prueba nada: una
+    tanda que solo conserva no tiene por que esperar a una cuenta.
+    """
+    corrector_manda = _corrector_activo(p) and _corrector_obligatorio(p)
+    modo = _revisor_modo(p)
+    for escena in escenas:
+        uid = f"escena:{escena['id']}"
+        pedida = (uid in set(unidades) if unidades is not None else bool(forzar))
+        if not pedida:
+            continue
+        if modo == "todo":
+            return True
+        nota = _nota_vigente(_ajustes_unidad(p, uid).get("feedback"))
+        if nota and (corrector_manda or modo != "no"):
+            return True
+    return False
+
+
+def _comprobar_claude(escenas, p, unidades, forzar, avisar=None):
+    """ANTES DE DIBUJAR NADA: si el filtro no puede trabajar, no se dibuja.
+
+    El corrector y el revisor son lo que evita pagar imagenes en vano, y los dos
+    hablan con Claude. Si ninguna cuenta contesta, la tanda se para aqui, sin
+    gastar ni una imagen, y dice como arreglarlo.
+    """
+    if not _necesita_claude(escenas, p, unidades, forzar):
+        return
+    if avisar:
+        avisar(0.34, "comprobando que Claude contesta (corrector y revisor)", None)
+    contesta, motivo = revisor.claude_contesta(
+        para="el filtro de las imagenes, antes de dibujar")
+    if not contesta:
+        raise RuntimeError(
+            "Claude no contesta, y sin el no se rehace ninguna imagen: el "
+            "corrector y el revisor son el filtro que evita pagarlas en vano. "
+            "No se ha dibujado nada ni gastado un centimo. Entra en ⚙ → «Claude "
+            "CLI» → «Entrar» (o «Probar» si ya hay cuenta) y vuelve a lanzarlo. "
+            f"Detalle: {motivo}"[:900])
+
+
+def _bloque_revision(veredicto):
+    """Lo que se le añade al prompt en el reintento: el arreglo del revisor."""
+    return ("ART REVIEW OF THE PREVIOUS ATTEMPT: it was rejected. Fix ONLY "
+            "this and keep everything else exactly as described above: "
+            + str(veredicto.get("arreglo") or "").strip())
+
+
+def _revisar_y_reintentar(sid, escena, destino, prompt, referencias, p, plan,
+                          proyecto, nota, meta, tamano, avisar=None):
+    """Mira la imagen recien dibujada y, si suspende, la rehace UNA vez.
+
+    -> (prompt con el que quedo, meta con la ficha del revisor dentro)
+
+    Un solo reintento, y es deliberado: si con el arreglo delante sigue mal, el
+    problema no se arregla insistiendo (suele ser una hoja de personaje mal
+    dibujada, o algo que el generador no sabe contar). La imagen se queda --ya
+    esta pagada-- y el fallo se dice en el resumen de la tanda.
+    """
+    estilo = "\n".join("  " + linea for linea in guia_escrita(p["estilo"]))
+    especie = regla_de_especie(p["estilo"])
+    antes = next((r.get("ruta") for r in referencias
+                  if r.get("papel") == "rechazada"), None)
+    titulo = str(plan.get("titulo") or "")
+    cwd = getattr(proyecto, "raiz", None)
+
+    def mirar():
+        return revisor.revisar(destino, nota, escena, estilo, especie,
+                               titulo=titulo, antes=antes, cwd=cwd,
+                               ajuste=p.get("ajuste_revisor"), avisar=avisar)
+
+    primero = mirar()
+    ficha = {"intentos": [primero], "reintento": False}
+    if primero.get("error") or primero.get("ok"):
+        ficha.update(ok=bool(primero.get("ok")), error=primero.get("error"),
+                     fallos=[])
+        return prompt, dict(meta, revisor=ficha)
+
+    if avisar:
+        avisar(None, f"{sid}: el revisor la suspende ({'; '.join(primero['fallos'])[:200]}); "
+                     f"se rehace una vez con el arreglo", None)
+    prompt_nuevo = prompt + "\n\n" + _bloque_revision(primero)
+    otra = _producir_imagen(sid, prompt_nuevo, [r["ruta"] for r in referencias],
+                            destino, p, rehacer=True, tamano=tamano)
+    segundo = mirar()
+    ficha["intentos"].append(segundo)
+    ficha.update(reintento=True, ok=bool(segundo.get("ok")),
+                 error=segundo.get("error"),
+                 fallos=([] if segundo.get("ok")
+                         else list(segundo.get("fallos") or primero.get("fallos") or [])))
+    nueva = dict(otra, revisor=ficha,
+                 coste=round(float(meta.get("coste") or 0.0)
+                             + float(otra.get("coste") or 0.0), 6))
+    if meta.get("corrector"):
+        nueva["corrector"] = meta["corrector"]
+    return prompt_nuevo, nueva
+
+
+def resumen_revision(resultados):
+    """Lo que hizo el revisor en esta tanda, para el resumen. -> dict
+
+    Solo cuenta las imagenes generadas AHORA: una ficha conservada puede traer
+    el veredicto de una tanda anterior, y contarlo diria que se reviso hoy.
+    """
+    revisadas, bien, rehechas, mal, sin_revisar = 0, 0, 0, [], []
+    for uid, ficha in sorted((resultados or {}).items()):
+        veredicto = (ficha or {}).get("revisor")
+        if not veredicto or ficha.get("origen") not in ("generada", "cache"):
+            continue
+        sid = uid.split(":", 1)[-1]
+        if veredicto.get("error"):
+            sin_revisar.append({"id": sid, "error": veredicto["error"]})
+            continue
+        revisadas += 1
+        rehechas += 1 if veredicto.get("reintento") else 0
+        if veredicto.get("ok"):
+            bien += 1
+        else:
+            mal.append({"id": sid, "fallos": list(veredicto.get("fallos") or [])})
+    return {"revisadas": revisadas, "bien": bien, "rehechas": rehechas,
+            "siguen_mal": mal, "sin_revisar": sin_revisar}
+
+
+def frase_revision(revision):
+    """Una linea para el resumen de la tanda; vacia si no se reviso nada."""
+    if not revision or not (revision["revisadas"] or revision["sin_revisar"]):
+        return ""
+    trozos = [f"revisor: {revision['bien']} de {revision['revisadas']} bien"]
+    if revision["rehechas"]:
+        trozos.append(f"{revision['rehechas']} rehechas una vez")
+    if revision["siguen_mal"]:
+        trozos.append("siguen con fallos " + ", ".join(
+            m["id"] for m in revision["siguen_mal"]))
+    if revision["sin_revisar"]:
+        trozos.append("sin revisar " + ", ".join(
+            m["id"] for m in revision["sin_revisar"]))
+    return "; ".join(trozos)
 
 
 def _inventario_para_nota(escena, plan, dirs, p, trabajo, notas, proyecto):
@@ -888,7 +1077,7 @@ def _adjuntos_de_la_nota(escena, dirs, p, notas=None):
     ajustes = _ajustes_unidad(p, f"escena:{escena['id']}")
     crudo = ajustes.get("feedback")
     nota = _ultima_nota(crudo)
-    texto = _texto_feedback(crudo)
+    texto = _nota_vigente(crudo)
     if not nota and texto:
         # el camino rapido manda solo el texto: la nota entera esta en el repaso
         nota = _nota_del_repaso_para(escena["id"], texto, notas) or {"texto": texto}
@@ -1074,11 +1263,23 @@ def _asignar_cartas(escenas, p):
 
     Se puede forzar por plano desde la pantalla: `unidades['escena:S007'].carta`.
     Una decision tomada mirando el video manda sobre cualquier reparto.
+
+    Y SI EL ESTILO LIMITA LAS CARTAS (`estilo.cartas`, fork 28-10), solo se
+    reparten esas, y la que eligio el director para la frase -- «(PLANO: medio)»
+    al final de su linea, ver `direccion` -- va detras de la de la persona y
+    delante del sorteo.
     """
-    forzadas = {e["id"]: str(_ajustes_unidad(p, f"escena:{e['id']}").get("carta")
-                             or "") for e in escenas}
+    permitidas = encuadres.permitidas_de(p.get("estilo"))
+    forzadas = {}
+    for escena in escenas:
+        ajustes = _ajustes_unidad(p, f"escena:{escena['id']}")
+        carta = str(ajustes.get("carta") or "")
+        if not carta and permitidas:
+            carta = carta_dirigida(ajustes.get("direccion"), permitidas)
+        if carta:
+            forzadas[escena["id"]] = carta
     cartas = encuadres.repartir(escenas, semilla=p.get("semilla", 0),
-                                forzadas={k: v for k, v in forzadas.items() if v})
+                                forzadas=forzadas, permitidas=permitidas)
     for escena in escenas:
         carta = cartas.get(escena["id"])
         if not carta:
@@ -1091,7 +1292,31 @@ def _asignar_cartas(escenas, p):
     return cartas
 
 
-def _repartir_zoom(escenas):
+#: La carta que eligio el director para un plano, al final de su linea: lo
+#: escribe `direccion` cuando el Estilo limita las cartas.
+_CARTA_DEL_PLANO = re.compile(r"\(\s*PLANO\s*:\s*([a-zA-Z_]+)\s*\)", re.I)
+
+
+def carta_dirigida(linea, permitidas):
+    """El id de la carta que pide la linea del director, si el Estilo la deja. -> str"""
+    casa = _CARTA_DEL_PLANO.search(str(linea or ""))
+    carta = casa.group(1).strip().lower() if casa else ""
+    return carta if carta in (permitidas or ()) else ""
+
+
+#: «(COMO EN: S040)»: la persona sin hoja de este plano ya salio en S040. Lo
+#: escribe el director en modo historia (fork, 28-10-2026). Paso en el video 2:
+#: la senora de S040 cambio de cara en S041.
+_COMO_EN = re.compile(r"\(\s*COMO\s+EN\s*:\s*([A-Za-z]?\d+)\s*\)", re.I)
+
+
+def como_en(linea):
+    """El plano cuya gente repite este, segun la linea del director, o "". -> str"""
+    casa = _COMO_EN.search(str(linea or ""))
+    return casa.group(1).strip().upper() if casa else ""
+
+
+def _repartir_zoom(escenas, permitidas=None):
     """El zoom de cada plano, alternado. Se juega en el CORTE, sobre la imagen.
 
     No necesita ninguna caja ni ningun ancla sobre el que centrarse: el
@@ -1100,10 +1325,10 @@ def _repartir_zoom(escenas):
     segmentar = medios.motor("guion/segmentar.py")
     for indice, escena in enumerate(escenas):
         escena["zoom"] = segmentar.alternar_zoom(indice, None)
-    return _informe_cartas(escenas)
+    return _informe_cartas(escenas, permitidas)
 
 
-def _informe_cartas(escenas):
+def _informe_cartas(escenas, permitidas=None):
     """Que ha salido del reparto de cartas.
 
     'planos_repetidos' cuenta planos SEGUIDOS de la misma familia, que es la
@@ -1127,7 +1352,7 @@ def _informe_cartas(escenas):
         # endpoint aparte porque la pantalla ya lee el plan entero: un viaje
         # menos y, sobre todo, imposible que se desincronicen.
         "escalera": [{"id": c["id"], "nombre": c["nombre"]}
-                     for c in encuadres.ESCALERA],
+                     for c in encuadres.de_la_lista(permitidas)],
     }
 
 
@@ -1163,6 +1388,11 @@ def planificar(proyecto, params, inventario=None, replantear=False,
     # que lo tenia, no cortar de cero, que daria un tercer reparto distinto.
     if previo is None:
         previo = {} if replantear else plan_actual(proyecto)
+    # EL LIENZO, del plan que ya hubiera AUNQUE SE REPLANTEE: replantear vuelve
+    # a cortar, no a dibujar, y un video planificado en 3:2 sigue en 3:2 (ver
+    # `comun.generacion_heredada`). Solo un video nuevo estrena el 16:9.
+    generacion = p2_brief.comun.generacion_heredada(
+        previo or plan_actual(proyecto), formato["id"])
     # EL CORTE DE ANTES MANDA MIENTRAS EL GUION SEA EL DE ANTES.
     #
     # El reparto optimo se calcula con las MARCAS DE PALABRA, y una voz
@@ -1209,7 +1439,7 @@ def planificar(proyecto, params, inventario=None, replantear=False,
     # libre sobre el SHOT TYPE. Se reparte sobre las escenas YA ordenadas: la
     # regla de no repetir familia mira a los vecinos, no a un plano suelto.
     _asignar_cartas(escenas, p)
-    camaras = _repartir_zoom(escenas)
+    camaras = _repartir_zoom(escenas, encuadres.permitidas_de(p.get("estilo")))
 
     # Las duraciones definitivas ANTES de decidir los rotulos: un plano de menos
     # de tres segundos no admite ninguno, y eso solo se sabe una vez repartidos
@@ -1353,7 +1583,7 @@ def planificar(proyecto, params, inventario=None, replantear=False,
         # anterior a esto no lo trae y es horizontal.
         "formato": formato["id"],
         "resolucion": list(formato["salida"]),
-        "generacion": list(formato["generacion"]),
+        "generacion": generacion,
         "estilo": p["estilo"],
         "narracion": {"meta": ruta_meta, "duracion": meta.get("duracion")},
         "duracion_total": round(escenas[-1]["t_out"], 3) if escenas else 0.0,
@@ -2160,9 +2390,24 @@ def _con_direccion(base, escena):
     entra en el prompt (ver `_prompt_escena`).
     """
     linea = " ".join(str(escena.get("direccion") or "").split())
+    # la carta elegida es para `_asignar_cartas`, y «COMO EN» para
+    # `_referencias_escena`: ninguna de las dos es para el generador
+    linea = " ".join(_COMO_EN.sub("", _CARTA_DEL_PLANO.sub("", linea)).split())
     if not linea:
         return base
     return _unir(base, linea)
+
+
+#: Animales que pueden tener hoja propia (la vaca del video 3).
+_ANIMAL = re.compile(r"\b(?:cow|cows|cattle|ox|oxen|bull|calf|horse|pony|donkey|mule|pig|"
+                     r"sheep|lamb|goat|dog|cat|hen|chicken|goose|geese|duck)s?\b", re.I)
+
+
+def es_animal(descripcion):
+    """Si la hoja es de un animal: lo dice el PRINCIPIO de la descripcion («The family
+    cow drawn...»), no cualquier mencion («a farmer leading his cow»). -> bool"""
+    texto = " ".join(str(descripcion or "").split()[:4])
+    return bool(_ANIMAL.search(texto))
 
 
 def regla_de_especie(estilo):
@@ -2392,6 +2637,20 @@ def frase_de_referencia(indice, ref):
         # adjunta (ver _referencias_escena): decirle con palabras que no
         # copie el contenido de una imagen no basta, y el precio de que no
         # obedezca es que el colegio salga con los muebles del banco.
+    elif ref["papel"] == "gente":
+        # LA MISMA PERSONA SIN HOJA EN EL PLANO DE ANTES (fork, 28-10). Solo
+        # en la orden corta: ver `_gente_de_antes`.
+        quienes = ", ".join(f"'{q}'" for q in ref.get("quienes") or [])
+        lineas.append(
+            f"Reference image {indice} is an earlier shot of this film"
+            + (f" ({ref['plano']})" if ref.get("plano") else "")
+            + ". The people in it who appear again in this shot"
+            + (f" ({quienes})" if quienes else "")
+            + " have no cast sheet: draw them with exactly the same face, "
+              "hair, build and clothes as there. Take nothing else from it: "
+              "not its composition, framing or poses"
+            + (", although it is the same place, so keep its architecture and "
+               "colours." if ref.get("mismo_set") else ", and not its place."))
     elif ref["papel"] == "parecido":
         # El limite duro de esta referencia. Es una FOTO de imagen real, y
         # adjuntarla sin decir esto empuja el dibujo al fotorrealismo, que es
@@ -2543,6 +2802,158 @@ def _ultima_palabra_idioma(idioma):
             f"names and titles of real works.")
 
 
+#: EL CUADRO ES VERTICAL, y hay que decirlo: las referencias de estilo son
+#: apaisadas y sin esta linea el generador compone un plano apaisado dentro de
+#: un lienzo alto, con el sujeto pequeno en medio y aire arriba y abajo. Lo que
+#: se pide es lo que un movil ensena: sujeto grande, centrado, y lo importante en
+#: el tercio central. La usan las dos ordenes, la de siempre y la corta.
+CUADRO_VERTICAL = ("The frame is PORTRAIT (9:16, vertical, for a phone "
+                   "screen): compose for a tall frame. Put the subject large "
+                   "and centred, keep everything important within the middle "
+                   "two thirds of the height, and let the background fill the "
+                   "top and bottom naturally. Never draw black bars, borders "
+                   "or a landscape picture inside the tall frame.")
+
+#: Lo que pide una pantalla dividida, en la frase, la direccion o la escena.
+_PANTALLA_DIVIDIDA = re.compile(r"split[\s-]*screen", re.I)
+
+
+def pide_pantalla_dividida(escena):
+    """Si este plano es una pantalla dividida de verdad. -> bool
+
+    Paso en el video 2 (S027): la frase decia «Split screen. On the left,
+    you...» y el prompt decia a la vez «divide el cuadro» y «never a split
+    screen» (la frase de la lamina). Salio una ventana de ordenador partida.
+    """
+    escena = escena or {}
+    texto = " ".join(str(escena.get(c) or "")
+                     for c in ("narracion", "direccion", "prompt"))
+    return bool(_PANTALLA_DIVIDIDA.search(texto))
+
+
+# ------------------------------------------------- la orden corta (fork, 28-10)
+#
+# La orden de siempre media 19.121 caracteres en S007 del video 2, y la escena
+# empezaba en el 16.924: la guia de estilo entera (con la regla de especie
+# repetida tres veces), las reglas de la casa (con notas internas en castellano
+# que nadie habia escrito para el generador) y dos parrafos sobre rotulos. El
+# 27-10 se rehicieron cuatro planos a mano con una orden de unos 2.000
+# caracteres (`herramientas\escena_nueva.py` del proyecto de Enrique: las
+# referencias, las hojas de personaje y la regla LLENO) y salieron, en sus
+# palabras, «un abismo de diferencia». Esto es esa orden dentro del estudio,
+# para el Estilo que la pida con `estilo.orden: "corta"`: el estilo lo ensenan
+# las imagenes de referencia y la escena va delante. Un Estilo sin esa clave
+# sigue con la orden de siempre, letra por letra.
+
+#: Enrique, 27-10: «nunca mas personas en sombra negra», nada de margenes de
+#: papel vacio, nada que la frase no nombre. Va SIEMPRE en la orden corta.
+LLENO = ("The picture is full-bleed: the drawing fills the whole frame edge to "
+         "edge, with no paper border, no empty margins and no blank band at the "
+         "top or the sides. Every person is drawn in full in this style, clearly "
+         "lit, with a white round head and coloured clothes, never as a dark "
+         "silhouette or shadow, and people in the background are drawn the same "
+         "way, never greyed out. Each named character appears only once. Draw "
+         "only what the scene describes: no extra objects, signs or screens.")
+
+PANTALLA_DIVIDIDA = ("This shot IS a split screen, exactly as the scene says: "
+                     "two halves side by side, separated by one clean vertical "
+                     "line, each half a full scene of its own.")
+
+#: Las etiquetas que el director deja al final de su linea para el codigo.
+_ETIQUETAS = re.compile(r"\s*\(\s*(?:TONO|PLANO|COMO\s+EN)\s*:[^)]*\)", re.I)
+
+
+def orden_corta(estilo):
+    """Si este Estilo pide la orden corta. -> bool"""
+    return isinstance(estilo, dict) and str(estilo.get("orden") or "") == "corta"
+
+
+def _escena_corta(escena):
+    """La escena como la lee el generador en la orden corta, sin etiquetas."""
+    texto = _ETIQUETAS.sub("", str((escena or {}).get("prompt") or ""))
+    texto = texto.replace("SHOT TYPE, and this is not optional:", "Framing:")
+    texto = re.sub(r"\.\s*([.,])", r"\1", texto)
+    return " ".join(texto.split()).rstrip(". ")
+
+
+def _letras_corta(escena, texto, idioma):
+    """Que letras se pueden dibujar: solo las entrecomilladas, y grandes."""
+    frase = str((escena or {}).get("narracion") or "").strip()
+    pedidas = texto.replace(f'"{frase}"', "") if frase else texto
+    nombre = _nombre_en(idioma)
+    if not re.search(r'"[^"]+"', pedidas):
+        return ("No text, letters or numbers anywhere: any sign, board, page, "
+                "label or screen is drawn blank.")
+    return ("The only lettering allowed is the words in double quotes in the "
+            "scene (never the narration line), drawn large and easy to read"
+            + (f", in {nombre}," if nombre else ",") + " spelled correctly. "
+            "Any other sign, board, page, label or screen is drawn blank.")
+
+
+def _prompt_corto(escena, referencias, estilo, feedback="", idioma="",
+                  formato="", fichas_reparto=None):
+    """La orden corta: estilo por las referencias, la escena delante. -> str
+
+    Mismas referencias y mismo orden que la de siempre; cambia el texto. Se
+    queda lo que solo sabe el codigo -- que hoja es de quien, a quien le falta
+    la hoja, la luz, la nota del revisor -- y se van la guia escrita y las
+    reglas de la casa, que repiten lo que las referencias ya ensenan.
+    """
+    guia = estilo.get("guia") if isinstance(estilo.get("guia"), dict) else {}
+    estilos = [i for i, ref in enumerate(referencias, start=1)
+               if ref["papel"] in ("estilo", "lamina")]
+    if estilos:
+        cita = (f"reference image {estilos[0]}" if len(estilos) == 1
+                else f"reference images {estilos[0]} to {estilos[-1]}")
+        lineas = [f"Draw one new illustration for a shot of an animated "
+                  f"documentary, in exactly the same drawing style as {cita}: "
+                  f"copy only the style (line work, colours, shading, paper "
+                  f"texture, the simple round-headed people), never the content "
+                  f"or the composition."]
+    else:
+        lineas = ["Draw one new illustration for a shot of an animated "
+                  "documentary."]
+    for indice, ref in enumerate(referencias, start=1):
+        if ref["papel"] == "lamina":
+            lineas.append(f"Reference image {indice} shows several frames side "
+                          f"by side only so they fit in one image: draw ONE "
+                          f"single picture, never a grid or a collage.")
+    if p2_brief.comun.normalizar_formato(formato) == "vertical":
+        lineas.append(CUADRO_VERTICAL)
+    texto = _escena_corta(escena)
+    if texto:
+        lineas.append(f"Scene: {texto}.")
+    if escena.get("luz"):
+        lineas.append(f"Time of day and lighting: {escena['luz']}.")
+    for indice, ref in enumerate(referencias, start=1):
+        frase = frase_de_referencia(indice, ref)
+        if frase:
+            lineas.append(frase.replace("scene description below",
+                                        "scene description"))
+    con_hoja = {r.get("nombre") for r in referencias
+                if r.get("papel") == "reparto"}
+    for quien in (escena.get("personajes") or []):
+        if quien in con_hoja:
+            continue
+        ficha = (fichas_reparto or {}).get(f"asset:{quien}") or {}
+        descrito = " ".join(str(ficha.get("descripcion") or "").split())
+        if descrito:
+            lineas.append(f"No cast sheet is attached for '{quien}': "
+                          f"draw them from this description -- {descrito}")
+    esencial = " ".join(str(guia.get("esencial") or "").split())
+    esencial = esencial or regla_de_especie(estilo)
+    if esencial:
+        lineas.append(esencial)
+    if pide_pantalla_dividida(escena):
+        lineas.append(PANTALLA_DIVIDIDA)
+    lineas.append(LLENO)
+    lineas.append(_letras_corta(escena, texto, idioma))
+    if feedback:
+        lineas.append(_bloque_feedback(feedback))
+    lineas.append("No watermarks.")
+    return " ".join(lineas)
+
+
 def _prompt_completo(escena, referencias, estilo, feedback="", idioma="",
                      formato="", fichas_reparto=None):
     """Prompt final citando cada referencia por su posicion, como espera la API.
@@ -2550,21 +2961,19 @@ def _prompt_completo(escena, referencias, estilo, feedback="", idioma="",
     `fichas_reparto` es `plan["assets"]`, y sirve para UNA cosa: devolver la
     descripcion de un personaje al que no se le ha podido adjuntar la hoja. Ver
     `_citar_reparto`, que es quien la quito del texto de la escena.
+
+    Si el Estilo pide la orden corta, es esa (`_prompt_corto`).
     """
+    if orden_corta(estilo):
+        entera = escena_entera.ficha(escena)       # 30-10: la orden del metodo a mano
+        if entera and escena_entera.activa(estilo):
+            return escena_entera.orden(entera, feedback)
+        return _prompt_corto(escena, referencias, estilo, feedback, idioma,
+                             formato, fichas_reparto)
     reglas = medios.motor("reglas/reglas.py")
     lineas = ["Draw a single illustration for one shot of an animated documentary."]
     if p2_brief.comun.normalizar_formato(formato) == "vertical":
-        # EL CUADRO ES VERTICAL, y hay que decirlo: las referencias de estilo
-        # son apaisadas y sin esta linea el generador compone un plano apaisado
-        # dentro de un lienzo alto, con el sujeto pequeno en medio y aire arriba
-        # y abajo. Lo que se pide es lo que un movil ensena: sujeto grande,
-        # centrado, y lo importante en el tercio central.
-        lineas.append("The frame is PORTRAIT (9:16, vertical, for a phone "
-                      "screen): compose for a tall frame. Put the subject large "
-                      "and centred, keep everything important within the middle "
-                      "two thirds of the height, and let the background fill the "
-                      "top and bottom naturally. Never draw black bars, borders "
-                      "or a landscape picture inside the tall frame.")
+        lineas.append(CUADRO_VERTICAL)
 
     # Las de estilo se citan JUNTAS, en una sola frase. Repetir "match the art
     # style of reference image N" una vez por imagen gasta prompt y, sobre todo,
@@ -2586,7 +2995,8 @@ def _prompt_completo(escena, referencias, estilo, feedback="", idioma="",
             f"Its grid layout is NOT part of the style and must NOT be "
             f"reproduced: your output is ONE single full-bleed illustration of "
             f"one moment. Never draw a grid, a collage, a contact sheet, panels, "
-            f"a split screen, borders, frames or separate boxes.")
+            f"{'' if pide_pantalla_dividida(escena) else 'a split screen, '}"
+            f"borders, frames or separate boxes.")
         # solo si alguien lo ha escrito: el defecto ya no rellena esto con una
         # descripcion generica, que era describirle otro video al generador
         if estilo.get("prompt"):
@@ -2797,6 +3207,42 @@ def tapa_la_cara(*textos):
     return any(f" {prenda} " in llano for prenda in _TAPACARAS)
 
 
+def lleva_rizo(descripcion):
+    """Si la descripcion de una entrada del reparto le da el rizo. -> bool"""
+    texto = " ".join(str(descripcion or "").lower().split())
+    if "curl" not in texto:
+        return False
+    return not re.search(r"\b(?:no|without|none with an?)\s+(?:[a-z-]+\s+){0,2}curl",
+                         texto)
+
+
+def _rizo_y_epoca(ficha, estilo):
+    """Lo que las hojas del video 2 se saltaron, dicho en la hoja. -> [str]
+
+    Paso (27-10): `george_green` salio con rizo y pelo, `fantasma_fedora` con
+    rizo y `policia_anoka` con casco de policia ingles en Minnesota. Las tres
+    descripciones decian «no curl» y la epoca; la hoja copio a los munecos de
+    la referencia de estilo. Solo en la orden corta, y lo del rizo solo si el
+    Estilo tiene rizo.
+    """
+    guia = estilo.get("guia") if isinstance(estilo.get("guia"), dict) else {}
+    regla = f"{guia.get('esencial') or ''} {regla_de_especie(estilo)}".lower()
+    lineas = []
+    if "curl" in regla:
+        if lleva_rizo(ficha.get("descripcion")):
+            lineas.append("This is the protagonist: one thin spiral curl on top "
+                          "of the head, exactly as described.")
+        else:
+            lineas.append("Nobody on this sheet is the protagonist: NO spiral "
+                          "curl and no curl of any kind on any head. Men have no "
+                          "hair unless the description gives them some; women "
+                          "have the simple hair the description gives them.")
+    lineas.append("Clothes, hats, uniforms and props are exactly those of the "
+                  "description and true to its period and country: never a "
+                  "uniform, helmet or costume from another country or era.")
+    return lineas
+
+
 def _prompt_reparto(ficha, estilo):
     """Prompt de una hoja de personaje.
 
@@ -2817,7 +3263,13 @@ def _prompt_reparto(ficha, estilo):
                   "its content, its framing or its layout.")
     if estilo.get("prompt"):
         lineas.append(f"Style: {estilo['prompt']}.")
-    lineas.extend(guia_escrita(estilo))
+    if orden_corta(estilo):
+        # la misma poda que el plano: lo esencial, no la guia entera
+        guia = estilo.get("guia") if isinstance(estilo.get("guia"), dict) else {}
+        esencial = " ".join(str(guia.get("esencial") or "").split())
+        lineas.append(esencial or regla_de_especie(estilo))
+    else:
+        lineas.extend(guia_escrita(estilo))
     # DOS FILAS, y la de arriba son caras grandes. La hoja se adjunta luego a
     # cada plano donde sale ese personaje, y de ella se copia la identidad: con
     # figuras de cuerpo entero, cada cara ocupaba 112x139 px del millon largo de
@@ -2828,7 +3280,9 @@ def _prompt_reparto(ficha, estilo):
                   "row: large head-and-shoulders portraits, one per character, "
                   "taking up most of the height of that row. Bottom row: the same "
                   "characters standing, full body, front view, in the same order. "
-                  f"The characters are {ficha['descripcion']}.")
+                  + (f"The characters are {str(ficha['descripcion']).rstrip('. ')}."
+                     if orden_corta(estilo)
+                     else f"The characters are {ficha['descripcion']}."))
     if not ficha.get("grupo"):
         # UNA hoja de UN personaje: sin decirlo, «the characters are...» con una
         # sola descripcion salio como seis monos distintos (02-09-2026), y la
@@ -2838,7 +3292,11 @@ def _prompt_reparto(ficha, estilo):
                       "the same face, hair, clothing and accessories in all of "
                       "them: front view, three-quarter view and profile, never "
                       "six different people.")
-    lineas.extend(clausula_de_especie(estilo))
+    corta = orden_corta(estilo)
+    if not corta:
+        # en la orden corta ya lo dice lo esencial, sin el ejemplo de la
+        # chaqueta de cuero del video de Nvidia
+        lineas.extend(clausula_de_especie(estilo))
     # El molde manda sobre la descripcion, y hay que decirlo: la descripcion la
     # escribe un modelo y se cuela en ella la puesta en escena del guion. Sin esta
     # frase, «seated at desks crowded with screens» pinta las mesas y los monitores
@@ -2847,6 +3305,13 @@ def _prompt_reparto(ficha, estilo):
                   "mentioned in that description: it describes where these "
                   "characters appear in the film, not what this sheet shows. Draw "
                   "only the characters, evenly lit, on an empty flat background.")
+    if es_animal(ficha.get("descripcion")):
+        # 02-11 (video 3): la regla del estilo («cabeza redonda, sin cuello...»)
+        # mandaba sobre la descripcion y «the family cow» salio como una nina
+        lineas.append("This character is an ANIMAL, not a person: draw it on four "
+                      "legs with the animal's own head, snout, ears and tail, in the "
+                      "drawing style of the style sheet. The rules about people's "
+                      "heads, faces and clothes do not apply to it.")
     if ficha.get("feedback"):
         # la nota del revisor sobre ESTA hoja: sin esto se pagaba una hoja
         # nueva con el mismo prompt y salia una variacion de lo mismo
@@ -2881,9 +3346,14 @@ def _prompt_reparto(ficha, estilo):
     if ficha.get("grupo"):
         lineas.append("Show every member of the group side by side, clearly "
                       "different from each other in build, clothes and hair.")
-    bloque = reglas.bloque_prompt("reparto")
-    if bloque:
-        lineas.append(bloque)
+    if corta:
+        # las reglas de la casa (en castellano, con brillos de pantalla) se
+        # quedan fuera, como en el plano: la cara y el grupo ya van arriba
+        lineas.extend(_rizo_y_epoca(ficha, estilo))
+    else:
+        bloque = reglas.bloque_prompt("reparto")
+        if bloque:
+            lineas.append(bloque)
     # LO QUE SE PROHIBE AQUI ES ANOTAR LA HOJA, no que el personaje lleve letras.
     # Decia «No text, no letters, no numbers anywhere» y son dos cosas distintas:
     # una hoja de personaje con flechas y rotulitos de «front view» es una hoja
@@ -2945,9 +3415,10 @@ def _producir_imagen(nombre, prompt, referencias, destino, p, rehacer=False,
     cache y paga una imagen nueva, porque con el mismo prompt la cache
     devolveria exactamente la que el humano acaba de rechazar.
 
-    `tamano` es el del motor de imagen ('apaisado' | 'vertical'). Los planos lo
-    traen del formato del plan; las hojas de personaje y las piezas van siempre
-    apaisadas, que es como se leen mejor como referencia.
+    `tamano` es el del motor de imagen ('panoramico' | 'movil', o 'apaisado' |
+    'vertical' en los videos de antes del 26-10). Los planos lo traen del
+    lienzo del plan; las hojas de personaje y las piezas van siempre apaisadas
+    (3:2), que es como se leen mejor como referencia y como estan en el banco.
     """
     tamano = tamano or "apaisado"
     firma = medios.huella({"prompt": prompt, "calidad": p["calidad"],
@@ -3211,6 +3682,9 @@ def _generar_escenas(plan, dirs, p, trabajo, toca, unidades, resultados, avisar,
     if recolocadas["movidas"]:
         avisar(0.34, "%d imagenes recolocadas: el corte les cambio el numero"
                      % recolocadas["movidas"], None)
+    # Y ANTES DE DIBUJAR NADA, que el filtro pueda trabajar: si Claude no
+    # contesta, la tanda se para aqui sin gastar (ver `_comprobar_claude`).
+    _comprobar_claude(escenas, p, unidades, forzar, avisar)
     total = len(escenas)
     cadenas = _cuantas_cadenas(p, escenas)
     orden = {escena["id"]: indice for indice, escena in enumerate(escenas)}
@@ -3306,6 +3780,13 @@ def _generar_escenas(plan, dirs, p, trabajo, toca, unidades, resultados, avisar,
                 with cerrojo:
                     resultados[uid] = ficha
                 continue
+            if not pedida and unidades is not None:
+                # PEDIR UNOS PLANOS DIBUJA ESOS, aunque los demas aun no existan.
+                # 02-11 (video 3): el piloto de 5 planos se puso a dibujar los
+                # 201 porque «lo que no existe se genera» valia tambien con
+                # unidades; se corto en 21 planos (~0,7 USD). Lo que queda sin
+                # imagen sale como pendiente y lo hace la tanda.
+                continue
 
             if cartelas.sin_imagen(escena):
                 # UNA CARTELA DE FONDO NEGRO NO DEJA IMAGEN, y es deliberado.
@@ -3359,7 +3840,8 @@ def _generar_escenas(plan, dirs, p, trabajo, toca, unidades, resultados, avisar,
                 referencias = _referencias_escena(
                     escena, plan, dirs, p, dirs["cache"], previas,
                     anteriores=orden_cadena, notas=notas_repaso)
-                nota_texto = _texto_feedback(
+                # LA NOTA VIGENTE, no el historial entero: ver `_nota_vigente`
+                nota_texto = _nota_vigente(
                     _ajustes_unidad(p, uid).get("feedback"))
                 escena_final = escena
                 corregido = None
@@ -3372,6 +3854,16 @@ def _generar_escenas(plan, dirs, p, trabajo, toca, unidades, resultados, avisar,
                     corregido = _corregir_con_agente(
                         escena, plan, dirs, p, trabajo, notas_repaso, proyecto,
                         nota_texto, avisar)
+                    # SIN CORRECTOR NO SE DIBUJA. Antes se seguia por el camino
+                    # de siempre y nadie se enteraba (ver `_corrector_obligatorio`).
+                    if (corregido and corregido.get("error")
+                            and _corrector_obligatorio(p)):
+                        raise RuntimeError(
+                            f"{sid}: el corrector no ha podido preparar la "
+                            f"correccion ({str(corregido['error'])[:200]}). No se "
+                            f"ha dibujado para no gastar en vano: comprueba que "
+                            f"Claude contesta (⚙ → «Claude CLI» → «Probar») y "
+                            f"vuelve a lanzarlo.")
                 if corregido and not corregido.get("error"):
                     escena_final = dict(escena, prompt=corregido["escena"],
                                         personajes=corregido["personajes"])
@@ -3380,7 +3872,9 @@ def _generar_escenas(plan, dirs, p, trabajo, toca, unidades, resultados, avisar,
                     # elige cuales y anade el detalle
                     motor_imagen = medios.motor("imagen_openai/imagen.py")
                     referencias = (
-                        list(_referencias_estilo(p, dirs["cache"], escena_final))
+                        list(_referencias_estilo(
+                            p, dirs["cache"], escena_final,
+                            sueltas=orden_corta(p.get("estilo"))))
                         + [dict(r, ruta=motor_imagen.normalizar(r["ruta"],
                                                                 dirs["cache"]))
                            for r in corregido["referencias"]])
@@ -3402,6 +3896,9 @@ def _generar_escenas(plan, dirs, p, trabajo, toca, unidades, resultados, avisar,
                 # 14 planos con la firma SIN cambiar y su PNG en el banco,
                 # 0,55 $. Es el ultimo resto de la deduccion vieja que el
                 # comentario de `_generar_escenas` da por retirada.
+                # del LIENZO del plan, no de su formato: un plano de un video
+                # de antes del 26-10 se sigue pidiendo 3:2
+                tamano = p2_brief.comun.tamano_imagen_de_plan(plan)
                 meta = _producir_imagen(sid, prompt,
                                         [r["ruta"] for r in referencias],
                                         destino, p,
@@ -3414,13 +3911,20 @@ def _generar_escenas(plan, dirs, p, trabajo, toca, unidades, resultados, avisar,
                                         # al tamano del formato del video: un
                                         # plano vertical se PIDE vertical, no
                                         # se recorta de uno apaisado
-                                        tamano=p2_brief.comun.ficha_formato(
-                                            plan.get("formato"))["tamano_imagen"])
+                                        tamano=tamano)
                 if corregido:
                     meta = dict(meta, corrector={
                         k: corregido.get(k) for k in
                         ("alcance", "personajes", "escena", "referencias",
                          "porque", "error", "modelo", "esfuerzo", "segundos")})
+                # EL REVISOR: mira lo que ha salido antes de darlo por bueno y,
+                # si suspende, lo rehace UNA vez con su arreglo (revisor.py).
+                # No en lo adoptado: eso no se ha dibujado ahora.
+                if (meta.get("origen") in ("generada", "cache")
+                        and _toca_revisar(p, nota_texto, pedida)):
+                    prompt, meta = _revisar_y_reintentar(
+                        sid, escena_final, destino, prompt, referencias, p,
+                        plan, proyecto, nota_texto, meta, tamano, avisar)
             # Una cartela NO entra en la continuidad: las referencias de
             # continuidad existen para que la paleta y el grosor de linea no
             # deriven de un plano al siguiente, y pasarle al generador una
@@ -3733,9 +4237,20 @@ def _lamina_estilo(rutas, destino):
     return destino
 
 
-def _referencias_estilo(p, cache, escena=None):
+#: En la orden corta las de estilo van SUELTAS, como mucho estas. El piloto del
+#: 27-10 usaba UN plano aprobado entero, a sangre, y salio «un abismo de
+#: diferencia»; en una lamina cada plano se queda en un sexto del cuadro. Seis
+#: son las que eligio Enrique el 28-10, y con las hojas y la continuidad cabe
+#: en las 14 imagenes que admite Nano Banana 2.
+MAX_REFERENCIAS_ESTILO_SUELTAS = 6
+
+
+def _referencias_estilo(p, cache, escena=None, sueltas=False):
     """La referencia de estilo de un plano: el moodboard si lo hay, si no los
     fotogramas.
+
+    `sueltas` (orden corta, fork 28-10): sin moodboard, cada referencia va como
+    su propia imagen, y no juntas en una lamina.
 
     El moodboard manda cuando esta APROBADO, y solo entonces: son laminas
     dibujadas por el mismo modelo que luego las imita, asi que hasta que una
@@ -3753,6 +4268,9 @@ def _referencias_estilo(p, cache, escena=None):
             return [{"papel": "lamina", "ruta": imagen.normalizar(tile, cache),
                      "cuantas": len(moodboard.ejes_de_plano(escena)),
                      "moodboard": True}]
+    if sueltas:
+        return [{"papel": "estilo", "ruta": imagen.normalizar(ruta, cache)}
+                for ruta in rutas[:MAX_REFERENCIAS_ESTILO_SUELTAS]]
     rutas = rutas[:MAX_REFERENCIAS_ESTILO]
 
     # Siempre que haya mas de una. No es una opcion: mandar ocho imagenes
@@ -3853,6 +4371,33 @@ def continuidad_de(escena, anteriores, por_id, cuantos=1):
     return mismos[-cuantos:] if cuantos else mismos
 
 
+def _gente_de_antes(escena, plan, dirs):
+    """De que plano anterior se copia la gente SIN HOJA de este. -> (sid, [quien]) | None
+
+    Paso en el video 2: la senora de S040 salio con otra cara en S041. Una hoja
+    fija una cara; sin hoja, lo unico que la fija es el plano donde ya salio.
+    Dos casos, y el del director manda:
+      · «(COMO EN: S040)» al final de su linea (modo historia);
+      · alguien del reparto cuya hoja no esta dibujada y que tambien sale en el
+        plano de justo antes EN EL PLAN (no en la cadena, que es de un sitio).
+    Solo un plano ANTERIOR: uno posterior aun no existe o es de otra tanda.
+    """
+    orden = [e.get("id") for e in (plan or {}).get("escenas") or []]
+    if escena.get("id") not in orden:
+        return None
+    antes = orden[:orden.index(escena["id"])]
+    pedido = como_en(escena.get("direccion"))
+    if pedido in antes:
+        return pedido, []
+    if not antes:
+        return None
+    previo = next((e for e in plan["escenas"] if e.get("id") == antes[-1]), {})
+    sin_hoja = [q for q in escena.get("personajes") or []
+                if q in (previo.get("personajes") or [])
+                and not os.path.exists(os.path.join(dirs["reparto"], f"{q}.png"))]
+    return (antes[-1], sin_hoja) if sin_hoja else None
+
+
 def _referencias_escena(escena, plan, dirs, p, cache, hechas, anteriores=None,
                         notas=None):
     """Estilo, estructura, reparto y continuidad, en ese orden fijo.
@@ -3865,7 +4410,15 @@ def _referencias_escena(escena, plan, dirs, p, cache, hechas, anteriores=None,
     distintas segun el orden de los hilos deja de ser reproducible.
     """
     imagen = medios.motor("imagen_openai/imagen.py")
-    referencias = list(_referencias_estilo(p, cache, escena))
+    corta = orden_corta(p.get("estilo"))
+    # LA ESCENA ENTERA (30-10): UNA referencia de su clase y su luz + las hojas que pidio el
+    # director, y nada mas (el dibujante copia lo que ve). Las de la nota siguen detras.
+    entera = escena_entera.ficha(escena) if corta else None
+    if entera and escena_entera.activa(p.get("estilo")):
+        return (escena_entera.referencias(entera, p.get("estilo"), dirs["reparto"],
+                                          lambda ruta: imagen.normalizar(ruta, cache))
+                + _referencias_de_la_nota(escena, dirs, p, cache, notas))
+    referencias = list(_referencias_estilo(p, cache, escena, sueltas=corta))
     # La MISMA ficha con la que se dibujo la hoja (`_assets_necesarios`), que es
     # la unica forma de que el plano y la hoja lean lo mismo: leerlo del catalogo
     # por un lado y de los params por otro es como se acaba con una hoja
@@ -3917,6 +4470,20 @@ def _referencias_escena(escena, plan, dirs, p, cache, hechas, anteriores=None,
             ficha["mismo_set"] = True
             ficha["desde"] = anterior.get("camara") or ""
         referencias.append(ficha)
+    # LA GENTE SIN HOJA QUE VUELVE, solo en la orden corta (fork, 28-10). Si es
+    # el mismo plano que la continuidad de sitio, va una vez, diciendo las dos.
+    gente = _gente_de_antes(escena, plan, dirs) if corta else None
+    if gente:
+        sid, quienes = gente
+        previa = hechas.get(sid) or os.path.join(dirs["escenas"], f"{sid}.png")
+        if os.path.exists(previa):
+            ruta = imagen.normalizar(previa, cache)
+            mismo = [r for r in referencias
+                     if r.get("papel") == "continuidad" and r.get("ruta") == ruta]
+            for r in mismo:
+                referencias.remove(r)
+            referencias.append({"papel": "gente", "ruta": ruta, "plano": sid,
+                                "quienes": quienes, "mismo_set": bool(mismo)})
     # LAS DE LA NOTA VAN LAS ULTIMAS, pegadas al bloque de feedback --que es lo
     # ultimo del prompt y la posicion mas fuerte-- y detras de las de
     # continuidad, que dicen lo contrario que ellas («never their content»).
@@ -3974,7 +4541,7 @@ def _notas_del_repaso(proyecto):
 def _texto_de_la_nota(escena, p, notas=None):
     """El texto de la nota vigente sobre este plano, venga por donde venga."""
     crudo = _ajustes_unidad(p, f"escena:{escena['id']}").get("feedback")
-    return _texto_feedback(crudo)
+    return _nota_vigente(crudo)
 
 
 def _nota_del_repaso_para(sid, texto, notas):
@@ -4341,7 +4908,15 @@ def ejecutar(proyecto, params, avisar=None, unidades=None, solo_assets=False,
                (indice + 1, len(pendientes)))
         if ficha["tipo"] == "reparto":
             destino = os.path.join(dirs["reparto"], f"{ficha['nombre']}.png")
-            if pedido(uid) or not os.path.exists(destino):
+            fija = escena_entera.hoja_fija(p.get("estilo"), ficha["nombre"])
+            if fija and (pedido(uid) or not os.path.exists(destino)):
+                # la hoja de la biblioteca (el modelo de Enrique): se copia, no se dibuja
+                from PIL import Image                          # noqa: PLC0415
+                Image.open(fija).convert("RGB").save(destino)
+                resultados[uid] = {"tipo": "reparto", "origen": "biblioteca",
+                                   "png": os.path.relpath(destino, trabajo),
+                                   "fija": os.path.basename(fija), "coste": 0.0}
+            elif pedido(uid) or not os.path.exists(destino):
                 prompt = _prompt_reparto(ficha, p["estilo"])
                 # a una hoja de personaje le tocan los ejes de personas: la
                 # cara y los cuerpos, que es lo que esa hoja tiene que fijar
@@ -4481,6 +5056,15 @@ def ejecutar(proyecto, params, avisar=None, unidades=None, solo_assets=False,
             f"({camaras['planos_repetidos']} seguidos de la misma familia), "
             f"{generadas} imagenes nuevas, {coste:.3f} USD"),
     }
+    # LO QUE DIJO EL REVISOR, en el resumen y no solo en cada ficha: lo que
+    # sigue mal despues del reintento lo tiene que ver quien lanzo la tanda.
+    revision = resumen_revision(resultados)
+    if revision["revisadas"] or revision["sin_revisar"]:
+        salidas["revisor"] = revision
+        salidas["resumen"] += "; " + frase_revision(revision)
+        for malo in revision["siguen_mal"]:
+            avisar(None, f"AVISO: {malo['id']} sigue con fallos tras el reintento: "
+                         + "; ".join(malo["fallos"])[:300], None)
     avisar(1.0, salidas["resumen"])
     # Los planos que este recorte ha dejado fuera. Van en el resultado para que
     # quien tiene el estado en la mano los DES-DECLARE: un id de plano es

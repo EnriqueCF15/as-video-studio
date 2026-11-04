@@ -503,8 +503,63 @@ def extraer_json(texto, que="la respuesta"):
         try:
             return json.loads(texto[principio:final + 1])
         except ValueError as fallo:
-            raise RuntimeError(f"{que} no es un JSON legible: {fallo}")
-    raise RuntimeError(f"{que} no trae ningun objeto JSON: {texto[:300]}")
+            # Un objeto suelto delante o detras del bueno («Extra data»): se
+            # rescata el bueno. Fork, 09-10-2026: el catalogo de un video de 23
+            # min tiro 16 min de Opus por esto, y la respuesta no se guardaba.
+            rescatado = _objeto_principal(texto[principio:final + 1])
+            if rescatado is not None:
+                return rescatado
+            raise RuntimeError(f"{que} no es un JSON legible: {fallo}"
+                               + _guardar_ilegible(texto, que))
+    raise RuntimeError(f"{que} no trae ningun objeto JSON: {texto[:300]}"
+                       + _guardar_ilegible(texto, que))
+
+
+#: Para rescatar un objeto de entre varios, tiene que ser casi toda la
+#: respuesta. Si el bueno vino roto y lo que queda es un objeto pequeno de al
+#: lado, devolverlo daria un catalogo vacio sin avisar: mejor el error.
+PARTE_MINIMA_RESCATE = 0.6
+
+
+def _objeto_principal(texto):
+    """El objeto JSON mas largo de `texto`, si ocupa casi toda la respuesta."""
+    lector = json.JSONDecoder()
+    mejor, largo_mejor, i = None, 0, texto.find("{")
+    while i >= 0:
+        try:
+            objeto, fin = lector.raw_decode(texto, i)
+        except ValueError:
+            i = texto.find("{", i + 1)
+            continue
+        if isinstance(objeto, dict) and fin - i > largo_mejor:
+            mejor, largo_mejor = objeto, fin - i
+        # lo de dentro de un objeto leido es mas corto: se salta entero
+        i = texto.find("{", fin)
+    if mejor is not None and largo_mejor >= PARTE_MINIMA_RESCATE * len(texto):
+        return mejor
+    return None
+
+
+def _guardar_ilegible(texto, que):
+    """Guarda la respuesta que no se pudo leer y dice donde, para no perderla.
+
+    Una respuesta de Opus de veinte minutos que se tira sin mirarla obliga a
+    pagarla otra vez para saber que fallo.
+    """
+    import tempfile                                            # noqa: PLC0415
+    import time                                                # noqa: PLC0415
+    try:
+        carpeta = os.path.join(tempfile.gettempdir(), "respuestas_ilegibles")
+        os.makedirs(carpeta, exist_ok=True)
+        nombre = unicodedata.normalize("NFKD", str(que)).encode("ascii", "ignore")
+        nombre = re.sub(r"[^a-z0-9]+", "_", nombre.decode("ascii").lower()).strip("_")
+        ruta = os.path.join(carpeta, f"{time.strftime('%Y%m%d_%H%M%S')}_"
+                                     f"{nombre or 'respuesta'}.txt")
+        with open(ruta, "w", encoding="utf-8") as fh:
+            fh.write(texto)
+        return f" (respuesta guardada en {ruta})"
+    except OSError:
+        return ""
 
 
 # ------------------------------------------------------------ la correccion
@@ -557,17 +612,35 @@ def bloque_correccion(peticion, que="lo anterior"):
 #
 #   salida        el cuadro del MP4 y de la capa quieta (subtitulos)
 #   generacion    el lienzo de las imagenes y de la capa movil (cartelas). Es
-#                 3:2 en horizontal y 2:3 en vertical: el generador de imagen
-#                 solo sabe hacer esos dos tamanos, y el video recorta dentro.
+#                 YA LA PROPORCION DEL VIDEO (16:9 y 9:16), con el mismo ancho
+#                 visible de antes: 1536 -> 1920 y 864 -> 1080 son el mismo
+#                 x1,25, asi que rotulos y cartelas salen al mismo tamano.
 #   tamano_imagen el nombre con el que se le pide al motor de imagen
+#
+# HASTA EL 26-10 EL LIENZO ERA 3:2 (2:3 en vertical), lo que daba OpenAI, y el
+# video recortaba un 8 % arriba y abajo AUNQUE EL PLANO ESTUVIERA QUIETO: se
+# perdian los dias de S068 y el «15 HOURS» de S205 en el primer video. Nano
+# Banana 2 dibuja en 16:9 directamente. LOS VIDEOS YA PLANIFICADOS SIGUEN EN
+# 3:2: su plan guarda su `generacion`, y al volver a planificarlos se hereda
+# (`generacion_heredada`) -- otro lienzo seria otra firma de imagen, o sea
+# volver a pagar todas sus imagenes.
 
 FORMATOS = {
     "horizontal": {"nombre": "Horizontal 16:9", "salida": [1920, 1080],
-                   "generacion": [1536, 1024], "tamano_imagen": "apaisado"},
+                   "generacion": [1536, 864], "tamano_imagen": "panoramico"},
     "vertical": {"nombre": "Vertical 9:16", "salida": [1080, 1920],
-                 "generacion": [1024, 1536], "tamano_imagen": "vertical"},
+                 "generacion": [864, 1536], "tamano_imagen": "movil"},
 }
 FORMATO_POR_DEFECTO = "horizontal"
+
+#: El lienzo de los planes de ANTES del 26-10, que no se toca (ver arriba). Un
+#: plan sin `generacion` es aun mas viejo y tambien era este.
+GENERACION_ANTIGUA = {"horizontal": [1536, 1024], "vertical": [1024, 1536]}
+
+#: Lienzo -> nombre con el que se pide al motor de imagen. Se mira el LIENZO
+#: del plan y no su formato: un retoque de un plano 3:2 tiene que salir 3:2.
+TAMANO_DE_LIENZO = {(1536, 1024): "apaisado", (1024, 1536): "vertical",
+                    (1536, 864): "panoramico", (864, 1536): "movil"}
 
 
 def normalizar_formato(valor):
@@ -591,3 +664,33 @@ def ficha_formato(valor):
 def formato_de_plan(plan):
     """El formato con el que se corto un plan. Un plan de antes es horizontal."""
     return normalizar_formato((plan or {}).get("formato"))
+
+
+def generacion_de_plan(plan):
+    """El lienzo de las imagenes de un plan. -> [ancho, alto]
+
+    El que guarda; si no guarda ninguno, el de antes del 26-10 (3:2)."""
+    valor = (plan or {}).get("generacion")
+    if isinstance(valor, (list, tuple)) and len(valor) == 2:
+        return [int(valor[0]), int(valor[1])]
+    return list(GENERACION_ANTIGUA[formato_de_plan(plan)])
+
+
+def generacion_heredada(previo, formato):
+    """El lienzo que le toca a un plan NUEVO de un video. -> [ancho, alto]
+
+    Si el video ya tenia plan en el mismo formato, el suyo: volver a planificar
+    no cambia el tamano de sus imagenes (ni su firma, ni su coste). Solo un
+    video sin plan, o que cambia de formato --y entonces se rehace todo de
+    todos modos--, estrena el lienzo de ahora."""
+    formato = normalizar_formato(formato)
+    if previo and previo.get("escenas") and formato_de_plan(previo) == formato:
+        return generacion_de_plan(previo)
+    return list(FORMATOS[formato]["generacion"])
+
+
+def tamano_imagen_de_plan(plan):
+    """Con que tamano se le pide al motor cada plano de este plan."""
+    lienzo = tuple(generacion_de_plan(plan))
+    return (TAMANO_DE_LIENZO.get(lienzo)
+            or FORMATOS[formato_de_plan(plan)]["tamano_imagen"])

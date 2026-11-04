@@ -97,6 +97,13 @@ INICIALES = {
     # barra prometia 96 minutos para un montaje de once.
     "callouts":       {"por_unidad": 3.2, "suelo": 30.0, "unidad": "escenas"},
     "render":         {"por_unidad": 3.0, "suelo": 60.0, "unidad": "escenas"},
+    # DIBUJAR LOS PLANOS, POR FOTOGRAMA (fork, Fase 5). El historial de «render»
+    # va por escenas y mezcla montajes enteros con remontajes de solo musica
+    # (la huella conserva los clips): 32 s y 196 s para el mismo video, y su
+    # mediana no dice cuanto tardara uno nuevo. Esto anota solo lo que se
+    # DIBUJA, por fotograma. 0,14 s es lo medido el 06-10 en el portatil (1.475
+    # fotogramas en 196 s con 8 procesos, ya con JPEG).
+    "render_dibujo":  {"por_unidad": 0.14, "suelo": 20.0, "unidad": "fotogramas"},
     "capturas_agente": {"por_unidad": 0.0, "suelo": 120.0, "unidad": "unidades",
                         "medido_con": {"modelo": "sonnet", "esfuerzo": "low"}},
     "guia_estilo":    {"por_unidad": 8.0, "suelo": 40.0, "unidad": "fotogramas",
@@ -106,6 +113,10 @@ INICIALES = {
     # Lee el guion y devuelve tres o cuatro cartelas. No mira imagenes, asi que
     # por plano cuesta mucho menos que el de arriba; lo que pesa es leerse el
     # guion entero de una vez y redactar el texto de cada cartela.
+    # «Rehacer con Opus» (02-11): pocos planos, pero el encargo lleva la biblioteca entera.
+    # Sin medir todavia: el repaso de sentido de 8 planos con Opus high tardo 33 s.
+    "direccion_rehacer": {"por_unidad": 30.0, "suelo": 90.0, "unidad": "planos",
+                          "medido_con": {"modelo": "opus", "esfuerzo": "xhigh"}},
     "plan_cartelas": {"por_unidad": 0.7, "suelo": 45.0, "unidad": "planos",
                       "medido_con": {"modelo": "sonnet", "esfuerzo": "high"}},
     # Una sola llamada, pero con el guion ENTERO delante (9.000 palabras) y

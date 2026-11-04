@@ -411,8 +411,33 @@ POR_FASE = {
                                    "que en la escena anterior» exige mirar las "
                                    "imagenes y elegir bien que se adjunta; una "
                                    "eleccion mala se paga en imagenes"},
+    # MIRAR LA IMAGEN YA DIBUJADA contra la nota y la guia del estilo. Es leer
+    # una imagen y una lista, no razonar largo: en la matriz, medio. Pero cada
+    # suspenso equivocado paga una imagen de mas y cada aprobado equivocado lo
+    # tiene que descubrir una persona, asi que tampoco bajo (pasos/revisor.py).
+    "revisor_imagen": {"modelo": "sonnet", "esfuerzo": "medium",
+                       "porque": "comparar una imagen con la nota y la guia "
+                                 "del estilo: contar, leer rotulos y buscar lo "
+                                 "prohibido; un juicio corto, no un plan"},
+    # EL MAPA MUSICAL: leer la narracion con sus minutos y partirla en
+    # secciones con un animo de musica cada una (pasos/mapa_musical.py). Es
+    # leer y agrupar, sin herramientas; una vez por video y se puede repetir
+    # gratis en Google, asi que un error se arregla volviendo a pedirlo.
+    "mapa_musical": {"modelo": "sonnet", "esfuerzo": "high",
+                     "porque": "leer el guion y agruparlo por lo que se cuenta: "
+                               "comprension de texto, no un plan largo"},
 
 }
+
+
+#: Las fases que NO suben al suelo del canal (Opus «xhigh»). El corrector y el
+#: revisor van una vez por imagen corregida, asi que su coste se multiplica por
+#: el repaso entero: medido el 12-10-2026, el corrector tarda ~66 s por plano en
+#: Opus xhigh y el revisor ~33 s, y un repaso de 40 imagenes eran 6-8 % del cupo
+#: semanal del plan Pro. Lo pidio el canal: revisor en Sonnet y corrector en Opus
+#: «alto». El mapa musical (19-10) entra por lo mismo: el canal pidio ahorrar
+#: Claude, y se puede pedir otra vez cuantas veces haga falta.
+FASES_SIN_SUELO = frozenset({"revisor_imagen", "corrector_imagen", "mapa_musical"})
 
 
 def _orden_modelo(nombre):
@@ -437,8 +462,17 @@ def por_defecto_de(fase):
     alguien depurando por que su seleccion no se aplica.
 
     Volver al reparto por fase es devolver aqui `dict(ficha)`.
+
+    SALVO LAS FASES DE `FASES_SIN_SUELO`, que corren con su recomendacion tal
+    cual: son las que se llaman UNA VEZ POR IMAGEN corregida, y ahi el suelo
+    del canal se multiplica por cada plano del repaso.
     """
     ficha = POR_FASE.get(str(fase))
+    if ficha and str(fase) in FASES_SIN_SUELO:
+        return {"modelo": ficha["modelo"], "esfuerzo": ficha["esfuerzo"],
+                "porque": ficha["porque"] + " (fuera del suelo del canal: va una "
+                                            "vez por imagen corregida)",
+                "recomendado": dict(ficha)}
     modelo, esfuerzo = MODELO_POR_DEFECTO, ESFUERZO_POR_DEFECTO
     porque = f"el canal corre todo en {modelo} con esfuerzo {esfuerzo}"
     if ficha:
@@ -868,7 +902,7 @@ def escribiendo(instruccion, modelo=MODELO_POR_DEFECTO,
                 esfuerzo=ESFUERZO_POR_DEFECTO, tiempo_max_s=0,
                 base_tiempo_s=600, herramientas_vetadas=(), avance=None,
                 para="la llamada", que="la respuesta", carpetas=(),
-                herramientas_permitidas=()):
+                herramientas_permitidas=(), con_sobre=False):
     """Como `ejecutar`, pero el agente ESCRIBE su JSON y aqui se lee. -> dict.
 
     La instruccion NO tiene que decir como entregarlo: se le anade el cierre
@@ -881,6 +915,9 @@ def escribiendo(instruccion, modelo=MODELO_POR_DEFECTO,
     Sin esto, Read de una ruta fuera del directorio de trabajo pide permiso y en
     headless eso es colgarse. Se pasan las carpetas que EXISTEN: una ruta
     inventada aborta el CLI entero antes de arrancar.
+
+    Con `con_sobre` devuelve (dict, sobre del CLI): lo necesita quien lleva el
+    medidor de coste enganchado, que cuenta los tokens del sobre.
     """
     import json                                                # noqa: PLC0415
     import shutil                                              # noqa: PLC0415
@@ -898,7 +935,7 @@ def escribiendo(instruccion, modelo=MODELO_POR_DEFECTO,
             extra += ["--add-dir", os.path.abspath(ruta)]
     carpeta = tempfile.mkdtemp(prefix="cli_salida_")
     try:
-        ejecutar(instruccion + CIERRE.format(fichero=FICHERO_SALIDA),
+        _, sobre = ejecutar(instruccion + CIERRE.format(fichero=FICHERO_SALIDA),
                  modelo=modelo, esfuerzo=esfuerzo, cwd=carpeta,
                  tiempo_max_s=tiempo_max_s, base_tiempo_s=base_tiempo_s,
                  herramientas_vetadas=vetadas, permisos="acceptEdits",
@@ -915,7 +952,7 @@ def escribiendo(instruccion, modelo=MODELO_POR_DEFECTO,
     finally:
         shutil.rmtree(carpeta, ignore_errors=True)
     try:
-        return json.loads(crudo)
+        datos = json.loads(crudo)
     except ValueError:
         # con vallas de markdown o una frase delante: se rescata igual que se
         # rescata la respuesta de cualquier otro agente
@@ -923,4 +960,5 @@ def escribiendo(instruccion, modelo=MODELO_POR_DEFECTO,
             from . import comun                                # noqa: PLC0415
         except ImportError:                          # pasos/ suelto en sys.path
             import comun                                       # noqa: PLC0415
-        return comun.extraer_json(crudo, que)
+        datos = comun.extraer_json(crudo, que)
+    return (datos, sobre) if con_sobre else datos

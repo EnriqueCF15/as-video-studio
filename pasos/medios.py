@@ -479,6 +479,24 @@ def _separador_decimal(trozo, idioma=None):
     return "."
 
 
+def _se_suma(anterior, valor):
+    """«anterior valor» dichos seguidos, ¿son UN numero? -> bool
+
+    Solo detras de una decena redonda va una unidad («twenty five», «treinta y
+    uno») y solo detras de una centena redonda va lo que cabe en ella
+    («doscientos veinte»). Antes se sumaba todo lo seguido, y en el video de
+    historia la hora «three forty-seven» salia «50» en el subtitulo (fork,
+    10-10-2026). Los multiplicadores («hundred», «mil») no pasan por aqui.
+    """
+    if anterior is None:
+        return True
+    if anterior >= 100 and anterior % 100 == 0:
+        return valor < 100
+    if anterior >= 20 and anterior % 10 == 0:
+        return valor < 10
+    return False
+
+
 def numeros_dichos(palabras_llanas, idioma=None, cortes=None):
     """Los numeros que se PRONUNCIAN en esa lista, como tramos.
 
@@ -567,6 +585,7 @@ def numeros_dichos(palabras_llanas, idioma=None, cortes=None):
             i += 1
             continue
         total, actual, mayor, visto, j = 0.0, 0.0, 0.0, False, i
+        anterior, tras_enlace = None, False
         while j < len(palabras):
             palabra = palabras[j]
             if palabra in enlaces:
@@ -583,8 +602,10 @@ def numeros_dichos(palabras_llanas, idioma=None, cortes=None):
                     continue
                 if visto and (numero(sigue) is not None or sigue in multiplos):
                     j += 1
+                    tras_enlace = True
                     continue
                 break
+            anterior = None if palabra in multiplos else anterior
             if palabra in multiplos:
                 escala = multiplos[palabra]
                 if escala == 100:
@@ -601,14 +622,19 @@ def numeros_dichos(palabras_llanas, idioma=None, cortes=None):
                     total += max(1.0, actual) * escala
                     actual = 0.0
                 visto = True
+                tras_enlace = False
                 j += 1
                 if j - 1 in cortes:
                     break              # la coma cierra el numero: ver `cortes`
                 continue
             valor = numero(palabra)
-            if valor is None:
+            if valor is None or not _se_suma(anterior, valor):
+                # Y si lo que no se suma venia detras de un «and», el «and» es
+                # la conjuncion de la frase y no se lo lleva la cifra
+                j -= 1 if tras_enlace else 0
                 break
             actual += valor
+            anterior, tras_enlace = valor, False
             visto = True
             j += 1
             if j - 1 in cortes:
@@ -1047,6 +1073,81 @@ def _monedas_con_decimales(palabras, candidatos, idioma=None):
     return candidatos
 
 
+#: Las horas que encabezan una hora dicha a la inglesa («three forty-seven»).
+#: Solo el ingles: en castellano se dice «las tres y cuarenta y siete».
+_HORAS_CABEZA = {"en": {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+                        "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+                        "eleven": 11, "twelve": 12}}
+
+
+def _horas_dichas(palabras, idioma=None, cortes=None):
+    """Las horas dichas como «three forty-seven». -> [(indice, cuantas, '3:47')]
+
+    Una hora (one..twelve) pegada a unos minutos de DIEZ A CINCUENTA Y NUEVE
+    («ten», «fifteen», «forty seven»), sin coma por medio ni multiplicador
+    detras. Fork, 10-10-2026: el subtitulo de «It's three forty-seven in the
+    afternoon» salia «It's 50», que es la suma; partirlo sin mas daria «3 47».
+    """
+    if idioma is not None and idioma not in _HORAS_CABEZA:
+        return []
+    unidades, multiplos, _, colas = _tablas("en")
+    horas = _HORAS_CABEZA["en"]
+    cortes = set(cortes or ())
+    palabras = list(palabras or [])
+    salida, i = [], 0
+    while i + 1 < len(palabras):
+        hora = horas.get(palabras[i])
+        minutos = unidades.get(palabras[i + 1])
+        if hora is None or i in cortes or minutos is None or not 10 <= minutos <= 59:
+            i += 1
+            continue
+        cuantas = 2
+        if (minutos % 10 == 0 and minutos >= 20 and i + 1 not in cortes
+                and i + 2 < len(palabras)
+                and 1 <= (unidades.get(palabras[i + 2]) or 0) <= 9):
+            minutos += unidades[palabras[i + 2]]
+            cuantas = 3
+        era = palabras[i + cuantas:i + cuantas + 2]
+        if era[:1] in (["bc"], ["bce"], ["ad"]) or era in (["b", "c"], ["a", "d"]):
+            # «twelve fifty B.C.» es el ano 1250 antes de Cristo, no una hora
+            salida.append((i, cuantas, str(hora * 100 + minutos)))
+            i += cuantas
+            continue
+        detras = palabras[i + cuantas:i + cuantas + 1]
+        # «two thirty-year-olds» son dos personas de treinta, no las 2:30
+        if (detras and (detras[0] in multiplos or detras[0].startswith("year"))) or any(
+                palabras[i + cuantas:i + cuantas + len(c)] == list(c) for c in colas):
+            i += 1
+            continue
+        salida.append((i, cuantas, f"{hora}:{int(minutos):02d}"))
+        i += cuantas
+    return salida
+
+
+#: Las decenas en plural, que con una cabeza de siglo delante son una DECADA:
+#: «eighteen thirties» -> «1830s». Y «hundreds» es el siglo: «1800s».
+_DECADAS = {"en": {"twenties": 20, "thirties": 30, "forties": 40, "fifties": 50,
+                   "sixties": 60, "seventies": 70, "eighties": 80, "nineties": 90,
+                   "hundreds": 0}}
+
+
+def _decadas_dichas(palabras, idioma=None):
+    """«nineteen nineties» -> '1990s', «eighteen hundreds» -> '1800s'.
+
+    Fork, 10-10-2026: salian «19 nineties» y «18 hundreds» en el subtitulo.
+    """
+    if idioma is not None and idioma not in _DECADAS:
+        return []
+    cabezas, decadas = _ANOS_CABEZA["en"], _DECADAS["en"]
+    palabras = list(palabras or [])
+    salida = []
+    for i in range(len(palabras) - 1):
+        base, decada = cabezas.get(palabras[i]), decadas.get(palabras[i + 1])
+        if base is not None and decada is not None:
+            salida.append((i, 2, f"{base + decada}s"))
+    return salida
+
+
 def cifras_dichas(palabras, idioma=None, cortes=None):
     """Lo dicho que se ESCRIBE con numeros. -> [(indice, cuantas, texto)]
 
@@ -1069,6 +1170,12 @@ def cifras_dichas(palabras, idioma=None, cortes=None):
     # 1 · el ano en dos mitades, primero: el parser general lo sumaria
     for inicio, cuantas, ano in _anos_dichos(palabras, idioma):
         tomar(inicio, cuantas, str(ano))
+    # 1b · la hora a la inglesa («three forty-seven»), que tambien se sumaba
+    for inicio, cuantas, texto in _horas_dichas(palabras, idioma, cortes):
+        tomar(inicio, cuantas, texto)
+    # 1c · la decada y el siglo («eighteen thirties», «eighteen hundreds»)
+    for inicio, cuantas, texto in _decadas_dichas(palabras, idioma):
+        tomar(inicio, cuantas, texto)
     # 2 · la serie de digitos, que el parser general tambien sumaria
     for inicio, cuantas, texto in _series_de_digitos(palabras, idioma, cortes):
         tomar(inicio, cuantas, texto)

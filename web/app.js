@@ -442,6 +442,7 @@ const API = {
   sonidoVetados: pid => `${BASE}/api/proyectos/${encodeURIComponent(pid)}/sonido/vetados`,
   direccion: pid => `${BASE}/api/proyectos/${encodeURIComponent(pid)}/direccion`,
   direccionProponer: pid => `${BASE}/api/proyectos/${encodeURIComponent(pid)}/direccion/proponer`,
+  direccionRehacer: pid => `${BASE}/api/proyectos/${encodeURIComponent(pid)}/direccion/rehacer`,
   notasMontaje: pid => `${BASE}/api/proyectos/${encodeURIComponent(pid)}/montaje/notas`,
   enlaces: () => `${BASE}/api/enlaces`,
   enlace: eid => `${BASE}/api/enlaces/${encodeURIComponent(eid)}`,
@@ -2388,6 +2389,18 @@ function proveedorDeImagen(datos) {
       MODELOS_IMAGEN_GOOGLE, valor => guardarModelo('modelo_planos', valor)));
     caja.appendChild(campoSelect('Modelo de las hojas de personaje', g.modelo_reparto || '',
       MODELOS_IMAGEN_GOOGLE, valor => guardarModelo('modelo_reparto', valor)));
+    /* CÓMO SE PAGAN (fork, 08-10-2026): Flex PayGo de Vertex, la misma imagen
+       a mitad de precio con más espera. Lo que se anota sale de lo que Vertex
+       dice haber cobrado en cada imagen, no de lo elegido aquí. */
+    caja.appendChild(campoSelect('Cómo se pagan las imágenes', g.cobro_imagen || 'flex', [
+      { valor: 'flex', nombre: 'Flex — mitad de precio, la misma imagen; tarda algo más' },
+      { valor: 'estandar', nombre: 'Estándar — precio normal, lo más rápido' },
+    ], valor => guardarModelo('cobro_imagen', valor)));
+    caja.appendChild(h('div', { clase: 'pista' }, (g.cobro_imagen || 'flex') === 'flex'
+      ? 'Con Flex Google atiende las imágenes cuando tiene hueco: una tanda larga '
+        + 'tarda más y verás más esperas («429») que el estudio reintenta solo. '
+        + 'No canceles la tanda por eso.'
+      : 'Estándar cuesta el doble que Flex por la misma imagen.'));
     caja.appendChild(h('div', { clase: 'caja-aviso' },
       'Gemini va siempre por Vertex AI con la sesión de gcloud. NO uses una API key de '
       + 'AI Studio: la prueba gratuita de Google Cloud no la cubre y se cobraría a tu tarjeta.'));
@@ -3289,7 +3302,39 @@ const ANIMOS_EXPLICADOS = {
   esperanzador: 'optimista, luminoso',
   corporativo: 'limpio, de empresa',
   oscuro: 'grave, sombrío',
+  divertido: 'gracioso, de comedia',
 };
+
+/* CÓMO SE ORDENA CADA VÍDEO DE ESTE ESTILO (fork, Fase 5): un relato con
+   pocas paradas, una lista numerada o etapas en orden de tiempo. Cambia cómo se
+   le pide el guion al redactor la próxima vez; no rehace nada ni cuesta nada.
+   La lista de estructuras la da el servidor (`p3_guion.ESTRUCTURAS`). */
+function estructuraDeGuionLight(ficha) {
+  const tabla = (APP.light.datos || {}).estructuras || {};
+  const actual = ((ficha.datos || {}).guion || {}).estructura || 'relato';
+  const opciones = Object.entries(tabla).map(([valor, nombre]) => ({ valor, nombre }));
+  /* Y LA DURACIÓN HABITUAL: con la que empieza el encargo de cada vídeo nuevo.
+     En minutos, que es como se piensa un vídeo; se guarda en segundos. */
+  const minutos = h('input', {
+    type: 'number', min: 1, max: 120, step: 1,
+    value: Math.round(duracionDelEstilo(ficha) / 60),
+  });
+  minutos.addEventListener('change', () => {
+    const m = Math.max(1, Math.min(120, Math.round(Number(minutos.value) || 0)));
+    minutos.value = m;
+    guardarPresetLight(ficha.id, { duracion_objetivo_s: m * 60 });
+  });
+  return h('div', {},
+    campoSelect('Cómo se ordena', actual, opciones,
+      v => guardarPresetLight(ficha.id, { estructura: v }),
+      'Vale para los vídeos nuevos con este estilo. En los de más de 15 minutos, '
+      + 'el número de partes crece con la duración.'),
+    h('div', { clase: 'campo' },
+      h('label', {}, 'Duración habitual'),
+      h('div', { clase: 'fila' }, minutos, h('span', { clase: 'meta' }, 'minutos')),
+      h('div', { clase: 'pista' },
+        'Con esta empieza el encargo de cada vídeo nuevo; luego la cambias si quieres.')));
+}
 
 /* LOS ÁNIMOS DE LA MÚSICA DE UN ESTILO. El estudio parte el vídeo en tramos y
    mira el ritmo de cada uno: según sea el arranque, el cuerpo o el cierre, y
@@ -6172,8 +6217,17 @@ async function duplicarEstiloLight(ficha) {
    un botón que no lleva a ninguna parte se prueba una vez y no se vuelve a
    pulsar nunca. La elección SÍ se guarda, así que el día que exista el paso ya
    está tomada. */
+/* LA DURACIÓN HABITUAL DE UN ESTILO (fork, Fase 5): con ella empieza el
+   encargo de un vídeo nuevo. 240 s si el estilo no dice nada. */
+function duracionDelEstilo(ficha) {
+  return Number((((ficha || {}).datos || {}).guion || {}).duracion_objetivo_s) || 240;
+}
+
 function elegirEstiloLight(ficha) {
   localStorage.setItem('estudio.light.estilo', ficha.id);
+  // un encargo a medias cuya duración no has tocado coge la del estilo nuevo
+  const e = APP.light.video.encargo;
+  if (e && !e.duracionTocada) e.duracion_objetivo_s = duracionDelEstilo(ficha);
   // se empieza en el ENCARGO: elegir un estilo es el principio de un vídeo
   // nuevo. Si había uno a medias, la propia pantalla lo ofrece.
   APP.light.video.vista = 'encargo';
@@ -6254,7 +6308,8 @@ function encargoVideoLight() {
   if (!v.encargo) {
     v.encargo = {
       nombre: '',
-      duracion_objetivo_s: 240,
+      // la duración habitual del estilo elegido (fork, Fase 5)
+      duracion_objetivo_s: duracionDelEstilo(estiloElegido()),
       // horizontal 16:9 o vertical 9:16. Se decide AQUI, con la duracion, y
       // todo lo de abajo lo respeta: las imagenes se piden en ese tamano y
       // el video sale en esa resolucion (`pasos/comun.FORMATOS`).
@@ -6264,6 +6319,9 @@ function encargoVideoLight() {
       material: '',
       // si lo pegado YA es el guion, el redactor no reescribe: respeta
       guion_propio: false,
+      // LO QUE QUIERES VER (fork, 08-10-2026): las notas de imagen de tu
+      // guion. No van a ningun paso: ver `ideasVisualesLight`
+      ideas_visuales: '',
       // COMO contarlo, aparte de los hechos: «no fuerces una historia de
       // personaje», «no incluyas la entrevista»
       indicaciones: '',
@@ -6611,6 +6669,11 @@ function vistaElegidoLight() {
     'de dónde salen los hechos que se van a contar',
     materialLight(e)));
 
+  caja.appendChild(bloqueLight('Lo que quieres ver',
+    'las notas de imagen de tu guion (opcional)',
+    ideasVisualesLight(e.ideas_visuales, valor => { e.ideas_visuales = valor; },
+      'encargo-ideas')));
+
   /* LAS INDICACIONES, detrás del material y en su propio bloque: los hechos son
      una cosa y CÓMO contarlos es otra. Cuando iban en la misma caja, lo escrito
      detrás del material lo leía el documentalista y no el guionista: salía un
@@ -6687,6 +6750,7 @@ function duracionLight(e, estilo) {
   });
   const mover = valor => {
     e.duracion_objetivo_s = Math.max(30, Math.round(Number(valor) || 0));
+    e.duracionTocada = true;
     numero.value = e.duracion_objetivo_s;
     barra.value = Math.min(1800, Math.max(60, e.duracion_objetivo_s));
     refrescarEstimacionLight(e, linea, estilo);
@@ -6782,7 +6846,13 @@ function textoDeCoste(ficha) {
       ? ` + voz con ElevenLabs ≈ ${miles(c.creditos_voz)} créditos`
       : ' + voz con ElevenLabs (créditos: se miden al grabar)';
   }
-  return `${pl.total} planos · ${c.imagenes} imágenes · ≈ ${Number(c.usd_total || 0).toFixed(2)} $${voz}`;
+  // CUANTO TARDA EL MP4 y DE DONDE SALEN LOS PLANOS (fork, Fase 5): un vídeo
+  // largo son horas de máquina, y eso también se decide antes de encargarlo
+  const render = ficha.render && ficha.render.segundos
+    ? ` · montar el MP4 ≈ ${duracionCorta(ficha.render.segundos)} en este portátil` : '';
+  const origen = pl.origen && pl.origen !== 'tabla del ritmo' ? ` (${pl.origen})` : '';
+  return `${pl.total} planos${origen} · ${c.imagenes} imágenes · `
+    + `≈ ${Number(c.usd_total || 0).toFixed(2)} $${voz}${render}`;
 }
 
 /* EL MATERIAL. Una lista de cajas: cada una es un enlace o un texto, y el
@@ -6828,6 +6898,82 @@ function materialLight(e) {
   return caja;
 }
 
+/* LO QUE QUIERES VER (fork, 08-10-2026). Las notas de imagen de un guion
+ * escrito a mano —«[VISUAL: pantalla partida…]»—, cada una junto a la frase que
+ * acompaña. No se locutan: las leen quien decide qué personajes y sitios salen
+ * (el reparto) y quien decide qué se ve en cada plano (la dirección).
+ *
+ * NO SON UN PARAM, y es a propósito (`pasos/ideas_visuales.py`): un param de
+ * las imágenes entra en la firma de cada plano, y retocar una coma dejaría
+ * obsoletos los doscientos y el siguiente «Generar» los volvería a pagar. Aquí
+ * cambiarlas no rehace nada: valen la próxima vez que se dirijan los planos.
+ *
+ * El `input` no sube: en el encargo de un vídeo abierto, la caja de fuera
+ * programa un volcado de los params con cada tecla, y esto no es un param. */
+function ideasVisualesLight(valor, alCambiar, foco, pie) {
+  const caja = h('div', { clase: 'campo' });
+  const area = h('textarea', {
+    rows: 6,
+    placeholder: 'Pega aquí las notas de imagen de tu guion, cada una junto a '
+      + 'la frase que acompaña. Por ejemplo:\n'
+      + 'NARRATION: It\'s three forty-seven in the afternoon.\n'
+      + '[VISUAL: a doodle character slumps at a desk; the clock reads 3:47 PM]',
+    oninput: ev => { ev.stopPropagation(); alCambiar(ev.target.value); },
+  });
+  area.dataset.foco = foco;
+  area.value = valor || '';
+  caja.appendChild(h('div', { clase: 'fuente-light' }, h('div', { clase: 'area' }, area)));
+  caja.appendChild(h('div', { clase: 'pista' },
+    'Esto NO se locuta: lo que se graba va en «El material». Copia aquí cada '
+    + 'nota de imagen junto a la frase que acompaña; el plano que dice esa frase '
+    + 'dibuja tu idea, y los planos sin nota los decide el estudio, como siempre.'));
+  if (pie) caja.appendChild(pie);
+  return caja;
+}
+
+/* Las del vídeo abierto: se leen del servidor una vez por vídeo y se guardan
+   solas, con su propio reloj y su propio aviso de «guardando». */
+function ideasDelVideoLight() {
+  const v = APP.light.video;
+  if (!v.ideas || v.ideas.pid !== v.pid) {
+    const ideas = { pid: v.pid, texto: '', cargadas: false, reloj: null,
+                    estado: 'cargando…' };
+    v.ideas = ideas;
+    pedir(`${API.proyecto(v.pid)}/ideas-visuales`)
+      .then(d => { ideas.texto = d.texto || ''; ideas.cargadas = true;
+                   ideas.estado = ''; })
+      .catch(err => { ideas.estado = `no se han podido leer: ${err.message}`; })
+      .finally(() => { if (APP.light.video.ideas === ideas) pintarLight(); });
+  }
+  const ideas = v.ideas;
+  const pie = h('div', { clase: 'meta' }, ideas.estado
+    || (ideas.texto ? `${miles(ideas.texto.length)} caracteres guardados` : ''));
+  const caja = ideasVisualesLight(ideas.texto, valor => {
+    ideas.texto = valor;
+    pie.textContent = '⏳ guardando…';
+    clearTimeout(ideas.reloj);
+    ideas.reloj = setTimeout(async () => {
+      try {
+        const d = await pedir(`${API.proyecto(ideas.pid)}/ideas-visuales`,
+          { method: 'PUT', cuerpo: { texto: ideas.texto } });
+        pie.textContent = d.texto
+          ? `✓ guardado (${miles(d.caracteres)} caracteres). Vale para la próxima `
+            + 'vez que se dirijan los planos; no rehace nada solo.'
+          : '✓ sin notas de imagen';
+      } catch (err) {
+        pie.textContent = `⚠️ no se ha guardado: ${err.message}`;
+      }
+    }, 900);
+  }, 'encargo-ideas', pie);
+  // mientras se leen, la caja no se puede escribir: lo tecleado se perderia al
+  // llegar lo guardado
+  if (!ideas.cargadas) {
+    const area = caja.querySelector('textarea');
+    if (area) area.disabled = true;
+  }
+  return caja;
+}
+
 /* Crear el proyecto y lanzar la primera tanda, en un gesto. Son dos llamadas
    —el proyecto tiene que existir antes de poder generar nada en él— pero UNA
    decisión, así que un botón. */
@@ -6847,6 +6993,7 @@ async function crearYGenerarLight(estilo) {
         formato: e.formato || 'horizontal',
         material: e.material,
         guion_propio: !!e.guion_propio,
+        ideas_visuales: e.ideas_visuales || '',
         indicaciones: e.indicaciones,
         cta: e.cta,
       },
@@ -6999,6 +7146,10 @@ function vistaEncargoVideoLight() {
   caja.appendChild(bloqueLight('El material',
     'de dónde salen los hechos que se van a contar',
     materialLight(e)));
+
+  caja.appendChild(bloqueLight('Lo que quieres ver',
+    'las notas de imagen de tu guion (opcional)',
+    ideasDelVideoLight()));
 
   caja.appendChild(bloqueLight('Las indicaciones',
     'cómo quieres que se cuente (opcional)',
@@ -7246,7 +7397,9 @@ function trabajoVideoLight() {
    y en ese hueco el botón seguía encendido: un segundo clic lanzaba otra
    petición. Ahora el botón se apaga en cuanto se pulsa. */
 function ocupadoLight() {
-  return !!trabajoVideoLight() || !!(APP.light.video || {}).lanzando;
+  // «Rehacer con Opus» también: dibujar mientras cambia la escena saldría con la vieja
+  return !!trabajoVideoLight() || !!(APP.light.video || {}).lanzando
+    || !!DIRECCION.trabajo;
 }
 
 /* La barra: a la derecha del botón y ocupando el resto de la franja. Dice por
@@ -8109,6 +8262,8 @@ async function cargarPreviaLight() {
   if (!v.pid || PREVIA.cargando) return;
   PREVIA.cargando = true;
   PREVIA.error = '';
+  // tras una tanda la escena de cada plano puede haber cambiado: se vuelve a leer
+  if (!DIRECCION.trabajo) DIRECCION.ficha = null;
   repintarVideo();
   try {
     PREVIA.ficha = await pedir(`${API.proyecto(v.pid)}/previsualizacion`);
@@ -8498,6 +8653,216 @@ function irAPrimeraObsoleta() {
   if (i >= 0) { PREVIA.i = i; PREVIA.t = 0; repintarVideo(); }
 }
 
+/* «REHACER CON OPUS» (fork, 02-11-2026). Solo con el Estilo de historia (orden
+ * corta + biblioteca de escenas, ver pasos/escena_entera.py). Sonnet escribe la
+ * escena de cada plano y Opus las repasa: los planos que «NO CUENTAN LA FRASE»
+ * salen aquí ARRIBA, a la vista, con su botón para volver a pedirlos a Opus xhigh
+ * con las frases de alrededor delante.
+ *
+ * Rehacer cambia la dirección de ESE plano y nada más: su imagen queda obsoleta y
+ * se vuelve a dibujar con el siguiente «Generar»; las demás no se tocan.
+ *
+ * Se repinta SOLO este bloque (`repintarDireccion`), no la pantalla entera: el
+ * sondeo va cada dos segundos y repintarlo todo se llevaría por delante lo que se
+ * esté escribiendo en el feedback de la imagen. */
+const DIRECCION = { pid: null, ficha: null, cargando: false, error: '', fallo: '',
+  trabajo: null, nodo: null, todos: false };
+
+function direccionDelVideo() {
+  const pid = videoAbierto().pid;
+  if (DIRECCION.pid !== pid) {
+    Object.assign(DIRECCION, { pid, ficha: null, cargando: false, error: '', fallo: '',
+      trabajo: null, todos: false });
+  }
+  return DIRECCION;
+}
+
+function repintarDireccion() {
+  const viejo = DIRECCION.nodo;
+  if (viejo && viejo.isConnected) viejo.replaceWith(panelDireccionLight());
+}
+
+async function cargarDireccionLight() {
+  const d = direccionDelVideo();
+  if (d.cargando) return;
+  d.cargando = true;
+  try {
+    d.ficha = await pedir(API.direccion(d.pid));
+    d.error = '';
+    // un «Rehacer» que venía corriendo (recarga, o mirado desde el móvil) se retoma
+    const vivo = d.ficha.trabajo;
+    if (vivo && vivo.nombre === 'direccion_rehacer' && !d.trabajo) {
+      seguirRehacerDireccion(vivo.id, vivo.unidades || []);
+    }
+  } catch (e) { d.error = e.message; }
+  d.cargando = false;
+  repintarDireccion();
+}
+
+async function rehacerConOpus(ids) {
+  const d = direccionDelVideo();
+  if (d.trabajo || !ids.length) return;
+  if (!window.confirm(`Rehacer ${ids.length === 1 ? 'el plano ' + ids[0]
+    : 'los ' + ids.length + ' planos marcados'} con Opus (esfuerzo xhigh).\n\n`
+    + 'Gasta plan de Claude (unos 30 s por plano), no dinero de Google. Su imagen '
+    + 'se vuelve a dibujar en el próximo «Generar» (≈0,04 $ cada una).\n\n¿Seguir?')) return;
+  d.fallo = '';
+  d.trabajo = { id: null, ids, progreso: 0, mensaje: 'pidiendo…' };
+  pintarLight();          // entera: también se apagan «Generar» y «Montar» del pie
+  try {
+    const r = await pedir(API.direccionRehacer(d.pid), { method: 'POST', cuerpo: { ids } });
+    seguirRehacerDireccion(r.trabajo_id, r.ids || ids);
+  } catch (e) {
+    d.trabajo = null;
+    d.fallo = e.message;
+    pintarLight();
+  }
+}
+
+function seguirRehacerDireccion(tid, ids) {
+  const trabajo = { id: tid, ids, progreso: 0, mensaje: 'lanzando…' };
+  DIRECCION.trabajo = trabajo;
+  const vuelta = async () => {
+    if (DIRECCION.trabajo !== trabajo) return;
+    let datos;
+    try {
+      datos = await pedir(API.trabajo(tid));
+    } catch (e) {
+      trabajo.mensaje = `sin noticias del servidor: ${e.message}`;
+      repintarDireccion();
+      setTimeout(vuelta, 4000);
+      return;
+    }
+    trabajo.progreso = datos.progreso || 0;
+    trabajo.mensaje = datos.publico || datos.mensaje || '';
+    if (['listo', 'error', 'cancelado'].includes(datos.estado)) {
+      DIRECCION.trabajo = null;
+      if (datos.estado === 'listo') {
+        const r = datos.resultado || {};
+        toast(`Rehacer con Opus: ${r.rehechos || 0} de ${(r.pedidos || ids).length} `
+          + 'plano(s) reescritos. Pulsa «Generar» para volver a dibujarlos.');
+      } else {
+        DIRECCION.fallo = datos.error || 'el trabajo se ha cancelado';
+      }
+      // la dirección y las imágenes obsoletas han cambiado: se vuelve a leer todo
+      DIRECCION.ficha = null;
+      try { await recargarVideoAbierto(); } catch (e) { console.error(e); }
+      PREVIA.ficha = null;
+      APP.light.video.vista = 'previa';
+      pintarLight();
+      return;
+    }
+    repintarDireccion();
+    setTimeout(vuelta, 2000);
+  };
+  pintarLight();
+  setTimeout(vuelta, 1000);
+}
+
+function tarjetaPlanoDireccion(p, motivo, avisos, rehecho, bloqueado) {
+  const esc = p.escena || {};
+  const trabajando = (DIRECCION.trabajo || { ids: [] }).ids.includes(p.id);
+  return h('div', { clase: 'plano-direccion' + (motivo ? ' marcado' : '') },
+    h('div', { clase: 'fila' },
+      h('span', { clase: 'id' }, p.id),
+      rehecho ? h('span', { clase: 'meta sigue' }, `rehecho con ${rehecho}`) : null,
+      h('span', { clase: 'crece' }),
+      h('button', {
+        clase: 'mini', disabled: !!bloqueado,
+        title: bloqueado || 'Vuelve a pedir SOLO este plano a Opus xhigh',
+        onclick: () => rehacerConOpus([p.id]),
+      }, trabajando ? 'Rehaciendo…' : 'Rehacer con Opus')),
+    h('div', { clase: 'pista meta' }, `«${p.narracion || ''}»`),
+    motivo ? h('div', { clase: 'motivo' }, `✗ No cuenta la frase: ${motivo}`) : null,
+    (avisos || []).map(a => h('div', { clase: 'meta' }, `⚠ ${a}`)),
+    h('div', { clase: 'escena' }, esc.escena ? `Escena: ${esc.escena}`
+      : (p.direccion || 'sin dirección todavía')),
+    esc.letras ? h('div', { clase: 'meta' }, `Letras: ${esc.letras}`) : null);
+}
+
+function panelDireccionLight() {
+  const d = direccionDelVideo();
+  const nodo = h('div', { clase: 'direccion-opus' });
+  d.nodo = nodo;
+  if (!d.ficha) {
+    if (d.error) {
+      nodo.appendChild(cajaError(`No se ha podido leer la dirección de los planos: ${d.error}`));
+      nodo.appendChild(h('button', {
+        clase: 'mini', onclick: () => { d.error = ''; cargarDireccionLight(); },
+      }, 'Reintentar'));
+    } else if (!d.cargando) setTimeout(cargarDireccionLight, 0);
+    return nodo;
+  }
+  // los demás Estilos no tienen escena entera: aquí no se enseña nada
+  if (!d.ficha.escena_entera) return nodo;
+
+  const av = d.ficha.avisos_escena || {};
+  const marcados = av.marcados || {};
+  const avisos = av.avisos || {};
+  const rehechos = av.rehechos || {};
+  const planos = d.ficha.planos || [];
+  const conMarca = planos.filter(p => marcados[p.id]);
+  const conAvisos = planos.filter(p => !marcados[p.id] && (avisos[p.id] || []).length);
+  const bloqueado = d.trabajo ? 'Opus está trabajando: espera a que acabe'
+    : (ocupadoLight() ? 'hay una tanda en marcha: espera a que acabe' : '');
+  const tarjeta = p => tarjetaPlanoDireccion(p, marcados[p.id], avisos[p.id],
+    rehechos[p.id], bloqueado);
+
+  nodo.appendChild(h('div', { clase: 'light-cab' },
+    h('h3', {}, 'La escena de cada plano'),
+    h('span', { clase: 'meta' },
+      `${planos.filter(p => p.escena).length} de ${planos.length} planos con su escena entera`)));
+
+  /* MIENTRAS TRABAJA, A LA VISTA Y PEGADO ARRIBA: qué hace, por dónde va y qué
+     no hay que tocar. Es lo que pidió Enrique para todo lo que tarda. */
+  if (d.trabajo) {
+    nodo.appendChild(h('div', { clase: 'aviso-trabajo' },
+      h('div', { clase: 'cargando' },
+        `⏳ Cargando… Opus está reescribiendo ${d.trabajo.ids.join(', ')}`
+        + (d.trabajo.progreso ? ` (${Math.round(d.trabajo.progreso * 100)} %)` : '')),
+      d.trabajo.mensaje ? h('div', { clase: 'meta' }, d.trabajo.mensaje) : null,
+      h('div', { clase: 'no-tocar' },
+        '⚠ No cierres el estudio hasta que acabe («Generar» y «Montar» se quedan '
+        + 'apagados mientras tanto). Puedes seguir mirando las imágenes.')));
+  }
+  if (d.fallo) nodo.appendChild(cajaError(`«Rehacer con Opus» no ha podido terminar: ${d.fallo}`));
+
+  if (conMarca.length) {
+    nodo.appendChild(h('div', { clase: 'fila' },
+      h('strong', { clase: 'marcados' },
+        `El repaso de Opus dice que ${conMarca.length} plano(s) NO cuentan su frase`),
+      h('span', { clase: 'crece' }),
+      h('button', {
+        clase: 'primario', disabled: !!bloqueado, title: bloqueado || null,
+        onclick: () => rehacerConOpus(conMarca.map(p => p.id)),
+      }, `Rehacer los marcados con Opus (${conMarca.length})`)));
+    conMarca.forEach(p => nodo.appendChild(tarjeta(p)));
+  } else if (planos.some(p => p.escena)) {
+    nodo.appendChild(h('div', { clase: 'meta' },
+      Object.keys(rehechos).length
+        ? '✓ Ya no queda ningún plano marcado por el repaso de sentido.'
+        : '✓ El repaso de sentido no ha marcado ningún plano.'));
+  }
+  (av.generales || []).forEach(a => nodo.appendChild(h('div', { clase: 'meta' }, `⚠ ${a}`)));
+
+  if (conAvisos.length) {
+    nodo.appendChild(h('details', {},
+      h('summary', {}, `Otros avisos de la comprobación (${conAvisos.length} planos)`),
+      conAvisos.map(tarjeta)));
+  }
+  // «Todos los planos» se pinta al abrirlo: 140 tarjetas cerradas no tienen por qué ir al DOM
+  const todos = h('details', { open: d.todos },
+    h('summary', {}, `Todos los planos (${planos.length})`));
+  if (d.todos) meter(todos, [planos.map(tarjeta)]);
+  todos.addEventListener('toggle', () => {
+    if (todos.open === d.todos) return;
+    d.todos = todos.open;
+    repintarDireccion();
+  });
+  nodo.appendChild(todos);
+  return nodo;
+}
+
 function vistaPreviaLight() {
   const v = videoAbierto();
   const caja = h('div', { clase: 'light-previa' });
@@ -8511,6 +8876,8 @@ function vistaPreviaLight() {
     obsoletasEnLaCabecera(escenas),
     h('span', { clase: 'crece' }),
     costeLight()));
+  // la escena de cada plano y el «Rehacer con Opus», solo con el Estilo de historia
+  caja.appendChild(panelDireccionLight());
 
   if (PREVIA.error) { caja.appendChild(cajaError(PREVIA.error)); return caja; }
   if (!PREVIA.ficha) {
@@ -8852,7 +9219,9 @@ async function guardarNotaEscena(escena) {
  * leen como el mismo gesto. Aqui la etiqueta ya dice lo que hace. */
 function botonRenderizarLight() {
   if (hayMp4Light() && !videoObsoletoLight()) return null;
-  const corriendo = (APP.trabajos[CLAVE_VIDEO_LIGHT] || {}).estado === 'ejecutando';
+  // también mientras «Rehacer con Opus» cambia la escena de algún plano
+  const corriendo = (APP.trabajos[CLAVE_VIDEO_LIGHT] || {}).estado === 'ejecutando'
+    || !!DIRECCION.trabajo;
   /* CON NOTAS SIN APLICAR, ESTE BOTON HACE MENOS que el de al lado: «Aplicar»
      reparte las notas, redibuja lo que toquen y DESPUES monta; esto solo monta,
      o sea que gasta el render entero para dejarte el video sin tus notas. Es la
@@ -9017,7 +9386,16 @@ function vistaVideoLight() {
         h('a', {
           clase: 'boton mini fantasma', href: urlDeVideoLight('render', 'creditos.txt'),
           download: 'creditos.txt',
-        }, 'Créditos')) : null);
+        }, 'Créditos')) : null,
+    // los subtitulos para subirlos a YouTube aparte (fork, 26-10-2026)
+    (hayMp4Light() && ((videoAbierto().fichas.render || {}).salidas || {}).srt)
+      ? conAyuda(
+        'Los subtítulos del vídeo en un fichero .srt. En YouTube Studio: '
+        + 'Subtítulos → Añadir idioma → Subir archivo → «Con sincronización».',
+        h('a', {
+          clase: 'boton mini fantasma', href: urlDeVideoLight('render', 'subtitulos.srt'),
+          download: 'subtitulos.srt',
+        }, 'Subtítulos (.srt)')) : null);
   BARRA_INFERIOR.nodo = pie;
 
   /* EL REPASO VA DEBAJO DEL VÍDEO Y SOLO CUANDO HAY VÍDEO. Antes de eso no hay
@@ -9030,8 +9408,64 @@ function vistaVideoLight() {
      del montaje, así que antes de eso no hay tramos que enseñar. */
   if (versionDe(videoAbierto().fichas.assets || {}) && !trabajoVideoLight()) {
     caja.appendChild(panelMusicaLight());
+    caja.appendChild(panelMontajeLight());
   }
   return caja;
+}
+
+/* CÓMO SE MONTA (fork, 26-10-2026): si los subtítulos van dentro del vídeo y
+   cuánto se mueve la cámara (pasos/camara.py). Viven en los params de
+   callouts: cambiarlos no toca ni una imagen, solo las capas y el MP4, o sea
+   que no cuesta dinero, cuesta tiempo de montaje. */
+const OPCIONES_SUBTITULOS = [
+  { valor: 'auto', nombre: 'No: van en YouTube (sí en los vídeos verticales)' },
+  { valor: 'no', nombre: 'No, nunca' },
+  { valor: 'si', nombre: 'Sí, dentro del vídeo' },
+];
+const OPCIONES_CAMARA = [
+  { valor: 'variada', nombre: 'Variado: quieto casi siempre, zoom donde lo pide el guion' },
+  { valor: 'siempre', nombre: 'Siempre: zoom y paneo en todos los planos (como antes)' },
+  { valor: 'quieta', nombre: 'Quieto: ningún plano se mueve' },
+];
+
+function panelMontajeLight() {
+  const v = videoAbierto();
+  const params = (v.fichas.callouts || {}).params || {};
+  const guardando = APP.light.video.guardandoMontaje;
+  const caja = h('div', { clase: 'repaso montaje-light' });
+  caja.appendChild(h('div', { clase: 'repaso-cab' },
+    h('h3', {}, 'Cómo se monta'),
+    h('span', { clase: 'meta' }, 'subtítulos y movimiento de cámara')));
+  caja.appendChild(campoSelect('Subtítulos dentro del vídeo', params.subtitulos || 'auto',
+    OPCIONES_SUBTITULOS, valor => guardarMontajeLight({ subtitulos: valor }),
+    'Los textos que destacan lo importante (las cartelas) salen siempre. '
+    + 'Los subtítulos se suben aparte a YouTube.'));
+  caja.appendChild(campoSelect('Movimiento de cámara', params.camara || 'variada',
+    OPCIONES_CAMARA, valor => guardarMontajeLight({ camara: valor }),
+    'Variado: el gancho va plano a plano, con cortes secos; los gráficos, los '
+    + 'primeros planos y las cartelas, quietos para que se vean enteros; el zoom '
+    + 'suave, en los planos largos, los tensos y los que abren una parte.'));
+  caja.appendChild(h('div', { clase: 'meta' }, guardando
+    ? h('span', { clase: 'latiendo' }, '⏳ Guardando… no hace falta volver a elegir.')
+    : 'Al cambiarlo, «Regenerar Vídeo» lo aplica. Gratis: no genera imágenes, '
+      + 'solo vuelve a montar.'));
+  return caja;
+}
+
+async function guardarMontajeLight(cambios) {
+  const v = videoAbierto();
+  APP.light.video.guardandoMontaje = true;
+  repintarVideo();
+  try {
+    await pedir(API.params(v.pid, 'callouts'), { method: 'PUT', cuerpo: { params: cambios } });
+    await refrescarFichasLight();
+    await refrescarPlanLight('render', true);
+    toast('guardado · «Regenerar Vídeo» lo aplica al MP4');
+  } catch (e) {
+    toast(e.message, true);
+  }
+  APP.light.video.guardandoMontaje = false;
+  repintarVideo();
 }
 
 /* LO QUE CONVIENE SABER ANTES DE MONTAR, A LA VISTA (revision de la Fase 4).
@@ -10479,6 +10913,10 @@ function vistaPresetLight() {
   tono.appendChild(cajaDeRehacer(ficha, 'tono'));
   caja.appendChild(bloqueLight('🗣️ Tono del guion',
     'cómo se cuenta, nunca de qué', tono));
+
+  // 📐 cómo se ordena cada vídeo (fork, Fase 5): no rehace nada ni cuesta nada
+  caja.appendChild(bloqueLight('📐 Estructura', 'cómo se ordena y cuánto dura cada vídeo',
+    estructuraDeGuionLight(ficha)));
 
   // ⏱️ el ritmo: se cambia y ya, no rehace nada
   caja.appendChild(bloqueLight('⏱️ Ritmo', 'cada cuánto corta el vídeo',

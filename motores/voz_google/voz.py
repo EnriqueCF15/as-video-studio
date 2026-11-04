@@ -40,7 +40,9 @@ import json
 import os
 import random
 import re
+import shutil
 import struct
+import subprocess
 import sys
 import time
 import wave
@@ -90,6 +92,19 @@ LOCALES = {"gemini": {"en": "en-US", "es": "es-ES"},
 #: Tope por peticion. La API admite 4.000 bytes de texto; se deja margen para
 #: las etiquetas de pausa que se anaden y para no rozar el limite de audio.
 MAX_BYTES = 3600
+
+#: Modelos que se APAGAN a lo largo de una peticion larga: hay que pedirles el
+#: texto en piezas cortas y parecidas. Medido el 09-10-2026 con Gemini 3.1 Flash
+#: TTS: en una peticion de 1.900 caracteres la voz pierde brillo desde los 10 s
+#: y cae ~5 dB pasado el minuto (Enrique: «se vuelve un susurro»); en piezas de
+#: ~600 el nivel se quedo plano y cada pieza arranca con la energia del
+#: principio. Cuesta lo mismo: Google cobra por caracter y por segundo de audio.
+BYTES_PIEZA_POR_MODELO = {"gemini-3.1-flash-tts-preview": 700}
+
+#: Quitasoplidos (ffmpeg afftdn) sobre cada pieza: la voz de Google trae un
+#: soplido de -53/-57 dB debajo de todo, que se oia como estatica (09-10-2026,
+#: comparado de oido por Enrique: «definitivamente mas limpio»).
+FILTRO_SOPLIDO = "afftdn=nr=12:nf=-55:tn=1"
 
 #: Pausa entre trozos de SECCIONES distintas (cambio de tema: se lee como
 #: intencionada) y entre partes de una misma seccion partida por tamano.
@@ -303,6 +318,73 @@ def trocear_por_bytes(texto, maximo=MAX_BYTES):
     return trozos
 
 
+def trocear_equilibrado(texto, maximo):
+    """Como `trocear_por_bytes`, pero en piezas de tamano PARECIDO.
+
+    Llenando hasta el tope la ultima pieza sale con una frase y media, y una
+    pieza tan corta arranca «en frio» y se nota (09-10-2026: la union del 2:00
+    fue la unica que Enrique oyo). Mismo numero de piezas, frases repartidas a
+    partes iguales; si una frase no cabe sola, se queda el troceo de siempre.
+    """
+    base = trocear_por_bytes(texto, maximo)
+    if len(base) < 2:
+        return base
+    frases = re.split(r"(?<=[.!?…])\s+", " ".join(str(texto or "").split()))
+    tamanos = [len(f.encode("utf-8")) + 1 for f in frases]
+    if max(tamanos) > maximo:
+        return base
+    objetivo = sum(tamanos) / float(len(base))
+    piezas, actual, llevado = [], [], 0
+    for frase, tamano in zip(frases, tamanos):
+        if actual and llevado + tamano / 2.0 > objetivo and len(piezas) < len(base) - 1:
+            piezas.append(" ".join(actual))
+            actual, llevado = [], 0
+        actual.append(frase)
+        llevado += tamano
+    piezas.append(" ".join(actual))
+    if any(len(p.encode("utf-8")) > maximo for p in piezas):
+        return base
+    return piezas
+
+
+def quitar_soplido(pcm):
+    """El PCM de una pieza pasado por el quitasoplidos. -> (pcm, hecho)
+
+    Sin ffmpeg (o con ESTUDIO_SIN_QUITASOPLIDO) devuelve el PCM tal cual: una
+    voz con soplido es mejor que ninguna voz.
+    """
+    if not pcm or os.environ.get("ESTUDIO_SIN_QUITASOPLIDO"):
+        return pcm, False
+    ffmpeg = (os.environ.get("ESTUDIO_FFMPEG") or "").strip().strip('"') or shutil.which("ffmpeg")
+    if not ffmpeg:
+        return pcm, False
+    formato = ["-f", "s16le", "-ar", str(SR), "-ac", "1"]
+    # cola de silencio para que el filtro, que RETRASA la salida ~25 ms, no se
+    # coma el final de la pieza al devolver el mismo largo
+    cola = b"\x00\x00" * int(SR * 0.25)
+    hecho = subprocess.run([ffmpeg, "-hide_banner", "-loglevel", "error", *formato, "-i", "pipe:0",
+                            "-af", FILTRO_SOPLIDO, *formato, "pipe:1"],
+                           input=pcm + cola, capture_output=True)
+    if hecho.returncode != 0 or len(hecho.stdout) < len(pcm):
+        return pcm, False
+    entrada = np.frombuffer(pcm, dtype="<i2").astype(np.float64)
+    salida = np.frombuffer(hecho.stdout[:len(hecho.stdout) & ~1], dtype="<i2")
+    # las marcas de tiempo no se pueden mover: se mide el retraso y se descuenta
+    retraso = _retraso(entrada, salida[:len(entrada)].astype(np.float64))
+    if retraso < 0 or retraso > len(salida) - len(entrada):
+        return pcm, False
+    return salida[retraso:retraso + len(entrada)].astype("<i2").tobytes(), True
+
+
+def _retraso(a, b, maximo=4096):
+    """Cuantas muestras va `b` por detras de `a` (correlacion cruzada). -> int"""
+    n = 1 << int(np.ceil(np.log2(len(a) + len(b))))
+    c = np.fft.irfft(np.fft.rfft(b, n) * np.conj(np.fft.rfft(a, n)), n)
+    ventana = np.concatenate((c[:maximo + 1], c[-maximo:]))
+    k = int(np.argmax(ventana))
+    return k if k <= maximo else k - len(ventana)
+
+
 def _palabras(texto):
     return len(re.sub(r"\[[^\]]*\]", " ", texto).split())
 
@@ -402,11 +484,14 @@ def sintetizar_trozos(trozos, voz="Orus", modelo=MODELO_POR_DEFECTO, idioma="en"
         return valor
     avisar = avisar if callable(avisar) else sordo
 
+    maximo = BYTES_PIEZA_POR_MODELO.get(modelo)
     piezas = []
     for indice, trozo in enumerate(trozos):
         if isinstance(trozo, str):
             trozo = {"texto": trozo}
-        for parte in trocear_por_bytes(trozo.get("texto")):
+        partes = (trocear_equilibrado(trozo.get("texto"), maximo) if maximo
+                  else trocear_por_bytes(trozo.get("texto")))
+        for parte in partes:
             piezas.append({"trozo": indice, "texto": parte,
                            "estilo": trozo.get("estilo"),
                            "seccion": trozo.get("seccion", indice)})
@@ -418,6 +503,7 @@ def sintetizar_trozos(trozos, voz="Orus", modelo=MODELO_POR_DEFECTO, idioma="en"
     def una(pieza):
         pcm, _ = sintetizar(pieza["texto"], voz, modelo, idioma, pieza["estilo"],
                             locale, velocidad)
+        pcm, pieza["sin_soplido"] = quitar_soplido(pcm)
         hechas[0] += 1
         avisar(hechas[0] / len(piezas), f"{hechas[0]} de {len(piezas)} trozos de voz")
         return recortar_silencios(pcm)

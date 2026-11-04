@@ -133,7 +133,29 @@ ESCALERA = (
                   "metaphor of the idea rather than a scene")},
 )
 
-POR_ID = {carta["id"]: carta for carta in ESCALERA}
+#: CARTAS QUE NO ESTAN EN LA ESCALERA (fork, 28-10-2026). Solo salen en un
+#: Estilo que las nombre en su lista `estilo.cartas` (ver `permitidas_de`), y van
+#: aparte por la regla de arriba: meterlas en la escalera cambiaria el largo del
+#: reparto y con el la carta de todos los planos de todos los videos.
+#:
+#: Nacen del repaso del video 2 (27-10): 'general' pide «plenty of air above and
+#: around them» y salia un recuadro de dibujo dentro de papel vacio; y no habia
+#: ningun plano medio a la altura de los ojos, que es el que mejor cuenta quien
+#: hace que.
+EXTRAS = (
+    {"id": "conjunto", "familia": "lejos", "peso": 3,
+     "nombre": "plano de conjunto",
+     "encuadre": ("a wide shot at eye level that shows the whole scene and "
+                  "everyone in it, the setting drawn right up to every edge of "
+                  "the frame")},
+
+    {"id": "medio", "familia": "medio", "peso": 4, "nombre": "plano medio",
+     "encuadre": ("a medium shot at eye level: the people fill the frame from "
+                  "the knees or the waist up, their faces and hands clearly "
+                  "visible, the setting drawn around them up to the edges")},
+)
+
+POR_ID = {carta["id"]: carta for carta in ESCALERA + EXTRAS}
 
 #: Cuantos planos hacia atras se mira para no repetir FAMILIA. Regla dura. Dos y
 #: no uno: con uno, 'aereo'-'retrato'-'general' pasa el filtro y el espectador ve
@@ -145,15 +167,47 @@ VENTANA_FAMILIA = 2
 VENTANA_CARTA = 5
 
 
-def _repartidas():
+def permitidas_de(estilo):
+    """Las cartas que deja usar un Estilo, en su orden, o None si no limita.
+
+    Es `estilo.cartas`, una lista de ids (fork, 28-10-2026): el Estilo de
+    historia de Enrique se queda sin silueta, pantalla, hueco, entre, eterea,
+    hombro y suelo, que en el video 2 dieron sombras negras, ventanas de
+    ordenador, sitios vacios y objetos tapando los bordes. Los ids que no
+    existen se ignoran, y si no queda ninguno no limita: un Estilo mal escrito
+    no puede dejar un video sin cartas.
+    """
+    lista = estilo.get("cartas") if isinstance(estilo, dict) else None
+    if not isinstance(lista, (list, tuple)):
+        return None
+    ids = [str(c) for c in lista if str(c) in POR_ID]
+    return list(dict.fromkeys(ids)) or None
+
+
+def de_la_lista(permitidas=None):
+    """Las cartas sobre las que se reparte: las del Estilo o la escalera entera."""
+    return [POR_ID[i] for i in permitidas] if permitidas else list(ESCALERA)
+
+
+def _repartidas(permitidas=None):
     """La escalera expandida por peso, que es sobre lo que se reparte."""
     expandida = []
-    for carta in ESCALERA:
+    for carta in de_la_lista(permitidas):
         expandida.extend([carta] * max(1, int(carta.get("peso") or 1)))
     return expandida
 
 
-def carta_de(sid, previas=(), semilla=0, forzada=""):
+def _ventana_familia(permitidas=None):
+    """VENTANA_FAMILIA, salvo que el Estilo deje tan pocas familias que la regla
+    las obligaria a rotar siempre en el mismo orden: con tres familias y ventana
+    dos, el tercer plano ya no tiene eleccion. Siempre quedan dos donde elegir."""
+    if not permitidas:
+        return VENTANA_FAMILIA
+    familias = {POR_ID[i]["familia"] for i in permitidas}
+    return max(0, min(VENTANA_FAMILIA, len(familias) - 2))
+
+
+def carta_de(sid, previas=(), semilla=0, forzada="", permitidas=None):
     """Que clase de plano es este. Determinista, y nunca la familia de al lado.
 
     'previas' son los ids de carta de los planos que van justo antes, en orden.
@@ -166,15 +220,19 @@ def carta_de(sid, previas=(), semilla=0, forzada=""):
 
     'forzada' es el id que haya pedido una persona para ESE plano, y manda sobre
     todo lo demas. Una decision tomada mirando el video no se rebate sola.
+
+    'permitidas' son las cartas del Estilo (`permitidas_de`). Sin ella el reparto
+    es el de siempre, carta por carta.
     """
     if forzada and forzada in POR_ID:
         return POR_ID[forzada]
     previas = [str(p) for p in (previas or [])]
+    ventana = _ventana_familia(permitidas)
     vetadas = {(POR_ID.get(p) or {}).get("familia")
-               for p in previas[-VENTANA_FAMILIA:]}
+               for p in (previas[-ventana:] if ventana else [])}
     vetadas.discard(None)
     recientes = set(previas[-VENTANA_CARTA:])
-    fondo = _repartidas()
+    fondo = _repartidas(permitidas)
     arranque = medios.desempatar(semilla, sid, "carta") % len(fondo)
     orden = [fondo[(arranque + i) % len(fondo)] for i in range(len(fondo))]
     libres = [c for c in orden if c["familia"] not in vetadas]
@@ -184,7 +242,7 @@ def carta_de(sid, previas=(), semilla=0, forzada=""):
     return (frescas or libres)[0]
 
 
-def repartir(escenas, semilla=0, forzadas=None):
+def repartir(escenas, semilla=0, forzadas=None, permitidas=None):
     """Una carta por plano, en orden y con las dos reglas puestas.
 
     Va aparte de `carta_de` porque el reparto depende del ORDEN -- cada plano
@@ -196,7 +254,8 @@ def repartir(escenas, semilla=0, forzadas=None):
         sid = escena.get("id")
         if not sid:
             continue
-        carta = carta_de(sid, previas, semilla, forzadas.get(sid, ""))
+        carta = carta_de(sid, previas, semilla, forzadas.get(sid, ""),
+                         permitidas)
         cartas[sid] = carta
         previas.append(carta["id"])
     return cartas

@@ -164,6 +164,26 @@ TOKENS_ENTRADA_GEMINI = 12000
 USD_TOKEN_ENTRADA_GEMINI = 0.50 / 1e6
 
 
+def cobro_imagen_gemini():
+    """«flex» o «estandar»: como se pagan las imagenes de Vertex. -> str
+
+    Lo MISMO que lee el motor (`imagen_gemini.cobro`): la variable de entorno
+    manda y si no el bloque google de las claves. Por defecto, Flex.
+    """
+    valor = os.environ.get("ESTUDIO_COBRO_IMAGEN")
+    if not valor:
+        try:
+            from . import claves                                # noqa: PLC0415
+        except ImportError:
+            import claves                                       # noqa: PLC0415
+        try:
+            valor = (claves.leer().get("google") or {}).get("cobro_imagen")
+        except Exception:                                       # noqa: BLE001
+            valor = ""
+    valor = str(valor or "flex").strip().lower()
+    return valor if valor in ("flex", "estandar") else "flex"
+
+
 def coste_por_imagen(calidad, tamano=TAMANO, proveedor=None):
     """Lo que cuesta UNA imagen a esa calidad: la devuelta MAS lo adjuntado.
 
@@ -172,12 +192,17 @@ def coste_por_imagen(calidad, tamano=TAMANO, proveedor=None):
     Con el proveedor de Configuracion si no se dice otro.
     """
     if (proveedor or proveedor_imagen()) == "vertex_gemini":
-        devuelta = USD_IMAGEN_GEMINI.get(calidad, USD_IMAGEN_GEMINI["low"])
-        entrada = TOKENS_ENTRADA_GEMINI * USD_TOKEN_ENTRADA_GEMINI
+        # CON FLEX, LA MITAD DE LAS DOS PARTES (fork, 08-10-2026): Flex PayGo
+        # descuenta el 50 % de la entrada y de la salida
+        cobro = cobro_imagen_gemini()
+        factor = 0.5 if cobro == "flex" else 1.0
+        devuelta = USD_IMAGEN_GEMINI.get(calidad, USD_IMAGEN_GEMINI["low"]) * factor
+        entrada = TOKENS_ENTRADA_GEMINI * USD_TOKEN_ENTRADA_GEMINI * factor
         return {"calidad": calidad, "usd_imagen": round(devuelta, 4),
                 "usd_referencias": round(entrada, 4),
                 "usd_total": round(devuelta + entrada, 4),
-                "tokens_entrada": TOKENS_ENTRADA_GEMINI, "proveedor": "vertex_gemini"}
+                "tokens_entrada": TOKENS_ENTRADA_GEMINI, "proveedor": "vertex_gemini",
+                "cobro": cobro}
     tokens = COSTE.tarifa_tokens() or {}
     por_token_entrada = float(tokens.get("entrada_imagen") or 0.0)
     entrada = TOKENS_ENTRADA_POR_IMAGEN * por_token_entrada

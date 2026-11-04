@@ -62,6 +62,7 @@ from nucleo.proyecto import Proyecto  # noqa: E402
 from nucleo.trabajos import GestorTrabajos  # noqa: E402
 
 import cartelas  # noqa: E402
+import comun  # noqa: E402
 import encuadres  # noqa: E402
 import medios  # noqa: E402
 import p6_assets  # noqa: E402
@@ -294,8 +295,10 @@ def preparar_proyecto():
 #: Tamano del arte: el de GENERACION de un video horizontal
 #: (`comun.FORMATOS`), que es el que tendria una imagen recien pagada. No es un
 #: detalle: p7 mide en pixeles sobre este lienzo para colocar el rotulo, y con
-#: otro tamano lo que se comprueba deja de ser lo que pasa en un video.
-LIENZO_ARTE = (1536, 1024)
+#: otro tamano lo que se comprueba deja de ser lo que pasa en un video. Se lee
+#: de alli: desde el 26-10 es 16:9 (1536x864), y un 3:2 fijo aqui era un plan
+#: de video nuevo con laminas de los de antes.
+LIENZO_ARTE = tuple(comun.FORMATOS["horizontal"]["generacion"])
 
 #: Donde esta EL SUJETO en las laminas fabricadas, en fraccion del alto. Una
 #: banda oscura en la mitad de abajo: p7 tiene que poner el rotulo ARRIBA, y con
@@ -691,6 +694,11 @@ def probar_solo_assets(proyecto, estado, params):
 
 def probar_callouts(proyecto, estado, params):
     print("\n  PASO 7 · capa vectorial y movimiento")
+    # Subtitulos dentro y camara de siempre A MANO: desde el 26-10 en horizontal
+    # van fuera del video y la camara es variada (una cartela va quieta), y aqui
+    # se mira el camino entero de dibujarlos y moverlos. Lo nuevo, en
+    # prueba_camara.
+    params = dict(params or {}, subtitulos="si", camara="siempre")
     resultado = p7_callouts.ejecutar(proyecto, params, avisador("p7"))
     trabajo = proyecto.ruta_trabajo("callouts", crear=False)
     plan = medios.leer_json(medios.salida_de(proyecto, "assets", claves=("plan",),
@@ -1211,6 +1219,29 @@ def probar_render(proyecto, estado, params):
     ok(os.path.exists(os.path.join(nuevo, "video.mp4")),
        "el MP4 se vuelve a montar con el clip nuevo")
     estado.completar("render", parcial["salidas"], parcial["unidades"])
+
+    # UN CLIP NO PEDIDO QUE YA NO CUADRA SE REHACE (fork, 04-11-2026): en el
+    # video 3, S095 se monto con su clip viejo porque solo se miraban los
+    # pedidos. Se simula un clip viejo cambiandole la huella al ultimo plano.
+    print("      un clip no pedido que ya no cuadra se rehace y se dice")
+    viejo = plan["escenas"][-1]["id"]
+    ok(len(plan["escenas"]) >= 4, "hay planos de sobra para no tocar el pedido ni su siguiente")
+    with open(os.path.join(proyecto.ruta_paso("render"), f"clips/{viejo}.mp4"
+                           + p8_render.EXT_HUELLA), "w", encoding="utf-8") as fh:
+        fh.write("huella-de-un-clip-viejo")
+    otra_vez = p8_render.ejecutar(proyecto, params, avisador("p8"),
+                                  unidades=[f"escena:{objetivo}"])
+    rehechos = [uid for uid, ficha in otra_vez["todas"].items()
+                if ficha.get("origen") == "renderizado"]
+    ok(f"escena:{viejo}" in rehechos,
+       f"el clip viejo no pedido se rehace ({rehechos})")
+    ok(f"escena:{viejo}" in otra_vez["unidades"], "y se sella como rehecho")
+    ok(any(viejo in aviso and "no cuadraban" in aviso for aviso in otra_vez["avisos"]),
+       "y se dice en los avisos")
+    ok(not any(f"escena:{e['id']}" in rehechos for e in plan["escenas"][2:-1]
+               if e["id"] != objetivo and f"escena:{e['id']}" not in parcial["unidades"]),
+       "los que cuadran se siguen conservando")
+    estado.completar("render", otra_vez["salidas"], otra_vez["unidades"])
 
     # LA BANDA SONORA VA LA ULTIMA, y no es capricho: vuelve a ejecutar el paso
     # entero, y `sembrar_trabajo` recopia la version activa al trabajo -- o sea

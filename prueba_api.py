@@ -408,6 +408,19 @@ def probar_ejecucion(cliente, base, pid):
     igual(respuesta.status_code, 409, "no se puede lanzar dos veces el mismo paso")
     igual(repetido.get("trabajo_id"), tid, "el 409 devuelve el trabajo que ya corre")
 
+    # los botones de despues tambien esperan (fork, 04-11-2026): dos trabajos de
+    # voz a la vez se borraban la carpeta de trabajo el uno al otro
+    for ruta, cuerpo in ((f"/api/proyectos/{pid}/voz/bloques/regrabar", {"tomas": ["B001_a1"]}),
+                         (f"/api/proyectos/{pid}/voz/secciones/SB01/regrabar", {}),
+                         (f"/api/proyectos/{pid}/direccion/proponer", {})):
+        respuesta, otro = cliente.post(ruta, cuerpo)
+        sigue = (cliente.get(f"/api/trabajos/{tid}")[1] or {}).get("estado") not in (
+            "listo", "error", "cancelado")
+        ok(respuesta.status_code == 409 or not sigue,
+           f"{ruta.split(pid)[1]} con otro trabajo en marcha da 409 ({respuesta.status_code})")
+        if respuesta.status_code == 409:
+            igual((otro or {}).get("trabajo_id"), tid, "y devuelve el trabajo que corre")
+
     tipo, eventos = leer_sse(base, tid)
     ok("text/event-stream" in tipo, f"el SSE se sirve como event-stream ({tipo})")
     ok(len(eventos) >= 1, "el SSE emite al menos un evento")
@@ -2927,6 +2940,22 @@ def probar_modo_light(cliente):
     ok(datos.get("musica_por_defecto") and "sobrio" in (datos.get("animos_musica") or []),
        "la galeria trae la tabla de siempre y los animos para la pantalla")
 
+    # LA ESTRUCTURA Y LA DURACION HABITUAL DEL ESTILO (fork, Fase 5)
+    respuesta, datos = cliente.put(f"/api/presets-light/{pid_preset}", {
+        "estructura": "cronologica", "duracion_objetivo_s": 1320})
+    igual(respuesta.status_code, 200, "guardar estructura y duracion responde 200")
+    guion = ((datos.get("preset") or {}).get("datos") or {}).get("guion") or {}
+    igual((guion.get("estructura"), guion.get("duracion_objetivo_s")), ("cronologica", 1320),
+          "y el estilo las guarda en su bloque de guion")
+    respuesta, _ = cliente.put(f"/api/presets-light/{pid_preset}", {"estructura": "poema"})
+    igual(respuesta.status_code, 400, "una estructura que no existe da 400")
+    respuesta, _ = cliente.put(f"/api/presets-light/{pid_preset}",
+                               {"duracion_objetivo_s": 999999})
+    igual(respuesta.status_code, 400, "una duracion fuera de rango da 400")
+    respuesta, datos = cliente.get("/api/presets-light")
+    ok("cronologica" in (datos.get("estructuras") or {}),
+       "la galeria trae las estructuras para la pantalla")
+
     # rehacer una parte de un preset SIN taller se dice, no se inventa uno
     respuesta, datos = cliente.post(
         f"/api/presets-light/{pid_preset}/regenerar",
@@ -2992,6 +3021,9 @@ def probar_video_light(cliente):
         "material": "La empresa reconoció el acceso en 2025.\n\n"
                     "El informe se publicó tres meses después.",
         "indicaciones": "Céntrate en el mecanismo, no en las personas.",
+        # LO QUE QUIERES VER (fork, 08-10-2026): las notas de imagen del autor
+        "ideas_visuales": "NARRATION: La empresa reconoció el acceso.\r\n"
+                          "[VISUAL: una mano tapa la pantalla]   ",
         # LAS LLAMADAS A LA ACCION SE DECIDEN POR VIDEO, no en el estilo
         "cta": {"cta_final": {"puesto": True,
                               "texto": "que se suscriba y vea otro vídeo"}}})
@@ -3032,6 +3064,47 @@ def probar_video_light(cliente):
           "Habla claro y sin adornos.",
           "y la guía de tono del estilo NO se machaca: el modo light no tiene "
           "un campo «de qué va», el material es el encargo")
+
+    # ---- LAS IDEAS DE IMAGEN DEL AUTOR (fork, 08-10-2026): un fichero del
+    # proyecto y NO un param, para que retocarlas no deje obsoletos los planos
+    respuesta, ideas = cliente.get(f"/api/proyectos/{vid}/ideas-visuales")
+    igual(ideas.get("texto"), "NARRATION: La empresa reconoció el acceso.\n"
+                              "[VISUAL: una mano tapa la pantalla]",
+          "las ideas de imagen se guardan al crear el vídeo, limpias")
+    respuesta, assets_p = cliente.get(f"/api/proyectos/{vid}/pasos/assets")
+    ok("ideas_visuales" not in (assets_p.get("params") or {}),
+       "y no son un param de las imágenes: no entran en la firma de los planos")
+    respuesta, cambiadas = cliente.put(f"/api/proyectos/{vid}/ideas-visuales",
+                                       {"texto": "[VISUAL: otra idea]"})
+    igual((respuesta.status_code, cambiadas.get("texto")),
+          (200, "[VISUAL: otra idea]"), "se pueden cambiar después")
+    respuesta, _ = cliente.put(f"/api/proyectos/{vid}/ideas-visuales",
+                               {"texto": "x" * 80001})
+    igual(respuesta.status_code, 400, "y lo que pasa del tope se rechaza")
+    respuesta, vacias = cliente.put(f"/api/proyectos/{vid}/ideas-visuales",
+                                    {"texto": "   "})
+    igual(vacias.get("texto"), "", "y con un texto vacío se quitan")
+    respuesta, lista_antes = cliente.get("/api/proyectos")
+    respuesta, _ = cliente.post(f"/api/presets-light/{estilo_id}/video", {
+        "nombre": "Ideas demasiado largas", "material": "algo",
+        "ideas_visuales": "x" * 80001})
+    respuesta_lista, lista_despues = cliente.get("/api/proyectos")
+    igual((respuesta.status_code, len(lista_despues["proyectos"])),
+          (400, len(lista_antes["proyectos"])),
+          "unas ideas que no caben se rechazan ANTES de crear el vídeo: no "
+          "queda uno a medias en la lista")
+
+    # ---- EN LA VOZ, «modelo» ES EL MODELO DE VOZ (fork, 08-10-2026): validarlo
+    # como uno de Claude impedia guardar a mano la voz de Google
+    respuesta, _ = cliente.put(f"/api/proyectos/{vid}/pasos/guion/params",
+                               {"params": {"modelo": "gemini-2.5-flash-tts"}})
+    igual(respuesta.status_code, 400,
+          "en el guion, «modelo» es de Claude: uno de voz se rechaza")
+    respuesta, voz_p = cliente.put(f"/api/proyectos/{vid}/pasos/voz/params",
+                                   {"params": {"modelo": "gemini-2.5-flash-tts"}})
+    igual((respuesta.status_code, (voz_p.get("params") or {}).get("modelo")),
+          (200, "gemini-2.5-flash-tts"),
+          "en la voz, «modelo» es el modelo de voz y se guarda")
 
     # ---- el guion NO esta bloqueado por no tener video de referencia
     respuesta, pasos = cliente.get(f"/api/proyectos/{vid}/pasos")
@@ -3201,14 +3274,19 @@ def probar_estimacion(cliente):
     igual(datos["cadencia"]["origen"] in ("medido", "estimado"), True,
           "diciendo si la cadencia está medida o estimada")
 
-    # TODOS LOS PLANOS PAGAN IMAGEN. Antes habia planos que no --los que
-    # ensenaban metraje real de un mapa-- y se descontaban de la cuenta. Ya no
-    # existen, asi que el precio es el numero de planos por lo que cuesta uno:
-    # si esto deja de cumplirse, hay algo descontando en silencio.
-    igual(datos["coste"]["imagenes"], datos["planos"]["total"],
-          "se paga una imagen por plano, sin descuentos escondidos")
-    igual(datos["planos"]["con_imagen"], datos["planos"]["total"],
-          "y la ficha de planos dice lo mismo")
+    # LAS IMAGENES QUE SE PAGAN (fork, Fase 5): con videos tuyos medidos con ese
+    # ritmo, los planos salen de su media REAL, las cartelas de fondo negro no
+    # se pagan y las hojas de referencia si. Sin medir, una por plano mas las
+    # hojas: nada se descuenta sin haberlo medido.
+    planos, coste = datos["planos"], datos["coste"]
+    igual(coste["imagenes"], planos["con_imagen"],
+          "el coste y la ficha de planos cuentan las mismas imagenes")
+    ok(planos.get("origen"), f"y dicen de donde sale la cuenta: {planos.get('origen')}")
+    if planos.get("origen") == "tabla del ritmo":
+        igual(coste["imagenes"], planos["total"] + planos.get("hojas", 0),
+              "sin videos medidos: una imagen por plano mas las hojas")
+    ok((datos.get("render") or {}).get("segundos", 0) > 0,
+       "y cuanto tarda en montarse el MP4 en esta maquina")
 
     respuesta, _ = cliente.post("/api/estimacion", {"duracion_objetivo_s": "hola"})
     igual(respuesta.status_code, 400, "una duración que no es un número da 400")

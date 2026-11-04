@@ -618,7 +618,14 @@ ANIMOS = {
     "epico": "epic cinematic", "sobrio": "documentary ambient",
     "esperanzador": "uplifting hopeful", "corporativo": "corporate clean",
     "melancolico": "melancholic piano", "misterioso": "mysterious ambient",
+    "divertido": "funny comedy quirky",
 }
+
+#: Animos que NO sirven de relleno. Cuando un tramo no tiene canciones de su
+#: animo, entra cualquiera de la carpeta; una de comedia en medio de una parte
+#: seria descoloca. Estas solo suenan donde se piden: un tramo con ese animo o
+#: una cancion fijada a mano (la anecdota, el blooper, la curiosidad).
+ANIMOS_SOLO_A_PROPOSITO = ("divertido",)
 
 
 def _pedir_a_jamendo(params):
@@ -991,6 +998,311 @@ def arco_del_video(escenas, duracion_s=0.0, animos=None):
     return tramos
 
 
+# --------------------------------------------- el arco POR EL GUION (fork, 19-10)
+#
+# El arco de arriba solo mira el ritmo del montaje: seis trozos iguales y el
+# animo de cada uno por cuantos cortes tiene. No sabe que a las 3:34 se cuenta
+# una anecdota graciosa ni que a las 15:30 empieza la huelga. Este parte el
+# video por LO QUE SE CUENTA, con dos fuentes:
+#
+#   - el MAPA MUSICAL que propone Claude leyendo la narracion con sus tiempos
+#     (pasos/mapa_musical.py): secciones que empiezan en un plano, con su animo
+#     y su porque. Es lo bueno: entiende un gancho, una anecdota, un climax.
+#   - si no hay mapa, el TONO que la direccion ya puso a cada plano (neutro,
+#     tenso, solemne, alegre, triste), suavizado, porque cambia cada pocos
+#     planos. Gratis y sin llamar a nadie.
+#
+# Con las dos fuentes se respeta lo mismo: ninguna seccion corta (un cambio de
+# cancion cada veinte segundos suena a trozos sueltos), salvo los momentos
+# «divertido», que son cortos a proposito; la primera seccion es el GANCHO
+# (ver `montar_banda`); y lo que el texto no decide («neutro») lo sigue
+# decidiendo el ritmo, como siempre.
+
+#: Lo que pide cada tono de la direccion, de mas a menos parecido. Se queda el
+#: primero del que haya canciones en tu carpeta; «neutro» no pide nada (manda
+#: el ritmo). «alegre» NO pide «divertido»: una imagen alegre no es un chiste,
+#: y la comedia solo suena donde la pone el mapa o una cancion fijada.
+ANIMOS_DE_TONO = {
+    "tenso": ("tension", "misterioso", "oscuro"),
+    "solemne": ("melancolico", "sobrio", "epico"),
+    "triste": ("melancolico", "sobrio"),
+    "alegre": ("esperanzador", "corporativo"),
+}
+
+#: Lo minimo que dura una seccion. Con los tonos (que cambian mucho) mas largo;
+#: con el mapa de Claude, que ya agrupa por sentido, algo menos.
+SECCION_MIN_TONOS_S = 90.0
+SECCION_MIN_MAPA_S = 60.0
+#: Y lo maximo: una seccion mas larga se parte (mismo animo, otra cancion; ver
+#: `montar_banda`, que evita repetir). Nueve minutos de la misma cancion en
+#: bucle es lo que salio la primera vez con los tonos de este video.
+SECCION_MAX_S = 240.0
+#: Un momento divertido: ni un golpe de dos segundos ni una parte entera.
+DIVERTIDO_MIN_S, DIVERTIDO_MAX_S = 10.0, 45.0
+#: Una cancion «engancha» si sus primeros segundos no van mas de esto por
+#: debajo de su volumen normal (medido el 19-10: Built by Hand empieza 12 dB
+#: abajo y no engancha; Strange but True y Cinematic Suspense, a tope).
+GANCHO_MIN_DB = -4.0
+GANCHO_SEGUNDOS = 3.0
+
+
+def animos_con_canciones(vetadas=()):
+    """Cuantas canciones con ficha hay de cada animo en tu carpeta. -> {animo: n}
+
+    Sin contar las `vetadas` de este video (ver `montar_banda`).
+    """
+    vetadas = set(vetadas or ())
+    cuantas = {}
+    for ficha in propios("musica"):
+        if ficha.get("animo") and ficha.get("archivo") not in vetadas:
+            cuantas[ficha["animo"]] = cuantas.get(ficha["animo"], 0) + 1
+    return cuantas
+
+
+#: Cuando un animo se queda sin canciones (no hay, o la unica esta vetada en
+#: este video), el mas parecido que si tenga. 19-10: la unica de «tension» era
+#: Go Down Swinging, el canal la quito, y las dos secciones de tension del mapa
+#: se iban a rellenar con cualquier cosa de la carpeta.
+ANIMOS_PARECIDOS = {
+    "tension": ("misterioso", "oscuro", "epico"),
+    "oscuro": ("misterioso", "tension", "melancolico"),
+    "epico": ("tension", "esperanzador", "misterioso"),
+    "misterioso": ("oscuro", "tension", "sobrio"),
+    "melancolico": ("sobrio", "esperanzador", "misterioso"),
+    "sobrio": ("melancolico", "misterioso", "esperanzador"),
+    "esperanzador": ("corporativo", "sobrio", "melancolico"),
+    "corporativo": ("esperanzador", "sobrio"),
+    "divertido": ("esperanzador", "corporativo"),
+}
+
+
+def _animo_que_suena(animo, hay):
+    """El animo si tiene canciones; si no, el mas parecido que tenga. -> (animo, cambiado)"""
+    if hay.get(animo, 0) > 0:
+        return animo, False
+    for parecido in ANIMOS_PARECIDOS.get(animo, ()):
+        if hay.get(parecido, 0) > 0:
+            return parecido, True
+    return animo, False
+
+
+def tono_de(escena):
+    """El tono que la direccion le puso al plano («neutro» si no dice nada)."""
+    tono = str(escena.get("tono") or "").strip().lower()
+    if not tono:
+        hallado = re.search(r"\(TONO:\s*([^)]+)\)", str(escena.get("direccion") or ""),
+                            re.I)
+        tono = hallado.group(1).strip().lower() if hallado else ""
+    return tono or "neutro"
+
+
+def _animo_de_tono(tono, hay):
+    """El animo que pide un tono, o None si lo decide el ritmo.
+
+    Primero uno con DOS canciones o mas: con una sola, una seccion larga la
+    repite en bucle (este video tiene una sola de «tension»).
+    """
+    opciones = ANIMOS_DE_TONO.get(tono, ())
+    for minimo in (2, 1):
+        for animo in opciones:
+            if hay.get(animo, 0) >= minimo:
+                return animo
+    return None
+
+
+def _juntar_iguales(secciones):
+    """Une las secciones seguidas con el mismo animo.
+
+    Cada una lleva sus `razones` ({porque: segundos}); al final manda la que
+    mas tiempo ocupa, para que el porque se pueda leer de un vistazo.
+    """
+    juntas = []
+    for seccion in secciones:
+        seccion = {**seccion, "razones": dict(seccion.get("razones")
+                                              or {seccion["por_que"]: seccion["hasta"]
+                                                  - seccion["desde"]})}
+        if juntas and juntas[-1]["animo"] == seccion["animo"]:
+            juntas[-1]["hasta"] = seccion["hasta"]
+            for razon, segundos in seccion["razones"].items():
+                juntas[-1]["razones"][razon] = juntas[-1]["razones"].get(razon, 0) + segundos
+        else:
+            juntas.append(seccion)
+    for seccion in juntas:
+        seccion["por_que"] = max(seccion["razones"], key=seccion["razones"].get)
+    return juntas
+
+
+def _partir_largas(secciones, fronteras):
+    """Las secciones de mas de SECCION_MAX_S, en partes casi iguales cortadas en
+    la frontera de plano mas cercana. Mismo animo y porque: lo que cambia es
+    la cancion (montar_banda evita repetir la del tramo anterior)."""
+    partidas = []
+    for seccion in secciones:
+        largo = seccion["hasta"] - seccion["desde"]
+        partes = int(np.ceil(largo / SECCION_MAX_S)) if largo > SECCION_MAX_S else 1
+        cortes = [seccion["desde"]]
+        for k in range(1, partes):
+            ideal = seccion["desde"] + largo * k / partes
+            dentro = [f for f in fronteras if cortes[-1] < f < seccion["hasta"]]
+            cortes.append(min(dentro, key=lambda f: abs(f - ideal)) if dentro else ideal)
+        cortes.append(seccion["hasta"])
+        for desde, hasta in zip(cortes, cortes[1:]):
+            if hasta > desde:
+                partidas.append({**seccion, "desde": desde, "hasta": hasta})
+    return partidas
+
+
+def _suavizar(secciones, minimo, fronteras):
+    """Ninguna seccion por debajo de `minimo`, salvo los momentos divertidos.
+
+    La mas corta se va con su vecina mas larga (la primera, con la segunda) y
+    se repite hasta que todas llegan. Un momento divertido no se funde: se
+    quita si es un golpe de menos de DIVERTIDO_MIN_S y se recorta, en la
+    frontera de plano mas cercana, si pasa de DIVERTIDO_MAX_S (lo que sobra
+    vuelve al animo de antes).
+    """
+    secciones = _juntar_iguales(secciones)
+    recortadas = []
+    for seccion in secciones:
+        largo = seccion["hasta"] - seccion["desde"]
+        if seccion["animo"] == "divertido" and largo > DIVERTIDO_MAX_S and recortadas:
+            limite = seccion["desde"] + DIVERTIDO_MAX_S
+            corte = min((f for f in fronteras if seccion["desde"] < f < seccion["hasta"]),
+                        key=lambda f: abs(f - limite), default=limite)
+            recortadas.append({**seccion, "hasta": corte})
+            recortadas.append({**recortadas[-2], "desde": corte, "hasta": seccion["hasta"],
+                               "por_que": recortadas[-2]["por_que"]})
+        else:
+            recortadas.append(seccion)
+    secciones = _juntar_iguales(recortadas)
+    while len(secciones) > 1:
+        cortas = [(s["hasta"] - s["desde"], i) for i, s in enumerate(secciones)
+                  if (s["animo"] == "divertido"
+                      and s["hasta"] - s["desde"] < DIVERTIDO_MIN_S)
+                  or (s["animo"] != "divertido" and s["hasta"] - s["desde"] < minimo)]
+        if not cortas:
+            break
+        _, i = min(cortas)
+        vecinas = [j for j in (i - 1, i + 1) if 0 <= j < len(secciones)]
+        if secciones[i]["animo"] != "divertido":
+            # una seccion seria corta junto a un chiste no se vuelve chiste
+            serias = [j for j in vecinas if secciones[j]["animo"] != "divertido"]
+            vecinas = serias or vecinas
+        vecina = max(vecinas, key=lambda j: secciones[j]["hasta"] - secciones[j]["desde"])
+        corta, larga = secciones[i], secciones[vecina]
+        larga["desde"] = min(larga["desde"], corta["desde"])
+        larga["hasta"] = max(larga["hasta"], corta["hasta"])
+        del secciones[i]
+        secciones = _juntar_iguales(secciones)
+    return secciones
+
+
+def arco_del_guion(escenas, duracion_s=0.0, animos=None, mapa=None, hay=None):
+    """Los tramos de la musica por LO QUE SE CUENTA. Mismo formato que
+    `arco_del_video` (lo lee `montar_banda` igual), con `gancho` en el primero.
+
+    `mapa` es el mapa musical validado ({"secciones": [{"desde_plano", "animo",
+    "porque"}]}, ver pasos/mapa_musical.py); sin el, los tonos de los planos.
+    `hay` son los animos con canciones en la carpeta (por defecto, los de
+    verdad): un tono que pide «tension» sin canciones de tension pide la
+    siguiente de su lista. Nada aleatorio: el mismo plan y el mismo mapa dan
+    los mismos tramos.
+    """
+    escenas = [e for e in (escenas or []) if e.get("t_in") is not None]
+    if not escenas:
+        return []
+    hay = animos_con_canciones() if hay is None else hay
+    if not isinstance(hay, dict):
+        # una lista de animos sin cuentas: se toman como bien surtidos
+        hay = dict.fromkeys(hay, 2)
+    origen = float(escenas[0].get("t_in") or 0.0)
+    fin = float(escenas[-1].get("t_out") or escenas[-1].get("t_in") or 0.0)
+    total = float(duracion_s or (fin - origen)) or 1.0
+    ritmo = arco_del_video(escenas, total, animos)
+    inicio_de = {e["id"]: float(e["t_in"]) - origen for e in escenas}
+    fronteras = sorted(inicio_de.values())
+
+    def animo_del_ritmo(t):
+        tramo = next((r for r in ritmo if r["desde"] <= t < r["hasta"]), ritmo[-1])
+        return tramo["animo"], tramo["por_que"]
+
+    secciones = []
+    secciones_mapa = (mapa or {}).get("secciones") or []
+    if secciones_mapa:
+        for seccion in secciones_mapa:
+            desde = inicio_de.get(seccion.get("desde_plano"))
+            if desde is None:
+                continue
+            secciones.append({"desde": desde, "animo": seccion["animo"],
+                              "por_que": str(seccion.get("porque") or "el mapa musical"),
+                              "plano": seccion["desde_plano"]})
+        secciones.sort(key=lambda s: s["desde"])
+        minimo = SECCION_MIN_MAPA_S
+    if not secciones:
+        for escena in escenas:
+            tono = tono_de(escena)
+            desde = inicio_de[escena["id"]]
+            animo = _animo_de_tono(tono, hay)
+            por_que = f"el texto va {tono}"
+            if animo is None:
+                animo, por_que = animo_del_ritmo(desde)
+            secciones.append({"desde": desde, "animo": animo, "por_que": por_que,
+                              "plano": escena["id"]})
+        minimo = SECCION_MIN_TONOS_S
+    secciones[0]["desde"] = 0.0
+    for actual, siguiente in zip(secciones, secciones[1:] + [None]):
+        actual["hasta"] = siguiente["desde"] if siguiente else total
+    for seccion in secciones:
+        # un animo sin canciones (o con la unica vetada) pide el mas parecido
+        animo, cambiado = _animo_que_suena(seccion["animo"], hay)
+        if cambiado:
+            seccion["por_que"] += f" (sin canciones «{seccion['animo']}»: {animo})"
+            seccion["animo"] = animo
+    secciones = [s for s in secciones if s["hasta"] > s["desde"]]
+    secciones = _partir_largas(_suavizar(secciones, minimo, fronteras), fronteras)
+
+    media = len(escenas) / max(0.001, total)
+    tramos = []
+    for i, seccion in enumerate(secciones):
+        desde, hasta = seccion["desde"], seccion["hasta"]
+        largo = max(0.001, hasta - desde)
+        dentro = [e for e in escenas if desde <= float(e["t_in"]) - origen < hasta]
+        densidad = len(dentro) / largo
+        tramos.append({
+            "i": i, "desde": desde, "hasta": hasta, "fraccion": largo / total,
+            "planos": len(dentro), "densidad": densidad, "animo": seccion["animo"],
+            "por_que": seccion["por_que"], "gancho": i == 0,
+            "desde_plano": dentro[0]["id"] if dentro else seccion.get("plano"),
+            "velocidad": ("high" if densidad > media * 1.25
+                          else "low" if densidad < media * 0.8 else "medium")})
+    return tramos
+
+
+def fuerza_de_arranque(ficha):
+    """Cuanto suena el principio de una cancion contra su volumen normal, en dB.
+
+    El principio es el de su PRIMER TROZO BUENO (el que va a sonar), no el del
+    fichero. 0 o mas: entra a tope; -12: entra en un susurro. Es lo que hace
+    falta para el gancho del arranque, y no se oye: se mide.
+    """
+    import wave                                        # noqa: PLC0415
+    ruta = traer(ficha, "musica")
+    # el banco guarda el MP3 tal cual: se mide sobre su WAV, como `medir`
+    wav = _a_wav(ruta)
+    with wave.open(wav, "rb") as fh:
+        hercios = fh.getframerate()
+    datos = _leer(wav).mean(axis=1)
+    partes = partes_utiles(ficha, ruta)
+    ini = int(float(partes[0][0] if partes else 0.0) * hercios)
+
+    def nivel(trozo):
+        return 20 * np.log10(np.sqrt(np.mean(trozo ** 2)) + 1e-9) if len(trozo) else -99.0
+
+    segundos = [nivel(datos[i:i + hercios]) for i in range(0, len(datos) - hercios, hercios)]
+    normal = float(np.median(segundos)) if segundos else -99.0
+    return round(nivel(datos[ini:ini + int(GANCHO_SEGUNDOS * hercios)]) - normal, 1)
+
+
 def medir(ruta):
     """Como suena un tema, en numeros. Sin oirlo y sin llamar a nadie.
 
@@ -1227,24 +1539,28 @@ def llenar_tramo(largo, candidatos):
     return piezas
 
 
-def _candidatos_de(tramo, fijada=None):
+def _candidatos_de(tramo, fijada=None, vetadas=()):
     """Las canciones que pueden ir en un tramo, de la primera fuente que tenga.
 
     De la carpeta propia: la FIJADA a mano primero (si sigue en la carpeta),
     luego las del animo del tramo, y si ninguna es de ese animo, cualquiera de
     la carpeta (con la carpeta primero, lo de fuera solo entra si esta vacia).
-    -> (lista, fijada_encontrada)
+    De relleno no entran las de ANIMOS_SOLO_A_PROPOSITO, salvo que no haya
+    otras. Las `vetadas` (ficheros) no entran nunca. -> (lista, fijada_encontrada)
     """
+    vetadas = set(vetadas or ())
     for fuente in fuentes_de("musica"):
         if fuente == "propia":
-            lista = propios("musica")
+            lista = [f for f in propios("musica") if f.get("archivo") not in vetadas]
             if not lista:
                 continue
             fija = [f for f in lista if fijada and f.get("archivo") == fijada]
             resto = [f for f in lista if f not in fija]
             del_animo = [f for f in resto if f.get("animo") == tramo["animo"]
                          or tramo["animo"] in (f.get("etiquetas") or [])]
-            return fija + (del_animo or resto), bool(fija)
+            relleno = [f for f in resto
+                       if f.get("animo") not in ANIMOS_SOLO_A_PROPOSITO] or resto
+            return fija + (del_animo or relleno), bool(fija)
         if fuente == "jamendo" and hay_claves()[0]:
             candidatos = buscar_musica(
                 animo=tramo["animo"], cuantas=6,
@@ -1256,7 +1572,7 @@ def _candidatos_de(tramo, fijada=None):
 
 
 def montar_banda(escenas, duracion_s, avisar=None, tramos=None, fijadas=None,
-                 animos=None):
+                 animos=None, vetadas=None):
     """La banda sonora entera, decidida sola. Devuelve la ficha para params.
 
     NO deja fichero: deja escrito QUE trozos de que canciones van en cada
@@ -1273,6 +1589,9 @@ def montar_banda(escenas, duracion_s, avisar=None, tramos=None, fijadas=None,
     `fijadas` es {indice de tramo: fichero de tu carpeta}: esa cancion va
     primero en ese tramo, sea del animo que sea. Es lo que se elige a mano en
     la pantalla del video.
+
+    `vetadas` son ficheros de tu carpeta que en ESTE video no suenan nunca, ni
+    fijados ni de relleno (19-10: Go Down Swinging «desentona con todo»).
     """
     avisar = avisar or (lambda *a, **k: None)
     fijadas = {str(k): str(v) for k, v in (fijadas or {}).items() if v}
@@ -1289,11 +1608,23 @@ def montar_banda(escenas, duracion_s, avisar=None, tramos=None, fijadas=None,
                f"tramo {tramo['i'] + 1} de {len(arco)}: buscando algo "
                f"«{tramo['animo']}»")
         fijada = fijadas.get(str(tramo["i"]))
-        candidatos, encontrada = _candidatos_de(tramo, fijada)
+        candidatos, encontrada = _candidatos_de(tramo, fijada, vetadas)
         if fijada and not encontrada:
             avisos.append(f"tramo {tramo['i'] + 1}: «{fijada}» ya no está en tu "
                           "carpeta (o no tiene ficha); se ha elegido otra")
         ordenados = ordenar_temas(candidatos, evitar=usados)
+        if tramo.get("gancho"):
+            # EL GANCHO: primero las que entran a tope, en el orden de siempre
+            # entre ellas. Una que empieza en un susurro no engancha aunque
+            # deje mucho hueco a la voz.
+            def engancha(ficha):
+                try:
+                    ficha["arranque_db"] = fuerza_de_arranque(ficha)
+                except Exception:                              # noqa: BLE001
+                    return False
+                return ficha["arranque_db"] >= GANCHO_MIN_DB
+            fuertes = [f for f in ordenados if engancha(f)]
+            ordenados = fuertes + [f for f in ordenados if f not in fuertes]
         if encontrada:
             # la fijada va primero aunque otra puntue mejor: la has elegido tu
             fija = [f for f in ordenados if f.get("archivo") == fijada]
@@ -1322,6 +1653,9 @@ def montar_banda(escenas, duracion_s, avisar=None, tramos=None, fijadas=None,
                         "animo": tramo["animo"], "velocidad": tramo["velocidad"],
                         "fraccion": tramo["fraccion"], "planos": tramo["planos"],
                         "desde": tramo["desde"], "hasta": tramo["hasta"],
+                        **({"gancho": True} if tramo.get("gancho") else {}),
+                        **({"desde_plano": tramo["desde_plano"]}
+                           if tramo.get("desde_plano") else {}),
                         "por_que": ("elegida a mano" if encontrada
                                     else tramo["por_que"])})
     return {"tramos": puestos, "ganancia_db": CAMA_GANANCIA_DB,

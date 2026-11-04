@@ -74,9 +74,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import medios  # noqa: E402
 
 try:
-    from . import cli_claude, estadisticas
+    from . import cli_claude, encuadres, escena_entera, estadisticas
 except ImportError:  # ejecutado con la carpeta pasos directamente en sys.path
     import cli_claude
+    import encuadres
+    import escena_entera
     import estadisticas
 
 PASO = "direccion"
@@ -165,6 +167,48 @@ REGLAS QUE NO SE SALTAN:
   vez precisamente para poder hacer esto.
 - NO REPITAS LA NARRACION. Esa frase ya viaja al modelo. Tu dices lo que se VE
   mientras se oye, que casi nunca es lo mismo.
+
+=====================================================================
+LO QUE SE VE ES LO QUE SE DICE
+=====================================================================
+
+Esto salio mal en un video entero (repaso del 27-10) y lo pago quien lo vio:
+
+- LA IMAGEN MUESTRA LITERALMENTE LO QUE DICE LA FRASE: quien, que hace y
+  donde. No inventes objetos, letreros ni simbolos que la frase no nombre.
+  Paso: una parada de autobus con reloj electronico, un sombrero encima de un
+  globo terraqueo, una fecha tachada que nadie habia dicho.
+- LA GENTE DE LA FRASE SALE, ENTERA Y A LA VISTA, HACIENDO LO QUE LA FRASE
+  DICE. Si la frase habla de personas (una pandilla de ninos, unos vecinos, tu),
+  el plano las ensena a ellas, con la cara visible; nunca un objeto suelto que
+  «las sugiere». Paso (piloto del 28-10): «una pandilla de ninos que aprendio de
+  los gansteres de los periodicos» salio como un periodico enganchado a una
+  aldaba, sin un solo nino.
+- NADA FLOTANDO NI EMPUJADO HACIA LA CAMARA: lo que alguien lleva lo sujeta con
+  sus manos, a la vista, junto a su cuerpo. Paso: tres bolsas de papel en primer
+  termino sin nadie que las sujete.
+- UNA IDEA GRANDE SE CUENTA CON UNA ESCENA CLARA, no con objetos sueltos ni con
+  una cara: un gasto enorme es una montana de compras de Halloween con alguien
+  mirandola boquiabierto, una historia que cambia es la gente haciendo lo que la
+  frase dice. Si la idea es UNA CIFRA y no hay cartela encima, la cifra va en
+  letras grandes dentro del dibujo («$13.5 BILLION» sobre la montana). Paso: el
+  mismo plano salio como una cara gigante y un monton gris, sin cifra.
+- SI EL PLANO LLEVA «CARTELA ENCIMA», su cifra o su frase ya salen en pantalla
+  con letra de verdad: no las repitas dentro del dibujo. Paso: «61 %» dos
+  veces en el mismo plano.
+- LETRAS GRANDES DENTRO DEL DIBUJO, SOLO CUANDO APORTAN: una cifra enorme que
+  es la idea del plano y que no esta ya en la cartela, el titular que la frase
+  nombra. Si no aportan, sin letras. Un letrero, una pizarra o un felpudo que
+  no tiene que decir nada se pide «blank», con esa palabra: si no, el
+  generador escribe lo que quiere.
+- NUNCA PERSONAS COMO SOMBRAS O SILUETAS OSCURAS, y nada de pantallas de
+  ordenador ni ventanas de programa salvo que la frase hable de eso. Todo el
+  mundo sale dibujado entero, con luz, en el estilo del video.
+- SI LA FRASE (O LA IDEA DEL AUTOR) PIDE UNA PANTALLA DIVIDIDA, hazla de
+  verdad: empieza con «split screen:» y di que hay en la mitad izquierda y que
+  en la derecha.
+- NADA FUERA DE LA EPOCA NI DE LA FIESTA: en Halloween no hay guirnaldas que
+  parezcan navidenas ni un «25» de calendario.
 
 =====================================================================
 LAS TRES QUE MAS SE ROMPEN, Y LAS TRES SE VIERON EN UN VIDEO MONTADO
@@ -380,7 +424,7 @@ ella:
   · una frase que dice que algo SUBE no se dibuja bajando.
 
 Los dos pasaron de verdad y se vieron en el video montado.
-
+{ideas}{cartas}
 =====================================================================
 LOS PLANOS ({cuantos}, y los quiero TODOS)
 =====================================================================
@@ -393,8 +437,224 @@ DEVUELVE ESTE JSON:
 Los {cuantos} planos, ninguno menos y ninguno de mas.
 """
 
+#: LAS IDEAS DE IMAGEN DEL AUTOR (fork, 08-10-2026; ver `ideas_visuales`). Van
+#: DESPUES de las reglas y ANTES de los planos: lo de arriba dice como se
+#: escribe un plano y esto dice cual quiere ver quien escribio el guion. Sin
+#: ideas el hueco queda vacio y el encargo sale exactamente como salia.
+IDEAS = """
+=====================================================================
+LAS IDEAS DE IMAGEN DEL AUTOR. MANDAN SOBRE LO QUE TU IMAGINARIAS
+=====================================================================
+Quien escribio el guion dejo apuntado lo que quiere VER, cada idea junto a la
+frase que acompana. Cuando la frase de un plano es (o contiene) una de esas
+frases, ese plano dibuja ESA idea: adaptala a lo que cabe en un plano y sin
+contradecir el estilo ni el sitio, pero no la cambies por otra tuya.
 
-def _planos_legibles(escenas, beats=None):
+  · Una idea que encadena varias imagenes (un montaje, una secuencia, «luego»)
+    se reparte EN ORDEN entre el plano de esa frase y los que la siguen.
+  · El texto en pantalla que pida (titulos, carteles, cifras) va entre
+    comillas, en el idioma del video, y corto.
+  · Un personaje o un objeto que el autor repite (el mismo protagonista, el
+    mismo reloj) se dibuja igual cada vez que vuelve.
+  · Las notas de musica o sonido no son tuyas: ignoralas.
+  · Un plano cuya frase no tiene idea apuntada lo decides tu, como siempre.
+
+<<<
+{texto}
+>>>
+"""
+
+#: EL TIPO DE PLANO LO ELIGE EL DIRECTOR (fork, 28-10-2026), y solo en un Estilo
+#: que limita las cartas (`estilo.cartas`). Sorteada sin mirar la frase, la carta
+#: obligaba a inventar: en el video 2 una silueta a contraluz para «gastan 13.500
+#: millones» y un sitio vacio para «profesores de Oxford». La eleccion vuelve en
+#: la linea como «(PLANO: id)» y la lee `p6_assets._asignar_cartas`.
+CARTAS = """
+=====================================================================
+EL TIPO DE PLANO LO ELIGES TU
+=====================================================================
+
+Este estilo solo usa estos tipos de plano:
+
+{lista}
+
+Cada plano trae uno sorteado. Elige el que mejor cuente SU frase: quien hace
+que, en plano medio; un sitio o un grupo entero, en conjunto; alguien que
+camina o dos que se enfrentan, en perfil. Retrato SOLO si la frase va de la
+reaccion de una persona, y detalle SOLO si la frase va de un objeto concreto que
+nombra; nunca para una cifra, un grupo o una idea. Ante la duda, medio o
+conjunto. Si el sorteado sirve, quedatelo; varia cuando la frase lo permita,
+pero la frase manda sobre la variedad. Lo que describes tiene que caber en ese
+plano.
+
+Al final de cada linea, despues del tono, escribe el que elijas, tal cual:
+(PLANO: medio)
+"""
+
+#: EL ENCARGO «MODO HISTORIA» (fork, 28-10-2026), para el Estilo que pide la orden
+#: corta (`estilo.orden: "corta"`). El de arriba se escribio para videos de
+#: tecnologia y finanzas: sus ejemplos (atacantes, bancos, oro, proveedores) y su
+#: largo se los llevaba el director a un video de historia. En el piloto 1 del
+#: 28-10 el dibujo salio bien y el director invento en 3 de 5 planos. Esto son
+#: las reglas de Enrique y nada mas; lo que lee el codigo se queda igual: el
+#: JSON, «(TONO: ...)», «(PLANO: ...)», «EN OTRO SITIO:», la cartela de encima,
+#: las cartas, las ideas del autor, los sitios y el reparto. Y una etiqueta mas,
+#: «(COMO EN: S040)», para la persona sin hoja que vuelve en el plano siguiente
+#: (la lee `p6_assets.como_en`).
+INSTRUCCION_HISTORIA = """Eres el director de un video de historia animado, en estilo
+doodle, titulado «{titulo}».
+
+El video ya esta cortado en planos, cada uno con su frase de narracion, su sitio
+y su reparto. Tu escribes, para cada plano, QUE SE VE: una linea en INGLES de
+{palabras_maximas} palabras como mucho. Esa linea es la escena que recibe el
+dibujante. El estilo se lo ensenan unas imagenes de referencia, y estas frases
+le llegan siempre (no las repitas):
+
+{estilo}
+
+LOS SITIOS. La descripcion de su sitio entra tal cual en cada plano: lo tuyo
+pasa dentro de ese sitio, sin repetirlo ni contradecirlo.
+
+{sitios}
+{reparto}
+=====================================================================
+LAS REGLAS. Cada una salio mal en un video ya publicado
+=====================================================================
+
+- LO LITERAL. La imagen ensena lo que dice la frase: quien, que hace y donde.
+  Ni un objeto, simbolo o letrero que la frase no nombre.
+- LA FRASE MANDA SOBRE EL SITIO Y EL REPARTO. Si la frase dice «you» o
+  «your», sale el protagonista aunque el reparto del plano no lo traiga. Si el
+  sitio no deja ensenar lo que dice la frase (es un fondo vacio, una vista
+  aerea sin gente, un objeto suelto, o trae cosas que la frase no pide), vete
+  con `EN OTRO SITIO: `. Paso: «the bowl in your hands» en una acera con
+  parada de autobus salio como un desconocido con un gorro de fiesta.
+- LA GENTE DE LA FRASE SALE ENTERA, con la cara visible y haciendo lo que la
+  frase dice. Si la frase habla de personas, el plano las ensena a ellas, nunca
+  un objeto suelto que «las sugiere». Tambien una cifra de gente («el 61 % de
+  los americanos») se ensena con esa gente haciendo lo que dice la frase, no
+  con casas ni luces. Paso: «una pandilla de ninos que aprendio de los
+  gansteres de los periodicos» salio como un periodico en una aldaba, sin un
+  solo nino.
+- NADA FLOTANDO NI EMPUJADO HACIA LA CAMARA. Lo que alguien lleva lo sujeta
+  junto a su cuerpo. Paso: tres bolsas en primer termino sin nadie que las
+  sujete.
+- LOS OBJETOS GRANDES (un saco, una caja, una calabaza enorme) se llevan
+  abrazados contra el pecho, con las manos ocultas detras: las manos que
+  agarran algo grande salen deformes.
+- UNA CIFRA. Si la idea del plano es una cifra y el plano NO lleva cartela
+  encima, la cifra va en letras grandes dentro del dibujo («$13.5 BILLION»
+  sobre una montana de compras, con alguien mirandola). Si el plano lleva
+  CARTELA ENCIMA, esa cifra o esa frase ya sale en pantalla: no la repitas en
+  el dibujo. Paso: «61 %» dos veces en el mismo plano.
+- EL RIZO EN ESPIRAL ES SOLO DEL PROTAGONISTA («you», tambien «tu en el
+  pasado»). Nadie mas lo lleva: los demas hombres son calvos y se distinguen
+  por la ropa, el gorro o el bigote; las mujeres llevan pelo y pestanas.
+- NADA FUERA DE LA EPOCA NI DE LA FIESTA: ropa, uniformes, edificios y objetos
+  del lugar y del ano de la frase. Paso: un policia de Minnesota con casco de
+  policia ingles; guirnaldas que parecian navidenas en Halloween.
+- UNA MASCARA LEVANTADA O QUITADA deja ver debajo la cara normal del estilo,
+  sin maquillaje ni pintura.
+- PANTALLA DIVIDIDA DE VERDAD cuando la frase (o la idea del autor) la pide:
+  empieza con «split screen:» y di que hay en la mitad izquierda y que en la
+  derecha.
+- NUNCA PERSONAS COMO SOMBRAS O SILUETAS OSCURAS, ni pantallas de ordenador si
+  la frase no habla de ellas.
+- DISTINTO DEL DE AL LADO. Dos planos seguidos no son la misma escena desde
+  otro angulo: o ensenan otra cosa, o el segundo dice que ha cambiado.
+
+LETREROS Y LETRAS
+- Un letrero, cartel, pizarra, portada o titular lleva texto SOLO si la frase
+  nombra algo relevante que ese letrero diria: un lugar, una tienda, una fecha
+  o un dato. Entonces va entre comillas dobles, corto (de una a cuatro
+  palabras), grande y en {idioma}: a shop sign reading "DRY GOODS".
+- NUNCA conviertas en rotulo una palabra suelta o una accion del guion («THE
+  DEAL», «THEY ASKED», «COPIED»): le quita el sentido al plano.
+- Cualquier otro letrero, pizarra, felpudo o pagina se pide «blank», con esa
+  palabra. El dibujante solo escribe lo que va entre comillas.
+
+SI LA FRASE SE VA A OTRO SITIO, el plano se va con ella. Si lo que dice la
+frase no se puede ensenar en su sitio (dice «hoy» y el sitio es de hace siglos,
+nombra otro pais, o el sitio no tiene donde poner a su gente), empieza la linea
+con `EN OTRO SITIO: ` y describe tu el sitio entero: la descripcion del sitio
+del tramo deja de entrar en ese plano. Un objeto nuevo en el mismo sitio no es
+irse.
+
+LA MISMA PERSONA EN PLANOS SEGUIDOS. Alguien que NO esta en el reparto (no tiene
+hoja) y vuelve a salir en un plano siguiente: describelo con las mismas palabras
+(edad, pelo, ropa) y acaba la linea de ese segundo plano con la etiqueta
+(COMO EN: <id del plano donde salio antes>). El dibujante recibira aquel plano
+para copiarle la cara y la ropa. Solo entonces: no la pongas por costumbre.
+
+EL TONO. Todo plano con gente acaba con su tono, tal cual, uno de estos cinco:
+(TONO: alegre) (TONO: neutro) (TONO: tenso) (TONO: triste) (TONO: solemne).
+Alegre cuando a quien sale le va bien (es el unico que deja sonreir); neutro
+para explicar, trabajar o mirar (no es enfado); tenso solo con amenaza de
+verdad; triste cuando pierde algo; solemne en un momento grave. Manda la frase
+de ESE plano, no la del tramo.
+{ideas}{cartas}
+=====================================================================
+LOS PLANOS ({cuantos}, y los quiero TODOS)
+=====================================================================
+{planos}
+
+DEVUELVE ESTE JSON:
+
+{{"planos": {{"<id de plano>": "<que se ve en ese plano, en ingles>"}}}}
+
+Los {cuantos} planos, ninguno menos y ninguno de mas.
+"""
+
+
+def modo_historia(estilo):
+    """Si este Estilo usa el encargo corto de historia (el de la orden corta)."""
+    return isinstance(estilo, dict) and str(estilo.get("orden") or "") == "corta"
+
+
+def _estilo_historia(estilo):
+    """Lo que el generador lee SIEMPRE en la orden corta: lo esencial y LLENO.
+
+    En la orden corta la guia entera no viaja (la ensenan las referencias), asi
+    que darsela al director era darle un texto que el dibujante no ve.
+    """
+    try:
+        import p6_assets                                         # noqa: PLC0415
+    except ImportError:                                          # pragma: no cover
+        from . import p6_assets                                  # noqa: PLC0415
+    guia = (estilo or {}).get("guia")
+    guia = guia if isinstance(guia, dict) else {}
+    esencial = " ".join(str(guia.get("esencial") or "").split())
+    esencial = esencial or p6_assets.regla_de_especie(estilo)
+    return "\n\n".join(t for t in (esencial, p6_assets.LLENO) if t)
+
+
+def cartas_legibles(permitidas):
+    """El bloque de cartas para el encargo, o "" si el Estilo no limita. -> str"""
+    if not permitidas:
+        return ""
+    lista = "\n".join(f"  [{c['id']}] {c['encuadre']}"
+                      for c in encuadres.de_la_lista(permitidas))
+    return CARTAS.format(lista=lista)
+
+
+def _cartela_encima(escena):
+    """Lo que dice la cartela que va ENCIMA de la imagen de este plano, o ""."""
+    ficha = escena.get("cartela")
+    if not isinstance(ficha, dict) or ficha.get("fondo") != "imagen":
+        return ""
+    datos = ficha.get("datos") if isinstance(ficha.get("datos"), dict) else {}
+    partes = [str(v).strip() for k, v in datos.items()
+              if k != "icono" and isinstance(v, (str, int, float)) and str(v).strip()]
+    return " · ".join(partes)
+
+
+def ideas_legibles(texto):
+    """El bloque de ideas del autor para el encargo, o "" si no hay. -> str"""
+    limpio = str(texto or "").strip()
+    return IDEAS.format(texto=limpio) if limpio else ""
+
+
+def _planos_legibles(escenas, beats=None, permitidas=None):
     """Los planos para el agente: donde ocurre, quien sale, QUE PASA y que se narra.
 
     La accion del beat entra aqui como CONTEXTO: es lo que le dice al agente de
@@ -421,8 +681,14 @@ def _planos_legibles(escenas, beats=None):
         gente = ", ".join(escena.get("personajes") or []) or "nadie"
         cabeza = f"[{escena.get('id')}] sitio: {donde} · reparto: {gente}"
         encuadre = str(escena.get("encuadre") or "").strip()
-        if encuadre:
+        if permitidas and escena.get("carta"):
+            # el director elige entre las del Estilo (ver CARTAS)
+            cabeza += f" · plano sorteado: {escena['carta']}"
+        elif encuadre:
             cabeza += f" · encuadre (no lo contradigas): {encuadre}"
+        encima = _cartela_encima(escena)
+        if encima:
+            cabeza += f" · CARTELA ENCIMA (no la repitas): «{encima}»"
         # LO QUE SE DICE VA PRIMERO, y el tramo debajo. El orden no es
         # cosmetica: lo de arriba se lee como el encargo y lo de abajo como el
         # marco. Estaba al reves, y con el al reves salian planos que
@@ -533,15 +799,27 @@ def limpiar_linea(texto):
     crudo = re.sub(r'^["\'`]+|["\'`]+$', "", crudo).strip()
     if not crudo:
         return None, "vacia"
+    if escena_entera.ficha(crudo):
+        return crudo, ""          # la escena entera (30-10) es larga a proposito
     palabras = crudo.split()
     if len(palabras) < PALABRAS_MINIMAS:
         return None, f"solo {len(palabras)} palabra(s): no dice nada que dibujar"
     aviso = ""
     if len(palabras) > PALABRAS_MAXIMAS:
-        crudo = " ".join(palabras[:PALABRAS_MAXIMAS]).rstrip(",;:")
+        # el tono y el plano van al final, que es justo lo que se recortaba
+        etiquetas = [m.group(0) for m in _ETIQUETAS_FINALES.finditer(crudo)]
+        cuerpo = _ETIQUETAS_FINALES.sub(" ", crudo).split()
+        crudo = " ".join([" ".join(cuerpo[:PALABRAS_MAXIMAS]).rstrip(",;:")]
+                         + etiquetas)
         aviso = (f"{len(palabras)} palabras, se recorta a {PALABRAS_MAXIMAS}: "
                  f"a partir de ahi vuelve a describir el sitio")
     return crudo, aviso
+
+
+#: Las etiquetas para el codigo que la linea lleva al final: «(TONO: neutro)» y,
+#: si el Estilo limita las cartas, «(PLANO: medio)»; en modo historia, tambien
+#: «(COMO EN: S040)».
+_ETIQUETAS_FINALES = re.compile(r"\(\s*(?:TONO|PLANO|COMO\s+EN)\s*:[^)]*\)", re.I)
 
 
 def _limpiar(crudo, ids):
@@ -638,8 +916,12 @@ def _llamar_claude(instruccion, modelo, esfuerzo, avance=None):
 
 
 def proponer(escenas, ajuste=None, avisar=None, proyecto_id=None, cwd=None,
-             titulo="", estilo=None, catalogo=None, beats=None, idioma=""):
+             titulo="", estilo=None, catalogo=None, beats=None, idioma="",
+             ideas=""):
     """Escribe que se ve en cada plano. NO escribe en params: propone.
+
+    `ideas` son las notas de imagen que el autor dejo junto a su guion
+    (`ideas_visuales`): si llegan, mandan sobre lo que el agente imaginaria.
 
     Devuelve {plan, avisos, ...}. Igual que el plan de cartelas y el de rotulos:
     proponer no es aprobar, y lo que se guarda despues es la DECISION.
@@ -665,6 +947,7 @@ def proponer(escenas, ajuste=None, avisar=None, proyecto_id=None, cwd=None,
         raise RuntimeError("ningun plano de este video genera imagen propia: "
                            "no hay nada que dirigir")
 
+    permitidas = encuadres.permitidas_de(estilo)
     prevision = estadisticas.estimar(PASO, tamano=len(dirigibles), ajuste=elegido)
     avance = None
     if avisar is not None:
@@ -674,18 +957,27 @@ def proponer(escenas, ajuste=None, avisar=None, proyecto_id=None, cwd=None,
             f"repita al de al lado, con {modelo} (esfuerzo {esfuerzo})")
         avance.arrancar()
 
-    instruccion = INSTRUCCION.format(
+    historia = modo_historia(estilo)
+    # LA ESCENA ENTERA (30-10), solo si el Estilo trae su biblioteca: ver escena_entera.py
+    entera = escena_entera.activa(estilo)
+    biblioteca = escena_entera.cargar(estilo) if entera else None
+    marcados = {}
+    instruccion = escena_entera.encargo(
+        todos, [e["id"] for e in dirigibles], catalogo, titulo, biblioteca
+    ) if entera else (INSTRUCCION_HISTORIA if historia else INSTRUCCION).format(
         titulo=titulo or "sin titulo",
         palabras_maximas=PALABRAS_MAXIMAS,
         # EL IDIOMA DEL VIDEO, y no es un adorno: ver la regla del rotulo. Si no
         # llega, se dice asi en vez de dejar el hueco: un «{idioma}» crudo en el
         # encargo es peor que una frase que reconoce que no se sabe.
         idioma=idioma or "el del guion que se te da mas abajo",
-        estilo=_estilo_legible(estilo),
+        estilo=_estilo_historia(estilo) if historia else _estilo_legible(estilo),
         sitios=_sitios_legibles(catalogo, dirigibles),
         reparto=_reparto_legible(catalogo, dirigibles),
         cuantos=len(dirigibles),
-        planos=_planos_legibles(dirigibles, [b for _, b in pares]))
+        ideas=ideas_legibles(ideas),
+        cartas=cartas_legibles(permitidas),
+        planos=_planos_legibles(dirigibles, [b for _, b in pares], permitidas))
 
     arranque = time.time()
     try:
@@ -698,12 +990,30 @@ def proponer(escenas, ajuste=None, avisar=None, proyecto_id=None, cwd=None,
         raise
     segundos = avance.parar() if avance is not None else time.time() - arranque
 
-    plan, avisos = _limpiar(crudo, {e["id"] for e in dirigibles})
-    for grupo in repetidas(plan, dirigibles):
+    if entera:
+        fichas, avisos = escena_entera.leer_respuesta(
+            crudo, {e["id"] for e in dirigibles}, biblioteca,
+            (catalogo or {}).get("reparto") or {})
+        avisos += escena_entera.comprobar(fichas, dirigibles, catalogo, biblioteca)
+        plan = {sid: escena_entera.linea(f) for sid, f in fichas.items()}
+        # EL REPASO DE SENTIDO: Opus lee y marca lo que no cuenta la frase. Si falla, se
+        # avisa y la direccion se queda: lo escrito ya esta pagado.
+        if fichas and ajuste.get("repaso", True):
+            repaso = escena_entera.REPASO_POR_DEFECTO
+            try:
+                marcados = escena_entera.leer_repaso(_llamar_claude(
+                    escena_entera.encargo_repaso(fichas, todos, titulo),
+                    repaso["modelo"], repaso["esfuerzo"]), set(fichas))
+            except Exception as error:                            # noqa: BLE001
+                avisos.append(f"el repaso de sentido no se ha podido hacer: {error}")
+            avisos += [f"{sid}: NO CUENTA LA FRASE -- {m}" for sid, m in marcados.items()]
+    else:
+        plan, avisos = _limpiar(crudo, {e["id"] for e in dirigibles})
+    for grupo in ([] if entera else repetidas(plan, dirigibles)):
         avisos.append(f"{' = '.join(grupo)}: misma direccion en varios planos, "
                       f"que es justo lo que esto viene a quitar -- vuelve a "
                       f"pedirla o cambiala a mano")
-    mudos = sin_tono(plan, dirigibles)
+    mudos = [] if entera else sin_tono(plan, dirigibles)
     if mudos:
         avisos.append(f"{len(mudos)} plano(s) con gente no declaran su tono "
                       f"(se quedan con el del tramo, que es el mismo para todo "
@@ -717,6 +1027,77 @@ def proponer(escenas, ajuste=None, avisar=None, proyecto_id=None, cwd=None,
         "avisos": avisos,
         "planos": len(dirigibles),
         "dirigidos": len(plan),
+        "ajuste": elegido,
+        "segundos": round(segundos, 1),
+        "estimacion_s": prevision["segundos"],
+        "marcados": marcados,
+    }
+
+
+PASO_REHACER = "direccion_rehacer"
+
+
+def rehacer(escenas, ids, ajuste=None, avisar=None, proyecto_id=None, titulo="",
+            estilo=None, catalogo=None):
+    """«Rehacer con Opus» (02-11): vuelve a pedir SOLO los planos `ids` al director
+    «escena entera». NO escribe en params: devuelve {plan, avisos, ...} de esos planos.
+
+    El encargo lleva TODAS las escenas, para que cada plano lea sus frases vecinas, pero
+    solo pide los elegidos. Sin repaso de sentido detras: Opus xhigh es el que se usa para
+    arreglar lo que el repaso marco.
+    """
+    if not escena_entera.activa(estilo):
+        raise RuntimeError("«Rehacer con Opus» es solo para el Estilo con biblioteca de "
+                           "escenas (orden corta + biblioteca)")
+    ajuste = ajuste or {}
+    modelo = ajuste.get("modelo") or escena_entera.REHACER_POR_DEFECTO["modelo"]
+    esfuerzo = ajuste.get("esfuerzo") or escena_entera.REHACER_POR_DEFECTO["esfuerzo"]
+    elegido = {"modelo": modelo, "esfuerzo": esfuerzo}
+
+    todos = [e for e in (escenas or []) if e.get("id")]
+    validos = {e["id"] for e in todos if dirigible(e)}
+    pedidos = []
+    for sid in ids or []:
+        sid = str(sid).strip().upper()
+        if sid in validos and sid not in pedidos:
+            pedidos.append(sid)
+    if not pedidos:
+        raise RuntimeError("ninguno de esos planos lleva imagen propia: no hay nada que rehacer")
+
+    biblioteca = escena_entera.cargar(estilo)
+    prevision = estadisticas.estimar(PASO_REHACER, tamano=len(pedidos), ajuste=elegido)
+    avance = None
+    if avisar is not None:
+        avance = estadisticas.Avance(
+            avisar, 0.05, 0.9, prevision,
+            f"reescribiendo {', '.join(pedidos[:6])}{'…' if len(pedidos) > 6 else ''} "
+            f"con {modelo} (esfuerzo {esfuerzo}), con las frases de alrededor delante")
+        avance.arrancar()
+    instruccion = escena_entera.encargo(todos, pedidos, catalogo, titulo, biblioteca)
+    arranque = time.time()
+    try:
+        crudo = _llamar_claude(instruccion, modelo, esfuerzo, avance)
+    except BaseException:
+        if avance is not None:
+            avance.parar()
+        estadisticas.anotar(PASO_REHACER, time.time() - arranque, ok=False, ajuste=elegido,
+                            proyecto=proyecto_id, resultado="error")
+        raise
+    segundos = avance.parar() if avance is not None else time.time() - arranque
+
+    fichas, avisos = escena_entera.leer_respuesta(
+        crudo, set(pedidos), biblioteca, (catalogo or {}).get("reparto") or {})
+    avisos += escena_entera.comprobar(fichas, todos, catalogo, biblioteca)
+    plan = {sid: escena_entera.linea(f) for sid, f in fichas.items()}
+    estadisticas.anotar(PASO_REHACER, segundos, tamano=len(pedidos), ajuste=elegido,
+                        proyecto=proyecto_id, unidades=len(plan),
+                        detalle={"modelo": modelo, "esfuerzo": esfuerzo,
+                                 "planos": len(pedidos), "rehechos": len(plan)})
+    return {
+        "plan": plan,
+        "avisos": avisos,
+        "pedidos": pedidos,
+        "rehechos": len(plan),
         "ajuste": elegido,
         "segundos": round(segundos, 1),
         "estimacion_s": prevision["segundos"],

@@ -119,7 +119,10 @@ TIPOS = {
                    "duracion_objetivo_s",
                    "palabras_por_bloque",
                    "anotaciones_voz", "emocion_en_voz",
-                   "modelo", "esfuerzo"),
+                   "modelo", "esfuerzo",
+                   # como se ordena el video: relato, lista o cronologica
+                   # (fork, Fase 5; `p3_guion.ESTRUCTURAS`)
+                   "estructura"),
         "pasos": ("brief", "guion"),
     },
     "estilo": {
@@ -136,7 +139,8 @@ TIPOS = {
         # derivado, y dejar que viajara desde el navegador seria dejar que el
         # preset dijera que tiene referencias dibujadas que nadie ha mirado.
         "claves": ("referencias", "guia", "url", "moodboard",
-                   "calidad", "min_s", "max_s", "min_s_rotulos"),
+                   "calidad", "min_s", "max_s", "min_s_rotulos",
+                   "cartas", "orden", "biblioteca"),
         "pasos": ("assets",),
     },
     # El id se queda en 'rotulos' aunque ya no haya rotulos: es la clave con la
@@ -417,6 +421,8 @@ def resumen_de(ficha):
             trozos.append(f"{segundos // 60}m {segundos % 60:02d}s")
         if datos.get("instrucciones"):
             trozos.append("con instrucciones")
+        if datos.get("estructura") and datos["estructura"] != "relato":
+            trozos.append(str(datos["estructura"]))
         return " · ".join(trozos)
     if tipo == "estilo":
         cuantas = len(datos.get("referencias") or [])
@@ -807,7 +813,14 @@ def _sembrar_ficheros(tipo, pid, datos, miniatura, anterior):
     referencia_miniatura = str(miniatura or "").strip() or rutas[0]
     try:
         for indice, origen in enumerate(rutas):
-            nombre = f"{indice:02d}_{os.path.basename(origen)}"
+            nombre = os.path.basename(origen)
+            # Ya en el banco de ESTE preset (se guarda otra vez al cambiarle la
+            # voz o el guion): se queda con su nombre. Con prefijo otra vez,
+            # «00_cara» pasaba a «00_00_cara» y los videos hechos con el estilo
+            # apuntaban a ficheros borrados (fork, 09-10-2026).
+            if (os.path.normcase(os.path.dirname(os.path.abspath(origen)))
+                    != os.path.normcase(os.path.abspath(destino))):
+                nombre = f"{indice:02d}_{nombre}"
             final = os.path.join(trabajo, nombre)
             shutil.copyfile(origen, final)
             copiadas.append(final)
@@ -1020,7 +1033,7 @@ def cambios_para(ficha, params_actuales=None):
         # la ficha y no hace nada -- se escribe una vez y se olvida sola.
         de_guion = {c: copy.deepcopy(datos[c])
                     for c in ("anotaciones_voz", "emocion_en_voz",
-                              "modelo", "esfuerzo")
+                              "modelo", "esfuerzo", "estructura")
                     if c in datos}
         if de_brief:
             cambios["brief"] = de_brief
@@ -1041,6 +1054,12 @@ def cambios_para(ficha, params_actuales=None):
             estilo["referencias"] = rutas
         if datos.get("guia"):
             estilo["guia"] = copy.deepcopy(datos["guia"])
+        # las cartas de plano que deja usar, la orden corta (fork, 28-10) y la
+        # biblioteca de escenas (02-11): van DENTRO de 'estilo', que es lo que
+        # leen el prompt y el director; sin 'biblioteca' no hay «escena entera»
+        for clave in ("cartas", "orden", "biblioteca"):
+            if datos.get(clave):
+                estilo[clave] = copy.deepcopy(datos[clave])
         cambios["assets"] = {"estilo": estilo}
         # la calidad y la duracion de plano son params sueltos de assets, no van
         # dentro del diccionario 'estilo'
@@ -1120,7 +1139,7 @@ def datos_de_params(params_por_paso, incluir=ORDEN):
                   or _idioma_de_guion(brief))
         if codigo:
             bloque["idioma_salida"] = codigo
-        for clave in ("anotaciones_voz", "emocion_en_voz", "modelo",
+        for clave in ("anotaciones_voz", "emocion_en_voz", "modelo", "estructura",
                       "esfuerzo"):
             if guion.get(clave) not in (None, ""):
                 bloque[clave] = copy.deepcopy(guion[clave])
@@ -1129,7 +1148,8 @@ def datos_de_params(params_por_paso, incluir=ORDEN):
 
     if "estilo" in incluir:
         bloque = {}
-        for clave in ("referencias", "guia", "url"):
+        for clave in ("referencias", "guia", "url", "cartas", "orden",
+                      "biblioteca"):
             if estilo.get(clave):
                 bloque[clave] = copy.deepcopy(estilo[clave])
         for clave in ("calidad", "min_s", "max_s", "min_s_rotulos"):

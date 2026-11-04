@@ -171,6 +171,43 @@ def prueba_corregir_no_deja_obsoleto_al_que_corriges(base):
           "un param que SI es una entrada del paso lo deja obsoleto, como "
           "siempre: la excepcion es solo para lo que corrige su salida")
 
+
+def prueba_ajustes_de_proceso_no_invalidan(base):
+    """Apagar el corrector o el revisor no deja obsoleta ninguna imagen.
+
+    Son ajustes de COMO se dibuja, no de QUE se pide. El 13-10 el canal queria
+    apagarlos a mitad de repaso y, si contaran en la firma, los 220 planos de
+    un video ya repasado habrian salido «obsoletos» de golpe.
+    """
+    print("\n[3c] ajustes de proceso de assets fuera de la firma")
+    proyecto = Proyecto.crear(base, "Ajustes de proceso")
+    estado = Estado(proyecto)
+    estado.completar("ingesta", {"transcript": "t.txt"})
+    estado.completar("brief", {"brief": "b.json"})
+    estado.set_params("guion", {"unidades": escenas({"S01": "uno", "S02": "dos"})})
+    estado.completar("guion", {"escenas": 2})
+    estado.set_params("assets", {"estilo": "doodle"})
+    for paso_id in ("voz", "revision_audio", "assets", "callouts", "render"):
+        estado.completar(paso_id, {"salida": paso_id},
+                         {"S01": {"png": "s01.png"}, "S02": {"png": "s02.png"}})
+    firmas = {p: estado.firma(p) for p in ("assets", "callouts", "render")}
+
+    estado.actualizar_params("assets", {
+        "corrector": "no", "revisor": "no",
+        "ajuste_corrector": "alto", "ajuste_revisor": "medio"})
+
+    for paso_id, firma in firmas.items():
+        igual(estado.firma(paso_id), firma,
+              f"la firma de {paso_id} no cambia al apagar corrector y revisor")
+        igual(estado.estado_de(paso_id), "listo", f"{paso_id} sigue listo")
+        igual(estado.unidades_obsoletas(paso_id), [],
+              f"{paso_id} no tiene planos obsoletos")
+
+    # lo que SI es una entrada de assets sigue invalidando, como siempre
+    estado.actualizar_params("assets", {"estilo": "acuarela"})
+    igual(estado.estado_de("assets"), "obsoleto",
+          "cambiar el estilo SI deja obsoletos los assets")
+
 def prueba_rehacer_solo_s03(estado, proyecto):
     print("\n[4] rehacer solo lo afectado")
     estado.completar("guion", {"escenas": 3})
@@ -669,6 +706,7 @@ def principal():
         prueba_primer_pase(estado)
         prueba_cambio_de_escena(estado)
         prueba_corregir_no_deja_obsoleto_al_que_corriges(base)
+        prueba_ajustes_de_proceso_no_invalidan(base)
         prueba_rehacer_solo_s03(estado, proyecto)
         prueba_revertir(estado)
         prueba_unidades_a_mano(estado, proyecto)

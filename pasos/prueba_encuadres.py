@@ -65,7 +65,9 @@ for carta in encuadres.ESCALERA:
 abstractas = [c["id"] for c in encuadres.ESCALERA if c.get("abstracta")]
 igual(sorted(abstractas), ["diagrama", "eterea", "pantalla"],
       "las tres cartas abstractas siguen ahi")
-igual(sorted(encuadres.POR_ID), sorted(ids), "POR_ID cubre la escalera entera")
+igual(sorted(encuadres.POR_ID),
+      sorted(ids + [c["id"] for c in encuadres.EXTRAS]),
+      "POR_ID cubre la escalera entera y las cartas extra")
 
 titulo("5 · el prompt de cada carta")
 for carta in encuadres.ESCALERA:
@@ -120,6 +122,48 @@ cierto(all(c.get("abstracta") is not None or True for c in fondo),
        "las abstractas entran en el fondo")
 igual(len({c["id"] for c in fondo}), len(encuadres.ESCALERA),
       "todas las cartas entran en el fondo")
+
+titulo("6 · cartas por Estilo (fork, 28-10)")
+# EL REPARTO DE SIEMPRE NO SE MUEVE: las cartas extra van fuera de la escalera.
+# Foto tomada antes de anadirlas; si cambia, todos los videos cambian de carta.
+igual([encuadres.repartir(ESCENAS, semilla=0)[f"S{n:03d}"]["id"]
+       for n in range(1, 13)],
+      ["perfil", "pantalla", "detalle", "cenital", "hombro", "silueta",
+       "general", "contrapicado", "detalle", "eterea", "aereo", "perfil"],
+      "sin lista, el reparto es el de antes carta por carta")
+for carta in encuadres.EXTRAS:
+    cierto(carta["id"] not in ids, f"'{carta['id']}' no esta en la escalera")
+    cierto(len(carta["encuadre"]) > 30, f"'{carta['id']}' trae un encuadre")
+    cierto("air" not in carta["encuadre"], f"'{carta['id']}' no pide aire")
+igual(encuadres.permitidas_de({}), None, "un Estilo sin lista no limita")
+igual(encuadres.permitidas_de(None), None, "sin Estilo no limita")
+igual(encuadres.permitidas_de({"cartas": "medio"}), None,
+      "una lista mal escrita no limita")
+igual(encuadres.permitidas_de({"cartas": ["nada", "otra"]}), None,
+      "una lista sin ids validos no limita")
+igual(encuadres.permitidas_de({"cartas": ["medio", "x", "medio", "retrato"]}),
+      ["medio", "retrato"], "se ignoran los desconocidos y los repetidos")
+HISTORIA = ["conjunto", "medio", "retrato", "detalle", "perfil"]
+for semilla in (0, 1, 5, 11, 99):
+    una = encuadres.repartir(ESCENAS, semilla=semilla, permitidas=HISTORIA)
+    otra = encuadres.repartir(ESCENAS, semilla=semilla, permitidas=HISTORIA)
+    cartas = [una[e["id"]]["id"] for e in ESCENAS]
+    igual(cartas, [otra[e["id"]]["id"] for e in ESCENAS],
+          f"semilla {semilla}: con lista tambien es determinista")
+    igual(sorted(set(cartas)), sorted(HISTORIA),
+          f"semilla {semilla}: salen todas las de la lista y ninguna mas")
+    familias = [encuadres.POR_ID[c]["familia"] for c in cartas]
+    igual([i for i in range(1, len(familias)) if familias[i] == familias[i - 1]],
+          [], f"semilla {semilla}: con lista, ni dos familias seguidas")
+# con tres familias la ventana baja a uno: si no, rotarian siempre igual
+igual(encuadres._ventana_familia(HISTORIA), 1, "tres familias: ventana uno")
+igual(encuadres._ventana_familia(None), encuadres.VENTANA_FAMILIA,
+      "sin lista: la ventana de siempre")
+forzada = encuadres.repartir(ESCENAS, semilla=0, forzadas={"S004": "medio"},
+                             permitidas=HISTORIA)
+igual(forzada["S004"]["id"], "medio", "con lista, la forzada sigue mandando")
+igual([c["id"] for c in encuadres.de_la_lista(HISTORIA)], HISTORIA,
+      "de_la_lista respeta el orden del Estilo")
 
 print()
 if FALLOS:

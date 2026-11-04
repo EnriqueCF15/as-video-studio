@@ -396,6 +396,24 @@ def _trabajo_activo(ctx, paso_id):
     return None
 
 
+def _exigir_sin_trabajos(ctx, que):
+    """409 si hay CUALQUIER trabajo en marcha en este video.
+
+    Fork, 04-11-2026. «Ejecutar» ya miraba `_trabajo_activo`, pero los botones
+    de despues (voz por bloques y secciones, direccion, banda y mapa musical)
+    no: dos trabajos de voz a la vez comparten la carpeta de trabajo, y
+    `preparar_trabajo` la BORRA al empezar, asi que el segundo le quitaba al
+    primero lo que estaba haciendo. Una direccion «aplicada» en mitad de una
+    tanda mezclaba escenas viejas y nuevas. Es la misma regla que ya usa
+    «Rehacer con Opus»: de uno en uno.
+    """
+    vivos = ctx.gestor.listar(activos=True)
+    if vivos:
+        raise ErrorApi(409, f"hay {len(vivos)} trabajo(s) en marcha en este vídeo "
+                            f"({vivos[0].get('nombre')}): espera a que acabe antes de "
+                            f"{que}", {"trabajo_id": vivos[0]["id"]})
+
+
 def _unidades_pedidas(cuerpo):
     crudo = cuerpo.get("unidades")
     if crudo is None:
@@ -1259,6 +1277,12 @@ CLAVES_AJUSTE = {
     "esfuerzo": False, "esfuerzo_texto": False,
 }
 
+#: Claves que se llaman como un ajuste del CLI y NO lo son (fork, 08-10-2026).
+#: En el paso de voz, `modelo` es el modelo de VOZ (gemini-2.5-flash-tts,
+#: sonic-2, eleven_flash_v2_5): validarlo como un modelo de Claude rechazaba con
+#: un 400 guardar la voz de Google a mano. `modelo_texto` si es del CLI.
+NO_SON_DEL_CLI = {"voz": ("modelo",)}
+
 
 
 
@@ -1280,6 +1304,8 @@ def _validar_params(paso_id, nuevos, ctx=None):
     """
     for clave, es_modelo in CLAVES_AJUSTE.items():
         if clave not in (nuevos or {}):
+            continue
+        if clave in NO_SON_DEL_CLI.get(paso_id, ()):
             continue
         valor = nuevos[clave]
         if valor in (None, ""):
@@ -1888,9 +1914,11 @@ def _correr_regrabar(avisar, ctx, seccion_id, peticion, ajuste):
                               or p4.NOMBRE_PISTA),
                  os.path.join(destino, ficha_voz.get("archivo")
                               or p4.NOMBRE_PISTA))
-    salidas, nuevos = p4.regrabar_seccion(
-        bloques, seccion_id, cfg, meta, destino, peticion=peticion,
-        ajuste=ajuste, avisar=avisar, cwd=ctx.proyecto.raiz)
+    # con el contador abierto: sin el, la voz regrabada no llegaba a coste.jsonl
+    with COSTE.contexto(ctx.proyecto, "voz"):
+        salidas, nuevos = p4.regrabar_seccion(
+            bloques, seccion_id, cfg, meta, destino, peticion=peticion,
+            ajuste=ajuste, avisar=avisar, cwd=ctx.proyecto.raiz)
 
     cambiados = [b["id"] for b, viejo in zip(nuevos, bloques)
                  if b["texto"] != viejo["texto"]]
@@ -2010,6 +2038,7 @@ def reescribir_bloques_guion(pid: str, cuerpo: dict = Body(default=None)):
 def regrabar_seccion(pid: str, seccion_id: str, cuerpo: dict = Body(default=None)):
     """Regraba una seccion de la toma, con microcambio si se pide."""
     ctx = contexto(pid)
+    _exigir_sin_trabajos(ctx, "regrabar una sección de la voz")
     if PASOS_MODULOS is None:
         raise ErrorApi(503, f"los pasos no se han podido cargar: {ERROR_PASOS}")
     datos = _cuerpo(cuerpo)
@@ -2020,6 +2049,171 @@ def regrabar_seccion(pid: str, seccion_id: str, cuerpo: dict = Body(default=None
         str(datos.get("peticion") or ""), ajuste, paso="voz")
     _registrar_trabajo(trabajo_id, ctx.id)
     return {"trabajo_id": trabajo_id, "seccion": seccion_id, "ajuste": ajuste,
+            "trabajo": ctx.gestor.estado(trabajo_id),
+            "eventos": f"/api/trabajos/{trabajo_id}/eventos"}
+
+
+# --------------------------------------------- regrabar solo unos bloques
+#
+# Una seccion puede ser de diez minutos, y regrabarla entera para cambiar una
+# frase vuelve a tirar los dados en todo lo que ya sonaba bien. Aqui se graban
+# TOMAS DE PRUEBA de unos bloques (sin tocar la voz) y despues se cosen las
+# elegidas tal cual. Ver p4_voz, «regrabar solo unos bloques».
+
+#: Carpeta (dentro del proyecto) de las tomas de prueba y sus audios para oir.
+CARPETA_PRUEBAS_VOZ = "pruebas_voz"
+#: Segundos de la toma de alrededor en el audio «en contexto» de cada prueba.
+CONTEXTO_ANTES_S, CONTEXTO_DESPUES_S = 4.0, 3.0
+
+
+def _voz_actual(ctx):
+    """(p4, meta, ruta del wav) de la voz activa."""
+    p4 = PASOS_MODULOS.p4_voz
+    ficha_voz = ctx.estado.salidas("voz") or {}
+    carpeta = ctx.proyecto.ruta_paso("voz")
+    meta = medios_json(os.path.join(carpeta, ficha_voz.get("meta")
+                                    or p4.NOMBRE_META))
+    if not meta or not meta.get("bloques"):
+        raise RuntimeError("no encuentro el audio_meta.json de la toma actual")
+    return p4, meta, os.path.join(carpeta, ficha_voz.get("archivo")
+                                  or p4.NOMBRE_PISTA)
+
+
+def _correr_probar_bloques(avisar, ctx, ids, textos, estilo, tomas, etiqueta):
+    p4, meta, ruta_wav = _voz_actual(ctx)
+    bloques = p4.ediciones_a_mano(
+        ctx.proyecto, [{"id": b["id"], "texto": b["texto"]} for b in meta["bloques"]])
+    for bloque in bloques:
+        if bloque["id"] in textos:
+            bloque["texto"] = textos[bloque["id"]]
+    cfg = p4.resolver_params(p4.params_con_idioma(
+        ctx.proyecto, ctx.estado.params("voz") or {}))
+    with open(ruta_wav, "rb") as fh:
+        pcm_toma = fh.read()[44:]
+    carpeta = os.path.join(ctx.proyecto.raiz, CARPETA_PRUEBAS_VOZ)
+    tramos = p4.tramos_seguidos(bloques, ids)
+    bps = p4.SR * 2
+    hechas, total = [], len(tramos) * tomas
+    for tramo in tramos:
+        nombre_base = "-".join(tramo)
+        for n in range(1, tomas + 1):
+            paso = len(hechas)
+            avisar(0.05 + 0.9 * paso / total, f"grabando {nombre_base}, toma {n} de {tomas}")
+            # con el contador abierto: sin el, lo que se paga a Google no
+            # llegaba a coste.jsonl (medido el 17-10 con la primera prueba)
+            with COSTE.contexto(ctx.proyecto, "voz"):
+                toma = p4.grabar_bloques(
+                    bloques, tramo, cfg, tramo=p4.tramo_de_bloque(meta, tramo[0]),
+                    estilo=estilo,
+                    progreso=lambda f, m="": avisar(0.05 + 0.9 * (paso + max(0.0, min(1.0, f))) / total, m))
+            nombre = f"{nombre_base}_{etiqueta}{n}"
+            ruta_json = p4.guardar_toma_prueba(toma, carpeta, nombre)
+            # para OIR la costura: la toma de alrededor con esta prueba dentro
+            con_prueba, de_antes = p4.audio_en_contexto(
+                pcm_toma, meta, toma, CONTEXTO_ANTES_S, CONTEXTO_DESPUES_S)
+            with open(os.path.join(carpeta, f"{nombre}_contexto.wav"), "wb") as fh:
+                fh.write(p4.motor.wav_desde_pcm(con_prueba))
+            with open(os.path.join(carpeta, f"{nombre_base}_antes.wav"), "wb") as fh:
+                fh.write(p4.motor.wav_desde_pcm(de_antes))
+            hechas.append({"toma": nombre, "json": ruta_json,
+                           "segundos": round(len(toma["pcm"]) / bps, 2),
+                           "antes_s": round((len(de_antes) - len(con_prueba)
+                                             + len(toma["pcm"])) / bps, 2),
+                           "avisos": (toma.get("info") or {}).get("sin_arreglar")})
+    ctx.bitacora.anotar("bloques_probados", "voz", {
+        "bloques": list(ids), "estilo": estilo, "tomas": [h["toma"] for h in hechas]})
+    resumen = f"{len(hechas)} toma(s) de prueba en {CARPETA_PRUEBAS_VOZ}/"
+    avisar(1.0, resumen)
+    return {"tomas": hechas, "carpeta": carpeta, "resumen": resumen}
+
+
+@app.post("/api/proyectos/{pid}/voz/bloques/probar", status_code=202)
+def probar_bloques_voz(pid: str, cuerpo: dict = Body(default=None)):
+    """Graba tomas de prueba de unos bloques, SIN tocar la voz.
+
+    {"bloques": ["B019"], "textos": {"B019": "..."} (opcional), "estilo": "..."
+    (opcional; si no, el de su tramo), "tomas": 1-4, "etiqueta": "a"}
+    """
+    ctx = contexto(pid)
+    _exigir_sin_trabajos(ctx, "grabar tomas de prueba de la voz")
+    if PASOS_MODULOS is None:
+        raise ErrorApi(503, f"los pasos no se han podido cargar: {ERROR_PASOS}")
+    datos = _cuerpo(cuerpo)
+    ids = [str(b).strip().upper() for b in (datos.get("bloques") or []) if str(b).strip()]
+    if not ids:
+        raise ErrorApi(400, "hace falta 'bloques' con los ids a probar")
+    textos = {str(k).strip().upper(): " ".join(str(v).split())
+              for k, v in (datos.get("textos") or {}).items() if str(v).strip()}
+    etiqueta = re.sub(r"[^a-z0-9]", "", str(datos.get("etiqueta") or "t").lower())[:8] or "t"
+    try:
+        tomas = max(1, min(4, int(datos.get("tomas") or 1)))
+    except (TypeError, ValueError):
+        raise ErrorApi(400, "'tomas' tiene que ser un numero de 1 a 4")
+    estilo = " ".join(str(datos.get("estilo") or "").split()) or None
+    trabajo_id = ctx.gestor.lanzar("probar_bloques_voz", _correr_probar_bloques, ctx,
+                                   ids, textos, estilo, tomas, etiqueta, paso="voz")
+    _registrar_trabajo(trabajo_id, ctx.id)
+    return {"trabajo_id": trabajo_id, "bloques": ids, "tomas": tomas,
+            "trabajo": ctx.gestor.estado(trabajo_id),
+            "eventos": f"/api/trabajos/{trabajo_id}/eventos"}
+
+
+def _correr_regrabar_bloques(avisar, ctx, nombres):
+    p4, meta, ruta_wav = _voz_actual(ctx)
+    carpeta = os.path.join(ctx.proyecto.raiz, CARPETA_PRUEBAS_VOZ)
+    tomas = [p4.leer_toma_prueba(os.path.join(carpeta, f"{n}.json")) for n in nombres]
+    # el texto de la TOMA, no el del guion: los bloques que no se cosen siguen
+    # sonando como se grabaron, aunque tengan una edicion pendiente
+    bloques = [{"id": b["id"], "texto": b["texto"]} for b in meta["bloques"]]
+    destino = PASOS_MODULOS.comun.preparar_trabajo(ctx.proyecto, "voz")
+    shutil.copy2(ruta_wav, os.path.join(destino, meta.get("archivo") or p4.NOMBRE_PISTA))
+    salidas, nuevos = p4.regrabar_bloques(bloques, tomas, meta, destino, avisar=avisar)
+    # el texto con el que suena cada bloque AHORA, para la conservacion
+    PASOS_MODULOS.comun.escribir_json(os.path.join(destino, "guion_locutado.json"),
+                                      {"bloques": nuevos})
+    antes = {b["id"]: b["texto"] for b in meta["bloques"]}
+    cambiados = [b["id"] for b in nuevos if b["texto"] != antes.get(b["id"])]
+    if cambiados:
+        # al guion, como en regrabar una seccion: el guion y la voz no pueden
+        # decir cosas distintas
+        ediciones = dict((ctx.estado.params("guion") or {}).get("bloques") or {})
+        for bloque in nuevos:
+            if bloque["id"] in cambiados:
+                ediciones[bloque["id"]] = {"texto": bloque["texto"]}
+        ctx.estado.actualizar_params("guion", {"bloques": ediciones})
+    salidas["bloques_cambiados"] = cambiados
+    salidas["bloques_regrabados"] = [i for t in tomas for i in t["ids"]]
+    salidas["guion_locutado"] = "guion_locutado.json"
+    ligeras, _recortadas = _aligerar(salidas)
+    ctx.estado.completar("voz", ligeras)
+    ctx.bitacora.anotar("bloques_regrabados", "voz", {
+        "tomas": list(nombres), "bloques_cambiados": cambiados})
+    return salidas
+
+
+@app.post("/api/proyectos/{pid}/voz/bloques/regrabar", status_code=202)
+def regrabar_bloques_voz(pid: str, cuerpo: dict = Body(default=None)):
+    """Cose en la voz las tomas de prueba elegidas: {"tomas": ["B019_a1", ...]}.
+
+    No graba nada: lo que se cose es exactamente lo que se ha oido.
+    """
+    ctx = contexto(pid)
+    _exigir_sin_trabajos(ctx, "coser tomas en la voz")
+    if PASOS_MODULOS is None:
+        raise ErrorApi(503, f"los pasos no se han podido cargar: {ERROR_PASOS}")
+    datos = _cuerpo(cuerpo)
+    nombres = [str(n).strip() for n in (datos.get("tomas") or []) if str(n).strip()]
+    if not nombres:
+        raise ErrorApi(400, "hace falta 'tomas' con los nombres de las tomas de prueba")
+    carpeta = os.path.join(ctx.proyecto.raiz, CARPETA_PRUEBAS_VOZ)
+    for nombre in nombres:
+        if not re.fullmatch(r"[A-Za-z0-9_\-]+", nombre) or not os.path.exists(
+                os.path.join(carpeta, f"{nombre}.json")):
+            raise ErrorApi(404, f"no hay ninguna toma de prueba {nombre!r}")
+    trabajo_id = ctx.gestor.lanzar("regrabar_bloques_voz", _correr_regrabar_bloques,
+                                   ctx, nombres, paso="voz")
+    _registrar_trabajo(trabajo_id, ctx.id)
+    return {"trabajo_id": trabajo_id, "tomas": nombres,
             "trabajo": ctx.gestor.estado(trabajo_id),
             "eventos": f"/api/trabajos/{trabajo_id}/eventos"}
 
@@ -2038,6 +2232,78 @@ def regrabar_seccion(pid: str, seccion_id: str, cuerpo: dict = Body(default=None
 # No necesita proyecto: se pregunta antes de que exista ninguno, que es
 # justamente el caso del modo light.
 # ==========================================================================
+
+#: Lo medido en los planes de verdad, por fichero y fecha (ver `_planos_medidos`).
+_PLANOS_MEDIDOS = {}
+
+
+def _planos_medidos():
+    """Lo que de verdad sale de cada ritmo en TUS videos. -> {ritmo: ficha}
+
+    LA TABLA DE RITMOS ES DEL PRIMER DIA (fork, Fase 5). `media_s` se midio en
+    los videos del autor; en los de Enrique el ritmo «medio» sale a 4,7 s por
+    plano y no a 2,8, asi que la estimacion de un video prometia un 70 % mas de
+    planos --y de dolares-- de los que salian. Aqui se lee el plan de cada video
+    terminado y se cuenta: segundos por plano, que parte lleva imagen (las
+    cartelas de fondo negro no se pagan) y cuantas hojas de referencia
+    (personajes, sitios) se dibujaron aparte. Los talleres de los estilos no
+    cuentan: sus planes son muestras sueltas, no videos.
+    """
+    light = _light()
+    cartelas = PASOS_MODULOS.cartelas
+    suma = {}
+    for ficha in Proyecto.listar(raiz_proyectos()):
+        if ficha.get(CONFIG_TALLER):
+            continue
+        raiz = ficha.get("raiz") or ""
+        activa = (leer_json(os.path.join(raiz, "pasos", "assets", "activa.json"), {})
+                  or {}).get("activa")
+        if not activa:
+            continue
+        ruta_plan = os.path.join(raiz, "pasos", "assets", f"v{activa}", "plan.json")
+        try:
+            sello = os.path.getmtime(ruta_plan)
+        except OSError:
+            continue
+        guardado = _PLANOS_MEDIDOS.get(ruta_plan)
+        if not guardado or guardado[0] != sello:
+            plan = leer_json(ruta_plan, {}) or {}
+            estado = leer_json(os.path.join(raiz, "estado.json"), {}) or {}
+            assets = (((estado.get("pasos") or {}).get("assets") or {})
+                      .get("params") or {})
+            escenas = plan.get("escenas") or []
+            medida = None
+            if len(escenas) >= 3 and float(plan.get("duracion_total") or 0) > 0:
+                medida = {
+                    "ritmo": light.ritmo_parecido(assets.get("min_s"),
+                                                  assets.get("max_s"))["id"],
+                    "segundos": float(plan["duracion_total"]),
+                    "planos": len(escenas),
+                    "con_imagen": sum(1 for e in escenas if not cartelas.sin_imagen(e)),
+                    "hojas": len(plan.get("assets") or []),
+                }
+            guardado = (sello, medida)
+            _PLANOS_MEDIDOS[ruta_plan] = guardado
+        medida = guardado[1]
+        if not medida:
+            continue
+        cuenta = suma.setdefault(medida["ritmo"], {"segundos": 0.0, "planos": 0,
+                                                   "con_imagen": 0, "hojas": [],
+                                                   "videos": 0})
+        for clave in ("segundos", "planos", "con_imagen"):
+            cuenta[clave] += medida[clave]
+        cuenta["hojas"].append(medida["hojas"])
+        cuenta["videos"] += 1
+    salida = {}
+    for ritmo, cuenta in suma.items():
+        hojas = sorted(cuenta["hojas"])
+        salida[ritmo] = {
+            "media_s": round(cuenta["segundos"] / max(1, cuenta["planos"]), 2),
+            "parte_con_imagen": round(cuenta["con_imagen"] / max(1, cuenta["planos"]), 3),
+            "hojas": hojas[len(hojas) // 2] if hojas else 0,
+            "videos": cuenta["videos"]}
+    return salida
+
 
 @app.post("/api/estimacion")
 def estimar_video(cuerpo: dict = Body(default=None)):
@@ -2084,13 +2350,34 @@ def estimar_video(cuerpo: dict = Body(default=None)):
         ficha_ritmo = light.ritmo_de(datos.get("ritmo"))
     else:
         ficha_ritmo = light.ritmo_parecido(datos.get("min_s"), datos.get("max_s"))
-    media = max(0.5, float(ficha_ritmo["media_s"]))
+    # Y SI YA HAY VIDEOS TUYOS CON ESE RITMO, MANDA LO MEDIDO (fork, Fase 5):
+    # los segundos por plano, la parte que lleva imagen y las hojas aparte.
+    medidos = _planos_medidos()
+    medido = medidos.get(ficha_ritmo["id"])
+    if medido:
+        media = max(0.5, float(medido["media_s"]))
+        parte_con_imagen = float(medido["parte_con_imagen"])
+        hojas = int(medido["hojas"])
+        origen_planos = (f"medido en {medido['videos']} vídeo"
+                         f"{'' if medido['videos'] == 1 else 's'} tuyo"
+                         f"{'' if medido['videos'] == 1 else 's'}")
+    else:
+        media = max(0.5, float(ficha_ritmo["media_s"]))
+        parte_con_imagen, origen_planos = 1.0, "tabla del ritmo"
+        # las hojas de referencia no dependen del ritmo: las de tus otros videos
+        todas = sorted(m["hojas"] for m in medidos.values())
+        hojas = todas[len(todas) // 2] if todas else 0
     planos = max(1, int(round(segundos / media)))
 
     calidad = str(datos.get("calidad") or "low").lower()
     usd_imagen = light.usd_por_imagen(calidad)
 
-    imagenes = max(1, planos)
+    imagenes = max(1, int(round(planos * parte_con_imagen)) + hojas)
+
+    # CUANTO TARDA EL MP4 EN ESTE PORTATIL (fork, Fase 5): los fotogramas del
+    # video por lo que tarda dibujar uno, medido (`render_dibujo`).
+    fps_render = int(PASOS_MODULOS.p8_render.PARAMS_POR_DEFECTO["fps"])
+    dibujo = ESTADISTICAS.estimar("render_dibujo", int(segundos * fps_render))
 
     caracteres = int(round(horquilla["presupuesto_palabras"] * 6.1))
     tarifas = COSTE.tarifas()
@@ -2132,7 +2419,11 @@ def estimar_video(cuerpo: dict = Body(default=None)):
                      "tolerancia": horquilla["tolerancia"]},
         "planos": {"total": planos, "media_s": round(media, 2),
                    "ritmo": ficha_ritmo["id"],
-                   "con_imagen": imagenes},
+                   "con_imagen": imagenes, "hojas": hojas,
+                   "origen": origen_planos},
+        "render": {"segundos": round(float(dibujo["segundos"])),
+                   "medido": bool(dibujo.get("medida")),
+                   "origen": dibujo.get("origen")},
         "coste": {"imagenes": imagenes, "calidad": calidad,
                   "usd_por_imagen": usd_imagen,
                   "usd_imagenes": usd_imagenes, "usd_tts": usd_tts,
@@ -2730,6 +3021,13 @@ def _correr_catalogo(avisar, ctx, ajuste, peticion):
                               # y como son los personajes en este estilo, para
                               # que el reparto se describa ya convertido
                               regla_personajes=PASOS_MODULOS.p6_assets.regla_de_especie(
+                                  params.get("estilo") or {}),
+                              # las notas de imagen del autor: quien sale aunque
+                              # la narracion lo llame «tu» (fork, 08-10-2026)
+                              ideas=_ideas_visuales().leer(ctx.proyecto),
+                              # el encargo corto de historia, con el Estilo de
+                              # la orden corta (fork, 28-10-2026)
+                              historia=PASOS_MODULOS.p6_assets.orden_corta(
                                   params.get("estilo") or {}))
     ctx.bitacora.anotar("catalogo_propuesto", "assets", {
         "personajes": len(ficha.get("reparto") or {}),
@@ -3822,8 +4120,9 @@ def proponer_plan_cartelas(pid: str, cuerpo: dict = Body(default=None)):
     datos = _cuerpo(cuerpo)
     por_fase = CLI_CLAUDE.por_defecto_de("plan_cartelas")
     ajuste = _ajuste_cli(datos, por_fase["modelo"], por_fase["esfuerzo"])
+    # `aplicar` (02-11): guarda el plan como la tanda, sin dibujar los planos
     trabajo_id = ctx.gestor.lanzar("plan_cartelas", _correr_plan_cartelas, ctx,
-                                   ajuste, paso="assets")
+                                   ajuste, bool(datos.get("aplicar")), paso="assets")
     _registrar_trabajo(trabajo_id, ctx.id)
     return {"trabajo_id": trabajo_id, "ajuste": ajuste,
             "trabajo": ctx.gestor.estado(trabajo_id),
@@ -3952,6 +4251,12 @@ def _direccion():
     return PASOS_MODULOS.direccion
 
 
+def _ideas_visuales():
+    if PASOS_MODULOS is None:
+        raise ErrorApi(503, f"los pasos no se han podido cargar: {ERROR_PASOS}")
+    return PASOS_MODULOS.ideas_visuales
+
+
 def _plan_de_direccion(ctx):
     """Lo dirigido, POR UNIDAD: {"S013": "a hand covers the screen"}."""
     bloque = (ctx.estado.params("assets") or {}).get("unidades") or {}
@@ -3973,12 +4278,23 @@ def leer_direccion(pid: str):
     escenas = plan_assets.get("escenas") or []
     plan = _plan_de_direccion(ctx)
     dirigibles = [e for e in escenas if direccion.dirigible(e)]
+    # LA ESCENA ENTERA (30-10): sus avisos y lo marcado por el repaso de sentido, para que
+    # la pantalla saque arriba los planos que no cuentan la frase (botón «Rehacer con Opus»)
+    entera = direccion.escena_entera.activa((ctx.estado.params("assets") or {}).get("estilo"))
+    vivos = [t for t in ctx.gestor.listar(activos=True)
+             if t.get("nombre") in ("direccion", "direccion_rehacer")]
     return {
         "plan": plan,
+        "escena_entera": entera,
+        "avisos_escena": (direccion.escena_entera.leer_avisos(_ruta_avisos_escena(ctx))
+                          if entera else None),
+        "trabajo": vivos[0] if vivos else None,
         "planos": [{"id": e["id"], "set": e.get("set") or e.get("componente"),
                     "personajes": e.get("personajes") or [],
                     "narracion": e.get("narracion") or "",
-                    "direccion": plan.get(e["id"], "")}
+                    "direccion": plan.get(e["id"], ""),
+                    "escena": (direccion.escena_entera.ficha(plan.get(e["id"], ""))
+                               if entera else None)}
                    for e in dirigibles],
         "dirigibles": len(dirigibles),
         "total": len(escenas),
@@ -3986,6 +4302,10 @@ def leer_direccion(pid: str):
         "repetidas": direccion.repetidas(plan, dirigibles),
         "resumen": direccion.describir(plan, dirigibles),
     }
+
+
+def _ruta_avisos_escena(ctx):
+    return ctx.proyecto.ruta(_direccion().escena_entera.AVISOS)
 
 
 def _guardar_direccion_por_unidad(ctx, plan):
@@ -4187,7 +4507,11 @@ def _correr_direccion(avisar, ctx, ajuste, aplicar=False):
         idioma=_idioma_del_video(ctx),
         catalogo=(assets.get("catalogo")
                   or (plan_assets or {}).get("catalogo") or {}),
-        beats=(plan_assets or {}).get("beats"))
+        beats=(plan_assets or {}).get("beats"),
+        # LAS IDEAS DE IMAGEN DEL AUTOR (fork, 08-10-2026): las notas
+        # «[VISUAL: ...]» de un guion escrito a mano. Mandan sobre lo que el
+        # agente imaginaria; sin ellas el encargo sale como salia.
+        ideas=_ideas_visuales().leer(ctx.proyecto))
     ctx.bitacora.anotar("direccion", "assets", {
         "planos": ficha.get("planos"), "dirigidos": ficha.get("dirigidos"),
         "ajuste": ajuste, "aplicar": bool(aplicar)})
@@ -4196,8 +4520,73 @@ def _correr_direccion(avisar, ctx, ajuste, aplicar=False):
     if aplicar and isinstance(ficha.get("plan"), dict):
         _guardar_direccion_por_unidad(ctx, ficha["plan"])
         ficha["aplicado"] = True
+        # la escena entera deja sus avisos para la pantalla («Rehacer con Opus»)
+        if direccion.escena_entera.activa(assets.get("estilo")):
+            direccion.escena_entera.guardar_avisos(
+                _ruta_avisos_escena(ctx), direccion.escena_entera.avisos_tras_dirigir(ficha))
     avisar(1.0, f"{ficha.get('dirigidos')} de {ficha.get('planos')} planos dirigidos")
     return ficha
+
+
+def _correr_rehacer_direccion(avisar, ctx, ids, ajuste):
+    """«Rehacer con Opus» (02-11): reescribe SOLO esos planos y los guarda, sin tocar los
+    demás."""
+    direccion = _direccion()
+    assets = ctx.estado.params("assets") or {}
+    plan_assets = _plan_de_planos(ctx, avisar)
+    escenas = (plan_assets or {}).get("escenas") or []
+    if not escenas:
+        raise RuntimeError("no hay planos todavía: corta la narración antes")
+    ficha = direccion.rehacer(
+        escenas, ids, ajuste=ajuste, avisar=avisar, proyecto_id=ctx.id,
+        titulo=(assets.get("titulo") or ctx.proyecto.id),
+        estilo=(assets.get("estilo") or (plan_assets or {}).get("estilo") or {}),
+        catalogo=(assets.get("catalogo") or (plan_assets or {}).get("catalogo") or {}))
+    if ficha.get("plan"):
+        # EL PLAN ENTERO con los rehechos encima: `_guardar_direccion_por_unidad` fusiona
+        # DENTRO de cada plano, pero quita la dirección de los que no se le pasan
+        _guardar_direccion_por_unidad(ctx, {**_plan_de_direccion(ctx), **ficha["plan"]})
+    ruta = _ruta_avisos_escena(ctx)
+    direccion.escena_entera.guardar_avisos(ruta, direccion.escena_entera.avisos_tras_rehacer(
+        direccion.escena_entera.leer_avisos(ruta), ficha))
+    ctx.bitacora.anotar("direccion_rehacer", "assets", {
+        "pedidos": ficha.get("pedidos"), "rehechos": sorted(ficha.get("plan") or {}),
+        "ajuste": ajuste, "segundos": ficha.get("segundos")})
+    avisar(1.0, f"{ficha.get('rehechos')} de {len(ficha.get('pedidos') or [])} planos "
+                f"reescritos con {ficha['ajuste']['modelo']}")
+    return ficha
+
+
+@app.post("/api/proyectos/{pid}/direccion/rehacer", status_code=202)
+def rehacer_direccion(pid: str, cuerpo: dict = Body(default=None)):
+    """«Rehacer con Opus»: vuelve a pedir SOLO los planos `ids` al director «escena
+    entera», con Opus xhigh y todas las frases delante. Solo para el Estilo con biblioteca.
+
+    Las imágenes de esos planos quedan obsoletas (su dirección ha cambiado) y se vuelven a
+    dibujar en el próximo «Generar»; las demás no se tocan.
+    """
+    ctx = contexto(pid)
+    datos = _cuerpo(cuerpo)
+    ids = [str(s).strip().upper() for s in (datos.get("ids") or []) if str(s).strip()]
+    if not ids:
+        raise ErrorApi(400, "hace falta 'ids': la lista de planos que se rehacen")
+    entera = _direccion().escena_entera
+    if not entera.activa((ctx.estado.params("assets") or {}).get("estilo")):
+        raise ErrorApi(409, "«Rehacer con Opus» es solo para el Estilo de historia "
+                            "(el que lleva orden corta y biblioteca de escenas)")
+    vivos = ctx.gestor.listar(activos=True)
+    if vivos:
+        raise ErrorApi(409, f"hay {len(vivos)} trabajo(s) en marcha en este vídeo: espera a "
+                            f"que acaben para no pisar los planos que se están dibujando",
+                       {"trabajo_id": vivos[0]["id"]})
+    por_fase = entera.REHACER_POR_DEFECTO
+    ajuste = _ajuste_cli(datos, por_fase["modelo"], por_fase["esfuerzo"])
+    trabajo_id = ctx.gestor.lanzar("direccion_rehacer", _correr_rehacer_direccion, ctx, ids,
+                                   ajuste, paso="assets", unidades=ids)
+    _registrar_trabajo(trabajo_id, ctx.id)
+    return {"trabajo_id": trabajo_id, "ajuste": ajuste, "ids": ids,
+            "trabajo": ctx.gestor.estado(trabajo_id),
+            "eventos": f"/api/trabajos/{trabajo_id}/eventos"}
 
 
 @app.post("/api/proyectos/{pid}/direccion/proponer", status_code=202)
@@ -4209,11 +4598,17 @@ def proponer_direccion(pid: str, cuerpo: dict = Body(default=None)):
     razonables y repetidas.
     """
     ctx = contexto(pid)
+    _exigir_sin_trabajos(ctx, "dirigir los planos")
     datos = _cuerpo(cuerpo)
     por_fase = CLI_CLAUDE.por_defecto_de("direccion")
+    # la escena entera (30-10) dirige por defecto con Sonnet high: ver pasos/escena_entera.py
+    if _direccion().escena_entera.activa((ctx.estado.params("assets") or {}).get("estilo")):
+        por_fase = _direccion().escena_entera.POR_DEFECTO
     ajuste = _ajuste_cli(datos, por_fase["modelo"], por_fase["esfuerzo"])
+    # `aplicar` (02-11): guarda la direccion y sus avisos como la tanda, sin
+    # dibujar los planos (para un piloto de 3-5 antes del resto)
     trabajo_id = ctx.gestor.lanzar("direccion", _correr_direccion, ctx, ajuste,
-                                   paso="assets")
+                                   bool(datos.get("aplicar")), paso="assets")
     _registrar_trabajo(trabajo_id, ctx.id)
     return {"trabajo_id": trabajo_id, "ajuste": ajuste,
             "trabajo": ctx.gestor.estado(trabajo_id),
@@ -5322,8 +5717,18 @@ def _correr_banda(avisar, ctx, tramos):
     # la tabla de animos del Estilo
     render = ctx.estado.params("render") or {}
     fijadas = render.get("musica_fijada") or {}
+    # las canciones que en este video no suenan nunca (fork, 19-10)
+    vetadas = list(render.get("musica_vetada") or [])
+    if tramos is None and render.get("arco") == "guion":
+        # POR LO QUE SE CUENTA (fork, 19-10): el mapa guardado (o los tonos de
+        # la direccion si no hay mapa). Sin volver a llamar a Claude: por eso
+        # la tanda del render puede rehacer la banda sin perder las secciones.
+        tramos = sonido.arco_del_guion(escenas, largo, animos=render.get("animos_arco"),
+                                       mapa=render.get("mapa_musical") or None,
+                                       hay=sonido.animos_con_canciones(vetadas))
     ficha = sonido.montar_banda(escenas, largo, avisar=avisar, tramos=tramos,
-                                fijadas=fijadas, animos=render.get("animos_arco"))
+                                fijadas=fijadas, animos=render.get("animos_arco"),
+                                vetadas=vetadas)
     ctx.estado.actualizar_params("render", {"musica": ficha})
     ctx.bitacora.anotar("banda_sonora", "render", {
         "tramos": len(ficha["tramos"]),
@@ -5411,6 +5816,7 @@ def montar_banda_sonora(pid: str, cuerpo: dict = Body(default=None)):
     queda el que mejor deja libre la banda de la voz — medido, no escuchado.
     """
     ctx = contexto(pid)
+    _exigir_sin_trabajos(ctx, "montar la banda sonora")
     sonido = _sonido()
     datos = _cuerpo(cuerpo)
     # los tramos se pueden pasar retocados desde avanzadas (otro ánimo), pero el
@@ -5428,15 +5834,127 @@ def montar_banda_sonora(pid: str, cuerpo: dict = Body(default=None)):
             archivo = os.path.basename(str(archivo or "")).strip()
             if archivo:
                 fijadas[str(int(clave))] = archivo
+    # COMO SE PARTE LA MUSICA (fork, 19-10): «ritmo» (seis trozos iguales, lo
+    # de siempre) o «guion» (por lo que se cuenta: el mapa musical guardado o,
+    # sin el, los tonos de la direccion). Se guarda y vale para las siguientes.
+    arco = datos.get("arco")
+    if arco is not None and arco not in ("ritmo", "guion"):
+        raise ErrorApi(400, "arco: «ritmo» o «guion»")
+    # LAS VETADAS: ficheros de tu carpeta que en este video no suenan nunca
+    # (lista entera: la que se pasa sustituye a la que habia; [] las quita)
+    vetadas = None
+    if isinstance(datos.get("vetadas"), list):
+        vetadas = sorted({os.path.basename(str(a or "")).strip()
+                          for a in datos["vetadas"] if str(a or "").strip()})
     if not sonido.hay_musica():
         raise ErrorApi(409, sonido.falta_musica_texto())
     if fijadas is not None:
         ctx.estado.actualizar_params("render", {"musica_fijada": fijadas})
+    if arco is not None:
+        ctx.estado.actualizar_params("render", {"arco": arco})
+    if vetadas is not None:
+        ctx.estado.actualizar_params("render", {"musica_vetada": vetadas})
     trabajo_id = ctx.gestor.lanzar("banda_sonora", _correr_banda, ctx, tramos,
                                    paso="render")
     _registrar_trabajo(trabajo_id, ctx.id)
     return {"trabajo_id": trabajo_id, "trabajo": ctx.gestor.estado(trabajo_id),
             "eventos": f"/api/trabajos/{trabajo_id}/eventos"}
+
+
+def _tramos_legibles(tramos):
+    """Los tramos de la musica en una tabla para ensenar: minuto, animo, porque."""
+    def mmss(segundos):
+        return f"{int(segundos // 60)}:{int(segundos % 60):02d}"
+    return [{"tramo": t.get("i", i), "desde": mmss(t["desde"]), "hasta": mmss(t["hasta"]),
+             "segundos": round(t["hasta"] - t["desde"]), "animo": t["animo"],
+             "desde_plano": t.get("desde_plano"), "gancho": bool(t.get("gancho")),
+             "por_que": t.get("por_que")}
+            for i, t in enumerate(tramos or [])]
+
+
+def _correr_mapa(avisar, ctx, con_claude, ajuste, montar):
+    """Propone el mapa musical, lo guarda y (si se pide) monta la banda con el.
+
+    Con Claude lee la narracion; sin el, o si falla, los tonos de la direccion.
+    Nunca se queda sin mapa: lo peor que pasa es que salga el de los tonos, y
+    eso se dice en los avisos.
+    """
+    sonido = _sonido()
+    plan = PASOS_MODULOS.p6_assets.plan_actual(ctx.proyecto, "assets", estado=ctx.estado) or {}
+    escenas = plan.get("escenas") or []
+    if not escenas:
+        raise RuntimeError("no hay planos todavía: primero hay que cortar el vídeo")
+    largo = float(plan.get("duracion_total") or 0) or (
+        float(escenas[-1].get("t_out") or 0) - float(escenas[0].get("t_in") or 0))
+    render = ctx.estado.params("render") or {}
+    vetadas = list(render.get("musica_vetada") or [])
+    hay = sonido.animos_con_canciones(vetadas)
+    avisos, mapa = [], {"fuente": "tonos", "secciones": []}
+    if con_claude:
+        avisar(0.05, "Claude está leyendo la narración para decidir la música")
+        propuesto = PASOS_MODULOS.mapa_musical.proponer(
+            escenas, largo, hay, titulo=ctx.proyecto.config.get("nombre", ""),
+            ajuste=ajuste, cwd=getattr(ctx.proyecto, "raiz", None), avisar=avisar)
+        if propuesto.get("error"):
+            avisos.append("Claude no ha podido hacer el mapa ("
+                          + propuesto["error"][:160] + "): se usan los tonos de cada plano")
+        else:
+            mapa = propuesto
+            avisos.extend(mapa.get("avisos") or [])
+    ctx.estado.actualizar_params("render", {"arco": "guion", "mapa_musical": mapa})
+    tramos = sonido.arco_del_guion(escenas, largo, animos=render.get("animos_arco"),
+                                   mapa=mapa if mapa.get("secciones") else None, hay=hay)
+    resultado = {"fuente": mapa.get("fuente"), "secciones": _tramos_legibles(tramos),
+                 "avisos": avisos}
+    if montar:
+        avisar(0.7, "montando la banda sonora con el mapa")
+        ficha = _correr_banda(lambda v=None, m="", *a, **k: None, ctx, None)
+        resultado["banda"] = ficha.get("resumen")
+        resultado["avisos"] += ficha.get("avisos") or []
+    ctx.bitacora.anotar("mapa_musical", "render", {
+        "fuente": mapa.get("fuente"), "secciones": len(tramos),
+        "animos": [t["animo"] for t in tramos], "avisos": avisos})
+    resultado["resumen"] = (f"mapa musical ({'Claude' if mapa.get('fuente') == 'claude' else 'tonos'}): "
+                            f"{len(tramos)} secciones")
+    avisar(1.0, resultado["resumen"])
+    return resultado
+
+
+@app.post("/api/proyectos/{pid}/sonido/mapa", status_code=202)
+def proponer_mapa_musical(pid: str, cuerpo: dict = Body(default=None)):
+    """La musica por LO QUE SE CUENTA (fork, 19-10): propone el mapa musical.
+
+    {"con_claude": true} (por defecto) le pide a Claude que lea la narracion;
+    false usa solo los tonos que la direccion puso a cada plano (sin llamar a
+    nadie). Lo guarda en los params del render, pone el arco «guion» y, con
+    {"montar": true} (por defecto), monta la banda con el. 0 $ de Google.
+    """
+    ctx = contexto(pid)
+    _exigir_sin_trabajos(ctx, "hacer el mapa musical")
+    datos = _cuerpo(cuerpo)
+    if not _sonido().hay_musica():
+        raise ErrorApi(409, _sonido().falta_musica_texto())
+    por_fase = CLI_CLAUDE.por_defecto_de("mapa_musical")
+    ajuste = _ajuste_cli(datos, por_fase["modelo"], por_fase["esfuerzo"])
+    trabajo_id = ctx.gestor.lanzar("mapa_musical", _correr_mapa, ctx,
+                                   bool(datos.get("con_claude", True)), ajuste,
+                                   bool(datos.get("montar", True)), paso="render")
+    _registrar_trabajo(trabajo_id, ctx.id)
+    return {"trabajo_id": trabajo_id, "trabajo": ctx.gestor.estado(trabajo_id),
+            "eventos": f"/api/trabajos/{trabajo_id}/eventos"}
+
+
+@app.get("/api/proyectos/{pid}/sonido/mapa")
+def leer_mapa_musical(pid: str):
+    """Como se parte la musica ahora: el arco elegido y sus secciones, legibles."""
+    ctx = contexto(pid)
+    render = ctx.estado.params("render") or {}
+    mapa = render.get("mapa_musical") or {}
+    tramos = [t for t in ((render.get("musica") or {}).get("tramos") or [])]
+    return {"arco": render.get("arco") or "ritmo", "fuente": mapa.get("fuente"),
+            "vetadas": render.get("musica_vetada") or [], "mapa": mapa, "puestos": [
+                {**s, "canciones": [p.get("titulo") for p in (t.get("piezas") or [])]}
+                for s, t in zip(_tramos_legibles(tramos), tramos)]}
 
 
 @app.get("/api/audio-propio")
@@ -7379,10 +7897,13 @@ def _correr_light_referencias(avisar, ctx, encargo):
     # que ensena a rotular mal con un ejemplo dibujado.
     idioma = str(encargo.get("idioma") or "").strip().lower()
     destino = os.path.join(ctx.proyecto.raiz, "estilo", "dibujadas")
+    # Y LAS IMAGENES QUE SUBISTE, que ahora tambien van al generador y no solo
+    # a quien escribe la guia (fork, 08-10-2026; ver `dibujar_desde_guia`).
     hecho = mod.dibujar_desde_guia({"guia": bloque.get("guia")}, destino,
                                    ejes=pedidos, peticiones=peticiones,
                                    calidad=calidad, avisar=avisar,
-                                   idioma=idioma)
+                                   idioma=idioma,
+                                   referencias=_aportadas_del_taller(ctx))
     # LA LISTA NO SE PISA CUANDO SOLO SE HA REDIBUJADO UNA. Cada lamina se
     # escribe en `<eje>.png`, o sea encima de la que habia, asi que las otras
     # cinco siguen en su sitio y en la lista. Escribir aqui `hecho["rutas"]` a
@@ -7570,6 +8091,27 @@ def _correr_light_voz(avisar, ctx, encargo):
     """
     light = _light()
     ficha_ritmo = light.ritmo_de(encargo.get("ritmo"))
+    # UNA VOZ DE GOOGLE ELEGIDA A MANO (fork, 08-10-2026). `voz_descrita` elige
+    # del catalogo de CARTESIA, y con «Orus» la tarea moria («no esta en el
+    # catalogo de esta cuenta de Cartesia») despues de haber escrito ya la guia
+    # y el tono. Una voz de Google no tiene mandos que elegir: el caracter va en
+    # su instruccion de estilo --la descripcion que escribiste-- y el aire lo
+    # pone el ritmo. Se escribe directa, sin llamar a nadie.
+    google = PASOS_MODULOS.p4_voz.motor_google
+    voz_fija = str(encargo.get("voz_id") or "").strip()
+    if voz_fija in google.VOCES_MASCULINAS + google.VOCES_FEMENINAS:
+        estilo_voz = f"Voice and delivery: {encargo['voz_prompt']}"
+        cambios = {"proveedor": "google", "modelo": google.MODELO_POR_DEFECTO,
+                   "voz_id": voz_fija, "voz_nombre": voz_fija,
+                   "idioma": encargo["idioma"],
+                   "hueco_minimo": ficha_ritmo["hueco_minimo"],
+                   "estilos": {"intro": estilo_voz, "cuerpo": estilo_voz}}
+        ctx.estado.actualizar_params("voz", cambios)
+        ctx.bitacora.anotar("voz_descrita", "voz", {
+            "encargo": encargo["voz_prompt"][:200], "voz": voz_fija,
+            "proveedor": "google", "ritmo": ficha_ritmo["id"]})
+        return dict(cambios, por_que="voz de Google elegida a mano: su "
+                                     "caracter va en la instruccion de estilo")
     peticion = (encargo.get("feedback") or {}).get("voz") or ""
     elegido = PASOS_MODULOS.voz_descrita.proponer(
         encargo["voz_prompt"], idioma=encargo["idioma"], avisar=avisar,
@@ -7952,6 +8494,8 @@ def listar_presets_light():
             # los animos de la musica: la tabla de siempre y los que hay, para
             # el bloque «Música» de la ficha del estilo (fork)
             "musica_por_defecto": sonido.ANIMOS_ARCO,
+            # como puede ordenarse un video (fork, Fase 5): para el bloque Guion
+            "estructuras": PASOS_MODULOS.p3_guion.ESTRUCTURAS,
             "animos_musica": sorted(sonido.ANIMOS),
             "idiomas": [{"valor": c, "nombre": presets.NOMBRES_IDIOMA.get(c, c)}
                         for c in light.IDIOMAS],
@@ -8514,6 +9058,40 @@ def editar_preset_light(preset_id: str, cuerpo: dict = Body(default=None)):
         except ErrorApi:
             pass                    # sin taller el preset sigue siendo correcto
 
+    # LA DURACION HABITUAL DEL ESTILO (fork, Fase 5): con la que empieza el
+    # encargo de cada video nuevo. Un canal de videos de veinte minutos no tiene
+    # por que arrastrar el deslizador desde cuatro cada vez. Va al brief del
+    # taller por lo mismo que la guia de tono.
+    if datos.get("duracion_objetivo_s") is not None:
+        p2 = PASOS_MODULOS.p2_brief
+        try:
+            segundos = int(round(float(datos["duracion_objetivo_s"])))
+        except (TypeError, ValueError):
+            raise ErrorApi(400, "duracion_objetivo_s tiene que ser un numero de segundos")
+        if not p2.DURACION_MINIMA_S <= segundos <= p2.DURACION_MAXIMA_S:
+            raise ErrorApi(400, f"la duracion va de {p2.DURACION_MINIMA_S} a "
+                                f"{p2.DURACION_MAXIMA_S} segundos")
+        contenido.setdefault("guion", {})["duracion_objetivo_s"] = segundos
+        try:
+            _taller_de(ficha).estado.actualizar_params(
+                "brief", {"duracion_objetivo_s": segundos})
+        except ErrorApi:
+            pass                    # sin taller el preset sigue siendo correcto
+
+    # LA ESTRUCTURA DEL VIDEO (fork, Fase 5): relato, lista o cronologica. Al
+    # bloque `guion` del preset y AL TALLER, por lo mismo que la guia de tono.
+    # No cuesta nada: cambia como se le pide el guion al redactor la proxima vez.
+    if datos.get("estructura") is not None:
+        estructura = str(datos["estructura"] or "").strip().lower()
+        if estructura not in PASOS_MODULOS.p3_guion.ESTRUCTURAS:
+            raise ErrorApi(400, f"estructura desconocida: {estructura!r}. Son: "
+                                + ", ".join(PASOS_MODULOS.p3_guion.ESTRUCTURAS))
+        contenido.setdefault("guion", {})["estructura"] = estructura
+        try:
+            _taller_de(ficha).estado.actualizar_params("guion", {"estructura": estructura})
+        except ErrorApi:
+            pass                    # sin taller el preset sigue siendo correcto
+
     # LOS ANIMOS DE LA MUSICA (fork): que pide el arranque, el cuerpo y el
     # cierre segun su ritmo. Al bloque `musica` del preset y AL TALLER, por lo
     # mismo que la guia de tono: la proxima congelacion sale de alli.
@@ -8862,7 +9440,25 @@ def _coste_previsto(ctx, pestanas):
         else:
             caracteres = int(round(palabras * 6.1))
     usd_imagenes = round(imagenes * usd_imagen, 3)
-    usd_tts = round(caracteres * usd_caracter, 4)
+    # LA VOZ, CON LA TARIFA DE SU PROVEEDOR (fork, 08-10-2026). Aqui se cobraba
+    # siempre por caracter con la de Cartesia: 23 minutos con Google salian a
+    # 1,32 $ cuando lo medido son ~0,35 $. Es la misma cuenta que /api/estimacion.
+    voz = ctx.estado.params("voz") or {}
+    proveedor_voz = str(voz.get("proveedor") or "cartesia").strip().lower()
+    if caracteres and proveedor_voz == "google":
+        # Gemini cobra el AUDIO: lo que va a durar, la duracion del encargo
+        segundos_voz = float((ctx.estado.params("brief") or {})
+                             .get("duracion_objetivo_s") or 0) or caracteres / 15.0
+        peticiones = max(1, -(-caracteres // 3000))
+        usd_tts, _ = COSTE.coste_google_tts(
+            str(voz.get("modelo") or "gemini-2.5-flash-tts"), caracteres,
+            segundos_voz, caracteres_estilo=400 * peticiones)
+        usd_tts = round(usd_tts or 0.0, 4)
+    elif proveedor_voz == "elevenlabs":
+        # creditos del plan, no dolares: se dicen aparte (como en la estimacion)
+        usd_tts = 0.0
+    else:
+        usd_tts = round(caracteres * usd_caracter, 4)
     # LO QUE YA ESTA HECHO VIAJA AL LADO DEL TECHO, no en su lugar. El total
     # sigue siendo lo que cuesta el video entero --que es lo que hay que pagar
     # si algo aguas arriba cambia y la cache falla-- y `por_generar` es lo que
@@ -9611,6 +10207,12 @@ def crear_video_light(preset_id: str, cuerpo: dict = Body(default=None)):
         nombre = f"Vídeo de {ficha_preset.get('nombre') or preset_id}"
     if not identificador(nombre):
         raise ErrorApi(400, f"'{nombre}' no da un identificador valido")
+    # LAS IDEAS DE IMAGEN, ANTES DE CREAR NADA: un texto que no cabe se contesta
+    # sin dejar en la lista un video a medias
+    ideas = _ideas_visuales().limpiar(datos.get("ideas_visuales"))
+    if len(ideas) > _ideas_visuales().TOPE_CARACTERES:
+        raise ErrorApi(400, f"las ideas de imagen ocupan {len(ideas)} caracteres "
+                            f"y el tope son {_ideas_visuales().TOPE_CARACTERES}")
     os.makedirs(raiz_proyectos(), exist_ok=True)
     base, intento = nombre[:60], 1
     while os.path.isdir(os.path.join(raiz_proyectos(), identificador(nombre))):
@@ -9698,6 +10300,15 @@ def _sembrar_video_light(ctx, datos):
     # HECHOS y esto es COMO contarlos --, y no se pisa lo que ya hubiera escrito.
     if datos.get("indicaciones") is not None:
         guion["prompt_general"] = str(datos["indicaciones"] or "")
+    # LAS IDEAS DE IMAGEN DEL AUTOR (fork, 08-10-2026): lo que quiere VER, las
+    # notas «[VISUAL: ...]» de su guion. A un fichero y no a un param: ver la
+    # cabecera de `pasos/ideas_visuales.py` (un param entraria en la firma de
+    # cada plano).
+    if datos.get("ideas_visuales") is not None:
+        try:
+            _ideas_visuales().guardar(ctx.proyecto, datos["ideas_visuales"])
+        except ValueError as fallo:
+            raise ErrorApi(400, f"ideas_visuales: {fallo}")
     if ingesta:
         _validar_params("ingesta", ingesta, ctx)
         ctx.estado.actualizar_params("ingesta", ingesta)
@@ -9732,6 +10343,37 @@ def _fuentes():
     if PASOS_MODULOS is None:
         raise ErrorApi(503, f"los pasos no se han podido cargar: {ERROR_PASOS}")
     return PASOS_MODULOS.fuentes
+
+
+# LAS IDEAS DE IMAGEN DEL AUTOR (fork, 08-10-2026). Van junto al material pero
+# NO son un paso ni un param: las leen `catalogo_visual` y `direccion` cuando
+# corren, y cambiarlas no deja nada obsoleto. Ver `pasos/ideas_visuales.py`.
+
+@app.get("/api/proyectos/{pid}/ideas-visuales")
+def leer_ideas_visuales(pid: str):
+    """Lo que el autor quiere VER: las notas de imagen de su guion."""
+    ctx = contexto(pid)
+    texto = _ideas_visuales().leer(ctx.proyecto)
+    return {"texto": texto, "caracteres": len(texto),
+            "tope": _ideas_visuales().TOPE_CARACTERES}
+
+
+@app.put("/api/proyectos/{pid}/ideas-visuales")
+def guardar_ideas_visuales(pid: str, cuerpo: dict = Body(default=None)):
+    """Cambia (o quita, con texto vacío) las ideas de imagen del vídeo.
+
+    No rehace nada por sí sola: valen para la próxima vez que se dirijan los
+    planos o se lea el reparto.
+    """
+    ctx = contexto(pid)
+    datos = _cuerpo(cuerpo)
+    try:
+        texto = _ideas_visuales().guardar(ctx.proyecto, datos.get("texto"))
+    except ValueError as fallo:
+        raise ErrorApi(400, str(fallo))
+    ctx.bitacora.anotar("ideas_visuales", "assets", {"caracteres": len(texto)})
+    return {"texto": texto, "caracteres": len(texto),
+            "tope": _ideas_visuales().TOPE_CARACTERES}
 
 
 @app.get("/api/estadisticas")

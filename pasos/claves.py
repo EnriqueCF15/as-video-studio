@@ -119,7 +119,9 @@ def _vacio():
         # modelo_planos / modelo_reparto: vacio = el de por defecto del motor
         # (Nano Banana 2 para todo, eleccion de Enrique del 02-10-2026)
         "google": {"proyecto": "", "ubicacion": "global", "cuenta_servicio": "",
-                   "modelo_planos": "", "modelo_reparto": ""},
+                   "modelo_planos": "", "modelo_reparto": "",
+                   # flex | estandar (fork, 08-10-2026): ver COBROS_IMAGEN_GOOGLE
+                   "cobro_imagen": "flex"},
     }
 
 
@@ -177,7 +179,7 @@ def _normalizar(datos):
     google = datos.get("google")
     if isinstance(google, dict):
         for campo in ("proyecto", "ubicacion", "cuenta_servicio", "modelo_planos",
-                      "modelo_reparto"):
+                      "modelo_reparto", "cobro_imagen"):
             valor = str(google.get(campo) or "").strip()
             if valor:
                 base["google"][campo] = valor
@@ -374,6 +376,11 @@ def _fusionar(actual, peticion):
 MODELOS_IMAGEN_GOOGLE = ("gemini-3.1-flash-image", "gemini-3-pro-image",
                          "gemini-2.5-flash-image")
 
+#: Como se pagan las imagenes de Vertex (fork, 08-10-2026; motores/imagen_gemini
+#: `COBROS`): «flex» = Flex PayGo, la mitad de precio y algo mas lento;
+#: «estandar» = lo de siempre. Por defecto Flex.
+COBROS_IMAGEN_GOOGLE = ("flex", "estandar")
+
 #: Lo que admite Google como id de proyecto, y como region.
 _PROYECTO_GCP = re.compile(r"^[a-z][a-z0-9-]{4,28}[a-z0-9]$")
 _UBICACION_GCP = re.compile(r"^(global|[a-z]+-[a-z]+\d+)$")
@@ -412,6 +419,12 @@ def _google_pedido(crudo):
                 raise ErrorClaves(f"«{modelo}» no es un modelo de imagen de Vertex. Los "
                                   f"que hay: {', '.join(MODELOS_IMAGEN_GOOGLE)}")
             salida[campo] = modelo
+    if "cobro_imagen" in crudo:
+        cobro = str(crudo.get("cobro_imagen") or "").strip().lower() or "flex"
+        if cobro not in COBROS_IMAGEN_GOOGLE:
+            raise ErrorClaves(f"«{cobro}» no es una forma de pago de las imagenes. "
+                              f"Las que hay: {', '.join(COBROS_IMAGEN_GOOGLE)}")
+        salida["cobro_imagen"] = cobro
     if "cuenta_servicio" in crudo:
         ruta = str(crudo.get("cuenta_servicio") or "").strip().strip('"')
         if ruta and not (ruta.lower().endswith(".json") and os.path.isfile(ruta)):

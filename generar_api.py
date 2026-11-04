@@ -39,6 +39,7 @@ FAMILIAS = (
     ("Origen y guion", ("/api/proyectos/{pid}/frames",
                         "/api/proyectos/{pid}/integraciones",
                         "/api/proyectos/{pid}/material",
+                        "/api/proyectos/{pid}/ideas-visuales",
                         "/api/proyectos/{pid}/guion",
                         "/api/proyectos/{pid}/tono")),
     ("Voz", ("/api/proyectos/{pid}/voz", "/api/voces")),

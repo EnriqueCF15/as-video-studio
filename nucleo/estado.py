@@ -70,6 +70,17 @@ CLAVE_UNIDADES = "unidades"
 #: PROPIA del paso (ver `_firma(propias=False)`), nunca de la que ven los demas.
 CORRECCIONES = {"guion": ("bloques",)}
 
+#: Params que dicen COMO se trabaja, no QUE sale: no entran en ninguna firma.
+#:
+#: Apagar el corrector o el revisor de imagenes no cambia lo que se pide de
+#: cada plano; solo quien lo filtra mientras se dibuja. Si contaran en la firma,
+#: tocarlos dejaria «obsoletos» los 220 planos de un video ya repasado
+#: (13-10-2026: el canal queria apagarlos para seguir el repaso con retoques
+#: directos y eso no debia invalidar nada). A diferencia de CORRECCIONES, no
+#: invalidan tampoco aguas abajo: no hay nada que rehacer por cambiarlos.
+AJUSTES_PROCESO = {"assets": ("corrector", "revisor",
+                              "ajuste_corrector", "ajuste_revisor")}
+
 # Los `id` son el contrato (carpetas, params, firmas): NO se renombran nunca.
 # El `nombre` es solo lo que se enseña, y va alineado con las pestañas de la
 # interfaz: `ingesta` se enseña como «Origen» y `callouts` como «Rotulos».
@@ -221,7 +232,7 @@ class Estado:
 
     def _params_globales(self, paso_id, propias=True):
         params = self._doc["pasos"][paso_id].get("params", {})
-        fuera = {CLAVE_UNIDADES}
+        fuera = {CLAVE_UNIDADES} | set(AJUSTES_PROCESO.get(paso_id) or ())
         if not propias:
             fuera |= set(CORRECCIONES.get(paso_id) or ())
         return {k: v for k, v in params.items() if k not in fuera}

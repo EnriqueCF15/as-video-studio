@@ -142,8 +142,10 @@ def prueba_modelos():
     igual(gem.modelo_para("low", "reparto"), ("gemini-3.1-flash-image", "2K"),
           "las hojas de reparto, con Nano Banana 2 a 2K sea cual sea la calidad "
           "(eleccion de Enrique tras la prueba real)")
-    igual(gem.ASPECTOS, {"apaisado": "3:2", "cuadrado": "1:1", "vertical": "2:3"},
-          "la MISMA proporcion que daba OpenAI (1536x1024)")
+    igual(gem.ASPECTOS, {"apaisado": "3:2", "cuadrado": "1:1", "vertical": "2:3",
+                         "panoramico": "16:9", "movil": "9:16"},
+          "la proporcion que daba OpenAI (1536x1024) y, desde el 26-10, la del "
+          "video (16:9 y 9:16)")
     usd = gem.coste_de("gemini-3.1-flash-image", "1K", 15680, 1120)
     comprobar(abs(usd - (0.0672 + 0.00784)) < 1e-6,
               f"coste de un plano con 14 referencias a 1K = salida + entrada ({usd:.4f} $)")
@@ -155,7 +157,10 @@ def prueba_tamanos():
     print("\n[2] el tamano exacto que espera el Estudio")
     for tamano, (ancho, alto), crudo in (("apaisado", (1536, 1024), (1264, 848)),
                                          ("vertical", (1024, 1536), (848, 1264)),
-                                         ("cuadrado", (1024, 1024), (1024, 1024))):
+                                         ("cuadrado", (1024, 1024), (1024, 1024)),
+                                         # lo que da Nano Banana 2 a 1K en 16:9
+                                         ("panoramico", (1536, 864), (1376, 768)),
+                                         ("movil", (864, 1536), (768, 1376))):
         salida = Image.open(io.BytesIO(gem._a_png(png(*crudo), tamano)))
         igual(salida.size, (ancho, alto), f"{tamano}: {crudo} -> {ancho}x{alto}")
 
@@ -179,6 +184,14 @@ def prueba_generar():
     igual(llamada["config"].image_config.aspect_ratio, "3:2", "con la proporcion 3:2")
     igual(llamada["config"].image_config.image_size, "1K", "y la resolucion pedida")
 
+    # un plano de un video desde el 26-10: se PIDE 16:9 y sale al lienzo del video
+    doble = _ClienteDoble([respuesta(png(1376, 768))])
+    imagen, meta = con_cliente(doble, lambda: gem.generar(
+        "a cozy kitchen", [ref], quality="low", tamano="panoramico"))
+    igual(doble.llamadas[0]["config"].image_config.aspect_ratio, "16:9",
+          "panoramico: se pide en 16:9")
+    igual(Image.open(io.BytesIO(imagen)).size, (1536, 864), "y sale a 1536x864")
+
     # un 429 frena y se reintenta; la segunda sale
     gem.ESPERA_MAXIMA_S, maximo = 0.01, gem.ESPERA_MAXIMA_S
     try:
@@ -193,6 +206,14 @@ def prueba_generar():
         finally:
             errors.APIError = clase_real
         igual(len(doble.llamadas), 2, "un 429 se espera y se reintenta")
+        doble = _ClienteDoble([_APIError(499, "CANCELLED"), respuesta(png(1264, 848))])
+        errors.APIError = _APIError
+        try:
+            _img, meta = con_cliente(doble, lambda: gem.generar("x", [ref]))
+        finally:
+            errors.APIError = clase_real
+        igual(len(doble.llamadas), 2,
+              "un 499 (Flex cancela la peticion en cola) se reintenta, no tumba la tanda")
 
         doble = _ClienteDoble([sin_imagen(), respuesta(png(1264, 848))])
         _img, meta = con_cliente(doble, lambda: gem.generar("x", [ref]))
@@ -209,6 +230,68 @@ def prueba_generar():
           "mas referencias de las que admite el modelo: no se recortan a ciegas", ValueError)
     falla(lambda: gem.generar("x", [os.path.join(BASE, "no_existe.png")]),
           "una referencia que no existe se dice antes de pagar", ValueError)
+
+
+def con_trafico(datos, trafico):
+    """Una respuesta que dice que tipo de trafico cobro Vertex."""
+    salida = respuesta(datos)
+    salida.usage_metadata.traffic_type = trafico
+    return salida
+
+
+def prueba_flex():
+    """FLEX PAYGO (fork, 08-10-2026): la misma imagen a mitad de precio.
+
+    Se PIDE con dos cabeceras y se ANOTA con lo que Vertex dice haber cobrado:
+    si se pidio Flex y no lo fue, se paga y se apunta entero.
+    """
+    print("\n[3b] Flex: la mitad de precio, pedido y comprobado")
+    from google.genai import types as gtypes
+    import ajustes
+    import claves
+    ref = referencia()
+    os.environ.pop("ESTUDIO_COBRO_IMAGEN", None)
+    igual(gem.cobro(), "flex", "sin decir nada, las imagenes se piden con Flex")
+    igual(gem.factor_de_cobro(), 0.5, "que es la mitad de la tarifa")
+    entero = gem.coste_de("gemini-3.1-flash-image", "1K", 15680, 1120)
+
+    doble = _ClienteDoble([con_trafico(png(1264, 848), gtypes.TrafficType.ON_DEMAND_FLEX)])
+    _img, meta = con_cliente(doble, lambda: gem.generar("x", [ref]))
+    cabeceras = doble.llamadas[0]["config"].http_options.headers
+    igual((cabeceras.get("X-Vertex-AI-LLM-Request-Type"),
+           cabeceras.get("X-Vertex-AI-LLM-Shared-Request-Type")), ("shared", "flex"),
+          "la peticion lleva las dos cabeceras de Flex")
+    comprobar(doble.llamadas[0]["config"].http_options.timeout == gem.TIEMPO_FLEX_MS,
+              "y una espera larga: Flex tarda mas")
+    comprobar(abs(meta["coste"] - entero * 0.5) < 1e-9 and meta["cobro"] == "flex",
+              "si Vertex dice ON_DEMAND_FLEX, se anota la mitad")
+    igual(meta["trafico"], "ON_DEMAND_FLEX", "y queda dicho lo que cobro Vertex")
+
+    doble = _ClienteDoble([con_trafico(png(1264, 848), "ON_DEMAND")])
+    _img, meta = con_cliente(doble, lambda: gem.generar("x", [ref]))
+    comprobar(abs(meta["coste"] - entero) < 1e-9 and meta["cobro"] == "estandar",
+              "si se pidio Flex y Vertex cobro estandar, se anota ENTERO")
+
+    mitad = ajustes.coste_por_imagen("low", proveedor="vertex_gemini")
+    os.environ["ESTUDIO_COBRO_IMAGEN"] = "estandar"
+    try:
+        doble = _ClienteDoble([respuesta(png(1264, 848))])
+        _img, meta = con_cliente(doble, lambda: gem.generar("x", [ref]))
+        comprobar(doble.llamadas[0]["config"].http_options is None,
+                  "en estandar no viaja ninguna cabecera de Flex")
+        igual(gem.factor_de_cobro(), 1.0, "y se paga la tarifa entera")
+        entera = ajustes.coste_por_imagen("low", proveedor="vertex_gemini")
+    finally:
+        os.environ.pop("ESTUDIO_COBRO_IMAGEN", None)
+    comprobar(abs(mitad["usd_total"] - entera["usd_total"] / 2) < 1e-3
+              and mitad["cobro"] == "flex",
+              f"y lo que se ensena ANTES de generar tambien baja a la mitad "
+              f"({entera['usd_total']} -> {mitad['usd_total']} $ por imagen)")
+    falla(lambda: claves._google_pedido({"cobro_imagen": "gratis"}),
+          "el almacen de claves no guarda una forma de pago que no existe",
+          claves.ErrorClaves)
+    igual(claves._google_pedido({"cobro_imagen": "Estandar"}),
+          {"cobro_imagen": "estandar"}, "y acepta las dos, sin mirar mayusculas")
 
 
 def prueba_simulado():
@@ -290,6 +373,7 @@ def main():
         prueba_modelos()
         prueba_tamanos()
         prueba_generar()
+        prueba_flex()
         prueba_simulado()
         prueba_estudio()
     finally:

@@ -362,8 +362,10 @@ def prueba_callouts():
     escena_sub = {"id": "S001", "narracion": "one two three",
                   "marcas": [[0.0, 0.4], [0.5, 0.9], [1.0, 1.4]],
                   "t_in": 0.0, "t_out": 3.0}
+    # «si» a mano: desde el 26-10 en horizontal van fuera del video por defecto
+    # (`subtitulos: auto`), y aqui se mira como se dibujan cuando van dentro
     movil, fija, fichas = p7_callouts.capa_de_escena(
-        escena_sub, p7_callouts._con_defectos({}))
+        escena_sub, p7_callouts._con_defectos({"subtitulos": "si"}))
     ok(fichas, f"el plano lleva subtitulo: {len(fichas)} trozo(s)")
     ok("<text" not in movil,
        "la capa que ESCALA no lleva ni una letra del subtitulo: si la llevara, "
@@ -1421,6 +1423,106 @@ def prueba_espaciar():
     sin_falta = {"B01": [{"s": 0.0, "e": 1.0}], "B02": [{"s": 3.0, "e": 4.0}]}
     igual(voz.espaciar(wav, palabras, sin_falta, escenas, 1.0)[1], [],
           "si la pausa ya es mayor que el minimo no se toca nada")
+
+    # EL DISCO RAYADO (09-10-2026, voz de Google): el alineador da la palabra por
+    # acabada en 1,0 s pero su cola («k») sigue sonando 150 ms. Antes la muestra
+    # salia del centro de la pausa, cogia la cola y la repetia: «break-k-k-k».
+    muestras = []
+    for i in range(total):
+        t = i / float(sr)
+        if 1.0 <= t < 1.15:
+            muestras.append(3000 if i % 4 < 2 else -3000)  # cola de la palabra
+        elif 1.15 <= t < 1.4:
+            muestras.append(40 if i % 2 else -40)          # ruido de sala
+        else:
+            muestras.append(9000 if i % 3 else -9000)      # voz
+    wav = _wav(muestras)
+    reparto = {"B01": [{"s": 0.0, "e": 1.0}], "B02": [{"s": 1.4, "e": 4.0}]}
+    palabras = reparto["B01"] + reparto["B02"]
+    nuevo, desplazamientos = voz.espaciar(wav, palabras, reparto, escenas, hueco_minimo=1.0)
+    ok(abs(desplazamientos[0]["retardo"] - 0.6) < 0.02, "con cola: se insertan los 0,6 s que faltan")
+    ok(desplazamientos[0]["desde"] >= 1.15,
+       f"el corte cae en el silencio de la pausa, no en la cola ({desplazamientos[0]['desde']}s)")
+    pcm = voz._pcm_de_wav(nuevo)
+    corte = int(desplazamientos[0]["desde"] * sr)
+    trozo = [struct.unpack("<h", pcm[i * 2:i * 2 + 2])[0]
+             for i in range(corte, corte + int(0.6 * sr))]
+    ok(max(abs(v) for v in trozo) < 500,
+       f"lo insertado NO repite la cola: pico {max(abs(v) for v in trozo)} (la cola es 3000)")
+    ok(sum(1 for v in trozo if v == 0) < len(trozo) * 0.2,
+       "y sigue siendo ruido de sala, no ceros")
+
+    # Si la pausa entera lleva voz, se usa el trozo mas callado de OTRA pausa
+    sucio = b"".join(struct.pack("<h", 2000 if i % 2 else -2000) for i in range(sr))
+    limpio = b"".join(struct.pack("<h", 30 if i % 2 else -30) for i in range(int(0.1 * sr)))
+    relleno = voz._relleno_de_sala(sucio + limpio, 0.2, 0.6, 0.5,
+                                   (sr, sr + int(0.1 * sr), 30.0))
+    valores = [struct.unpack("<h", relleno[i:i + 2])[0] for i in range(0, len(relleno), 2)]
+    ok(max(abs(v) for v in valores) <= 30,
+       "una pausa con voz dentro se rellena con la reserva, no consigo misma")
+
+    def _toma(tramos):
+        """[(desde, hasta, amplitud)] -> wav; amplitud 0 es silencio digital."""
+        muestras = [0] * int(sr * tramos[-1][1])
+        for desde, hasta, amp in tramos:
+            for i in range(int(desde * sr), int(hasta * sr)):
+                muestras[i] = amp if i % 2 else -amp
+        return _wav(muestras)
+
+    def _valores(wav_, desde, hasta):
+        pcm_ = voz._pcm_de_wav(wav_)
+        return [struct.unpack("<h", pcm_[i * 2:i * 2 + 2])[0]
+                for i in range(int(desde * sr), int(hasta * sr))]
+
+    # LA ESTATICA (09-10-2026): Gemini calla con ceros digitales. Repetir un
+    # trocito casi mudo de esa toma era un zumbido; ahora, silencio puro.
+    wav = _toma([(0.0, 1.0, 9000), (1.0, 1.3, 0), (1.3, 4.0, 9000)])
+    reparto = {"B01": [{"s": 0.0, "e": 1.0}], "B02": [{"s": 1.3, "e": 4.0}]}
+    nuevo, desplazamientos = voz.espaciar(wav, palabras, reparto, escenas, hueco_minimo=1.0)
+    corte = desplazamientos[0]["desde"]
+    ok(all(v == 0 for v in _valores(nuevo, corte, corte + 0.7)),
+       "voz que calla con ceros (Google): el aire es silencio puro, sin estatica")
+
+    # «p- people»: el alineador da la frase por acabada en 1,0 s pero la voz sigue
+    # («worked») tras el cierre de la «p» (60 ms mudos); la pausa de verdad va de
+    # 1,5 a 1,9, y luego la respiracion antes de la frase siguiente.
+    wav = _toma([(0.0, 1.0, 9000), (1.0, 1.06, 0), (1.06, 1.5, 9000), (1.5, 1.9, 0),
+                 (1.9, 2.1, 400), (2.1, 4.0, 9000)])
+    reparto = {"B01": [{"s": 0.0, "e": 1.0}], "B02": [{"s": 2.1, "e": 4.0}]}
+    nuevo, desplazamientos = voz.espaciar(wav, palabras, reparto, escenas, hueco_minimo=1.6)
+    corte = desplazamientos[0]["desde"]
+    ok(1.5 <= corte < 1.6,
+       f"el aire entra cuando la voz se calla de verdad, no en el cierre de la «p» ({corte}s)")
+    respiracion = _valores(nuevo, 1.9 + 0.5, 2.1 + 0.5)
+    ok(sum(1 for v in respiracion if abs(v) == 400) > len(respiracion) * 0.95,
+       "y la respiracion queda entera, pegada a la frase siguiente")
+
+    # Una union sin silencio claro (solo una respiracion) se queda como esta
+    wav = _toma([(0.0, 1.0, 9000), (1.0, 1.3, 400), (1.3, 2.5, 9000), (2.5, 3.0, 0),
+                 (3.0, 4.0, 9000)])
+    tres = [{"id": "B01"}, {"id": "B02"}, {"id": "B03"}]
+    reparto = {"B01": [{"s": 0.0, "e": 1.0}], "B02": [{"s": 1.3, "e": 2.5}],
+               "B03": [{"s": 3.0, "e": 4.0}]}
+    nuevo, desplazamientos = voz.espaciar(wav, palabras, reparto, tres, hueco_minimo=1.0)
+    igual(len(desplazamientos), 1, "sin silencio claro en la union no se mete aire")
+    ok(desplazamientos[0]["desde"] >= 2.5, "y en la otra union, si")
+
+    # CADA PAUSA CON SU FONDO (09-10-2026): que una pausa de la toma sea muda no
+    # puede rellenar con ceros las que llevan soplido: el fondo se cortaria.
+    wav = _toma([(0.0, 1.0, 9000), (1.0, 1.3, 0), (1.3, 2.5, 9000), (2.5, 2.9, 40),
+                 (2.9, 4.0, 9000)])
+    nuevo, desplazamientos = voz.espaciar(wav, palabras, {"B01": [{"s": 0.0, "e": 1.0}],
+                                                          "B02": [{"s": 1.3, "e": 2.5}],
+                                                          "B03": [{"s": 2.9, "e": 4.0}]},
+                                          tres, hueco_minimo=1.0)
+    igual(len(desplazamientos), 2, "las dos uniones llevan aire")
+    primero = desplazamientos[0]["retardo"]
+    mudo = _valores(nuevo, desplazamientos[0]["desde"], desplazamientos[0]["desde"] + 0.6)
+    ok(all(v == 0 for v in mudo), "la pausa muda se alarga con silencio puro")
+    corte = desplazamientos[1]["desde"] + primero
+    soplido = _valores(nuevo, corte + 0.02, corte + 0.55)
+    ok(sum(1 for v in soplido if v == 0) < len(soplido) * 0.2 and max(map(abs, soplido)) <= 40,
+       "y la del soplido, con su mismo soplido: el fondo no se corta")
 
 
 # --------------------------------------------------- 6. p6._capa_vectorial
@@ -2872,6 +2974,135 @@ def prueba_feedback_en_prompts():
           "y la ficha de la hoja recoge la nota de la unidad")
 
 
+def prueba_rescate_json():
+    """UN OBJETO DE MAS NO TIRA LA RESPUESTA (fork, 09-10-2026).
+
+    El catalogo de un video de 23 min fallo con «Extra data» tras 16 min de
+    Opus, y la respuesta no se guardaba: habia que pagarla otra vez.
+    """
+    titulo("extraer_json: rescata el objeto bueno y guarda lo ilegible")
+    bueno = {"reparto": {"tu": {"nombre": "You", "palabras": ["you"]}},
+             "sets": {"oficina": {"descripcion": "an office {at night}"}},
+             "beats": [{"bloque": "B%03d" % n, "set": "oficina"} for n in range(40)]}
+    nota = '{"nota": "first a short draft"}'
+    texto = json.dumps(bueno)
+    igual(comun.extraer_json(nota + "\n" + texto), bueno,
+          "un objeto pequeno DELANTE: se queda el grande")
+    igual(comun.extraer_json(texto + "\nNote: " + nota), bueno,
+          "un objeto pequeno DETRAS: igual")
+    igual(comun.extraer_json("```json\n" + texto + "\n```"), bueno,
+          "lo de siempre sigue igual")
+    viejo = tempfile.tempdir
+    tempfile.tempdir = tempfile.mkdtemp(prefix="prueba_ilegible_")
+    try:
+        roto = nota + "\n" + texto[:len(texto) // 2] + "}"
+        try:
+            comun.extraer_json(roto, "el catalogo")
+            ok(False, "si el grande viene roto no se devuelve el pequeno")
+        except RuntimeError as fallo:
+            ok("no es un JSON legible" in str(fallo)
+               and "respuesta guardada en" in str(fallo),
+               "si el grande viene roto: error, y dice donde quedo la respuesta")
+            guardadas = os.listdir(os.path.join(tempfile.tempdir, "respuestas_ilegibles"))
+            ok(len(guardadas) == 1 and guardadas[0].endswith("_el_catalogo.txt"),
+               "la respuesta se guarda con el nombre de lo que era")
+            with open(os.path.join(tempfile.tempdir, "respuestas_ilegibles",
+                                   guardadas[0]), encoding="utf-8") as fh:
+                igual(fh.read(), roto, "entera, tal cual llego")
+    finally:
+        shutil.rmtree(tempfile.tempdir, ignore_errors=True)
+        tempfile.tempdir = viejo
+
+
+def prueba_ideas_del_autor():
+    """LAS IDEAS DE IMAGEN DEL AUTOR (fork, 08-10-2026).
+
+    Las notas «[VISUAL: ...]» de un guion escrito a mano se perdian: los bloques
+    del guion son {id, texto}. Ahora llegan a quien decide que se ve en cada
+    plano (`direccion`) y a quien decide quien sale y donde (`catalogo_visual`).
+    Sin ideas, los dos encargos tienen que salir EXACTAMENTE como salian.
+    """
+    import tempfile                                           # noqa: PLC0415
+    import types                                              # noqa: PLC0415
+    import ideas_visuales                                     # noqa: PLC0415
+    import estadisticas                                       # noqa: PLC0415
+
+    titulo("ideas del autor: se guardan en un fichero del proyecto, limpias")
+    with tempfile.TemporaryDirectory() as carpeta:
+        proyecto = types.SimpleNamespace(raiz=carpeta)
+        igual(ideas_visuales.leer(proyecto), "", "sin fichero no hay ideas")
+        guardado = ideas_visuales.guardar(proyecto, "  [VISUAL: a]  \r\nB  \r\n\n")
+        igual(guardado, "[VISUAL: a]\nB", "los saltos de Windows y los espacios "
+              "colgando se limpian")
+        igual(ideas_visuales.leer(proyecto), "[VISUAL: a]\nB", "y se leen igual")
+        igual(ideas_visuales.guardar(proyecto, "   "), "",
+              "un texto vacio las quita")
+        ok(not os.path.exists(ideas_visuales.ruta(proyecto)),
+           "y quitar es borrar el fichero, no dejar uno vacio")
+        try:
+            ideas_visuales.guardar(proyecto,
+                                   "x" * (ideas_visuales.TOPE_CARACTERES + 1))
+            ok(False, "lo que pasa del tope tendria que rechazarse")
+        except ValueError:
+            ok(True, "lo que pasa del tope se rechaza entero, no se recorta")
+
+    nota = ("NARRATION: It's three forty-seven in the afternoon.\n"
+            "[VISUAL: a doodle character slumps at a desk; the clock reads 3:47 PM]")
+
+    class Basta(Exception):
+        pass
+
+    vistas = []
+
+    def falso(instruccion, *_a, **_k):
+        vistas.append(instruccion)
+        raise Basta()
+
+    originales = (direccion._llamar_claude, catalogo_visual._llamar_claude,
+                  estadisticas.anotar)
+    direccion._llamar_claude = falso
+    catalogo_visual._llamar_claude = falso
+    estadisticas.anotar = lambda *_a, **_k: None
+    try:
+        escenas = [{"id": "S001", "narracion": "It's three forty-seven.",
+                    "personajes": []}]
+        bloques = [{"id": "B001", "texto": "It's three forty-seven."}]
+        for ideas in ("", nota):
+            for llamada in (lambda: direccion.proponer(escenas, ideas=ideas),
+                            lambda: catalogo_visual.proponer(bloques, ideas=ideas)):
+                try:
+                    llamada()
+                except Basta:
+                    pass
+    finally:
+        (direccion._llamar_claude, catalogo_visual._llamar_claude,
+         estadisticas.anotar) = originales
+    dir_sin, cat_sin, dir_con, cat_con = vistas
+
+    titulo("ideas del autor: llegan a la direccion de cada plano")
+    ok("3:47 PM" in dir_con and "MANDAN SOBRE LO QUE TU IMAGINARIAS" in dir_con,
+       "con ideas, la direccion las recibe y sabe que mandan")
+    ok(dir_con.index("LAS IDEAS DE IMAGEN DEL AUTOR")
+       < dir_con.index("LOS PLANOS (1,"),
+       "van ANTES de los planos: primero que quiere ver, luego que planos hay")
+    ok("LAS IDEAS DE IMAGEN DEL AUTOR" not in dir_sin
+       and "video montado.\n\n=====" in dir_sin,
+       "sin ideas no hay bloque ni linea de mas")
+    igual(dir_con.replace(direccion.ideas_legibles(nota), ""), dir_sin,
+          "y el bloque es lo UNICO que cambia en el encargo")
+
+    titulo("ideas del autor: llegan al reparto (quien sale aunque se diga «tu»)")
+    ok("3:47 PM" in cat_con and "QUIEN SALE" in cat_con,
+       "el catalogo visual recibe las ideas para decidir el reparto")
+    ok("LAS IDEAS DE IMAGEN DEL AUTOR" not in cat_sin,
+       "y sin ideas no se dice nada")
+    igual(cat_con.replace(catalogo_visual.ideas_legibles(nota), ""), cat_sin,
+          "y el bloque es lo UNICO que cambia en el encargo")
+
+    fuente = open(os.path.join(RAIZ, "app.py"), encoding="utf-8").read()
+    igual(fuente.count("ideas=_ideas_visuales().leer(ctx.proyecto)"), 2,
+          "app.py se las lee del proyecto a los dos agentes")
+
 
 def prueba_direccion():
     """QUE SE VE EN CADA PLANO: la capa que faltaba en el prompt de imagen.
@@ -3537,6 +3768,105 @@ def prueba_subtitulos():
           "25 people",
           "pero «twenty five» NO es el ano 2005: la segunda mitad de un ano "
           "tiene que valer diez o mas")
+    # fork, 10-10-2026: lo que salio mal en el video de historia
+    igual(subtitulos.limpiar_texto("It's three forty-seven in the afternoon.".split(), "en"),
+          "It's 3:47 in the afternoon.",
+          "LA HORA dicha a la inglesa es una hora, no la suma 3 + 47 = «50»")
+    igual(subtitulos.limpiar_texto("around twelve fifty B.C.".split(), "en"),
+          "around 1250 B.C.",
+          "y con «B.C.» detras es un ano antes de Cristo, no las 12:50")
+    igual(subtitulos.limpiar_texto("By the eighteen thirties, in the early eighteen "
+                                   "hundreds".split(), "en"),
+          "By the 1830s, in the early 1800s",
+          "LA DECADA y el siglo, enteros: no «18 thirties» ni «18 hundreds»")
+    igual(subtitulos.limpiar_texto("And once you know that story".split(), "en"),
+          "And once you know that story",
+          "«once» en ingles es «una vez»: con el idioma del video no es el 11")
+    igual(subtitulos.limpiar_texto("And once you know that story".split()),
+          "And 11 you know that story",
+          "(sin idioma lee con las dos tablas: por eso hay que pasarlo)")
+    escena_once = {"narracion": "And once you know that story, you won't look back.",
+                   "t_in": 0.0, "marcas": [[k * 0.3, k * 0.3 + 0.25] for k in range(10)]}
+    ok(all("11" not in x["texto"] for x in subtitulos.de_escena(escena_once)),
+       "y de_escena sin idioma lo saca de la propia frase: no sale «11»")
+
+    # fork, 17-10-2026: el repaso 4 del video de historia
+    def trozos_de(frase):
+        palabras = frase.split()
+        return [x["texto"] for x in subtitulos.de_escena(
+            {"narracion": frase, "t_in": 0.0,
+             "marcas": [[k * 0.3, k * 0.3 + 0.25] for k in range(len(palabras))]},
+            idioma="en")]
+    igual(subtitulos.limpiar_texto("A thirty-minute dinner break quietly became "
+                                   "twenty-seven.".split(), "en"),
+          "A 30-minute dinner break quietly became 27.",
+          "UNA COMPUESTA con cifra delante se convierte: «30-minute», no "
+          "«thirty-minute» al lado de un «27»")
+    igual(subtitulos.limpiar_texto("the forty-eight-hour week".split(), "en"),
+          "the 48-hour week", "con la cifra entera delante, aunque sea de dos")
+    igual(subtitulos.limpiar_texto("your nine-to-five".split(), "en"),
+          "your nine-to-five", "pero con otra cifra en la cola no se toca")
+    igual(subtitulos.limpiar_texto("in the twenty-ninth year, sixty-one "
+                                   "companies".split(), "en"),
+          "in the 29th year, 61 companies",
+          "y lo que ya salia entero sigue entero: no «20-ninth» ni «60-one»")
+    igual(trozos_de("And here's the thing about machines: they don't rest. They "
+                    "don't celebrate Saint Monday. The engine doesn't care if the "
+                    "hay is in."),
+          ["And here's the thing about machines: they don't rest.",
+           "They don't celebrate Saint Monday.",
+           "The engine doesn't care if the hay is in."],
+          "EL FINAL DE FRASE ES FRONTERA: no «...celebrate Saint» | «Monday.»")
+    igual(trozos_de("A thirty-minute dinner break quietly became twenty-seven. "
+                    "Think about that the next time your phone casually shows "
+                    "you the time."),
+          ["A 30-minute dinner break quietly became 27.",
+           "Think about that the next time your phone casually shows you the time."],
+          "ni «...became 27. Think» | «about that...»")
+    igual(trozos_de("forty-eight a week, plus two hours of school. Teenagers from "
+                    "thirteen to eighteen: maximum twelve hours a day."),
+          ["48 a week, plus 2 hours of school.",
+           "Teenagers from 13 to 18: maximum 12 hours a day."],
+          "LA ENTRADILLA CON DOS PUNTOS va con lo que anuncia, aunque pase del "
+          "blando")
+    igual(trozos_de("Here's what it said. No children under nine. Kids from nine to "
+                    "thirteen: maximum eight hours a day,"),
+          ["Here's what it said. No children under nine.",
+           "Kids from 9 to 13: maximum 8 hours a day,"],
+          "y no se pega a lo de antes para quedarse sola al final del trozo")
+    igual(trozos_de("Like a scientist once measured the human brain and announced: "
+                    "eight hours, that's the limit."),
+          ["Like a scientist once measured the human brain and announced:",
+           "eight hours, that's the limit."],
+          "una frase LARGA que acaba en «:» no es entradilla: sigue igual")
+    ok(subtitulos._cierra_frase("rest.", "They")
+       and not subtitulos._cierra_frase("E.", "P.")
+       and not subtitulos._cierra_frase("B.C.", "That")
+       and not subtitulos._cierra_frase("Mr.", "Owen")
+       and not subtitulos._cierra_frase("so...", "and"),
+       "las iniciales, «B.C.» y los tratamientos no cierran frase; y la "
+       "siguiente tiene que empezar en mayuscula")
+    igual(trozos_de("That claim traces back to a popular book from the nineteen "
+                    "nineties that picked the lowest estimates it could find."),
+          ["That claim traces back to a popular book from the 1990s",
+           "that picked the lowest estimates it could find."],
+          "UN TROZO NO ACABA EN «the» si hay otro corte razonable")
+    igual(trozos_de("You get two days off out of every seven. He got two out of "
+                    "every ten."),
+          ["You get two days off out of every seven.", "He got 2 out of every 10."],
+          "EL VECINO ARRASTRA dentro de la frase y no salta a la anterior: no "
+          "«two days off out of every 7»")
+    igual(trozos_de("almost seventy years later: eight hours for work, eight hours "
+                    "for rest,"),
+          ["almost 70 years later: 8 hours for work,", "8 hours for rest,"],
+          "y dentro de la frase no depende de donde caiga el corte: el segundo "
+          "trozo tambien sale «8», no «eight hours for rest»")
+    igual(trozos_de("since the late eighteen seventies, called Eight Hours."),
+          ["since the late 1870s, called Eight Hours."],
+          "una cifra arrastrada con mayuscula es un NOMBRE (la cancion): se "
+          "queda en letra")
+    igual(subtitulos.limpiar_texto("from nine to thirteen".split(), "en"),
+          "from 9 to 13", "lo de siempre sigue igual")
     igual(subtitulos.limpiar_texto("UNC five five three seven.".split(), "en"),
           "UNC 5537.",
           "LA SERIE DE DIGITOS es un identificador dictado, no una suma: el "
@@ -3872,6 +4202,28 @@ def prueba_cartelas_composicion():
     ok(any(c in juntos for c in "áéíóúñ¿"),
        "llevan tildes, enyes y signos de apertura")
 
+    titulo("cartelas: el remate admite un antetitulo encima de la regla")
+    datos_r, avisos_r = cartelas.validar(
+        "remate", {"texto": "Agreements are made by people",
+                   "antetitulo": "The 8-hour workday was an agreement"})
+    igual(datos_r.get("antetitulo"), "The 8-hour workday was an agreement",
+          "el antetitulo pasa la validacion y no se pierde")
+    ficha_r = {"plantilla": "remate", "datos": datos_r}
+    dibujadas_r = cartelas.palabras_dibujadas(ficha_r, 8.0)
+    igual(dibujadas_r[:6], "The 8-hour workday was an agreement".upper().split()
+          if cartelas.LETRA.get("versales") else
+          "The 8-hour workday was an agreement".split(),
+          "se escribe ANTES que la frase: es lo que se lee primero")
+    igual(len(dibujadas_r), 11, "y despues la frase entera, sin palabras de mas")
+    capa_r = cartelas.svg_capa(ficha_r, paleta, escrita=True)
+    ok(capa_r.index("WORKDAY" if cartelas.LETRA.get("versales") else "workday")
+       < capa_r.index("people" if not cartelas.LETRA.get("versales") else "PEOPLE"),
+       "en el SVG va antes (encima) de la frase")
+    sin_ante = cartelas.svg_capa({"plantilla": "remate",
+                                  "datos": {"texto": "Nadie ha ido a la cárcel"}},
+                                 paleta, escrita=True)
+    ok("workday" not in sin_ante.lower(), "sin antetitulo el remate es el de siempre")
+
 
 def prueba_cartelas_dos_fondos():
     """TODAS van sobre la imagen del plano, y el velo aterriza con la voz."""
@@ -3925,6 +4277,38 @@ def prueba_cartelas_dos_fondos():
        "la continuacion arranca con el velo YA puesto, sin refundirlo")
     ok(f'opacity="{cartelas.VELO}"' in rect_s,
        "y con la imagen ya oscurecida desde el fotograma cero")
+
+
+def prueba_cartela_que_no_cabe():
+    """Fork, repaso 4 del 17-10-2026: la cartela de S075 empezaba a escribirse a
+    los 5 s de un plano de 8,3 y el plano acababa con ella recien escrita."""
+    titulo("cartelas: si no da para leerla y nadie la continua, se adelanta")
+    tiempos = [5.0, 5.32, 5.64, 5.96, 6.28, 6.6, 6.92, 7.24, 7.621, 7.701, 8.092, 8.092]
+    escritura = {"tiempos": tiempos, "cola": 3.36, "falta": 4.64, "dos_planos": True}
+    nuevos = p7_callouts.tiempos_que_caben(tiempos, escritura, 8.342)
+    ok(abs((8.342 - nuevos[-1]) - 3.36) < 0.01,
+       "acaba de escribirse con su cola de lectura por delante")
+    igual([round(b - a, 3) for a, b in zip(nuevos, nuevos[1:])],
+          [round(b - a, 3) for a, b in zip(tiempos, tiempos[1:])],
+          "y al mismo ritmo: solo se adelanta, no se aprieta")
+    igual(p7_callouts.tiempos_que_caben(tiempos, escritura, 8.342, sigue_despues=True),
+          tiempos, "si el plano siguiente la continua, se queda donde la dice la voz")
+    igual(p7_callouts.tiempos_que_caben(tiempos, dict(escritura, falta=0), 8.342),
+          tiempos, "y si ya cabe, no se toca")
+    apretados = p7_callouts.tiempos_que_caben(
+        [0.5, 2.0, 4.5], {"cola": 3.0, "falta": 1.5}, 5.0)
+    ok(apretados[0] == 0.0 and abs(apretados[-1] - 2.0) < 0.01,
+       "si ni empezando en el corte llega, se aprieta: desde el corte y con la "
+       "cola entera (obtenido %s)" % apretados)
+    ok(p7_callouts.tiempos_que_caben([1.0, 3.0], {"cola": 9.0, "falta": 5.0},
+                                     4.0)[-1] <= 4.0 * p7_callouts.PARTE_PARA_ESCRIBIR,
+       "y en un plano mas corto que la cola, se escribe en su primera parte")
+    escenas = [{"id": "S1", "cartela": {"plantilla": "contraste"}},
+               {"id": "S2", "cartela": {"sigue_a": "S1"}}, {"id": "S3"}]
+    ok(p7_callouts._sigue_despues(escenas, "S1")
+       and not p7_callouts._sigue_despues(escenas, "S2")
+       and not p7_callouts._sigue_despues(escenas, "S3"),
+       "el plano siguiente la continua solo si lo dice (sigue_a o continua)")
 
 
 def prueba_reloj_de_cartela():
@@ -4294,6 +4678,8 @@ def main():
     prueba_espaciar()
     prueba_cartelas()
     prueba_direccion()
+    prueba_ideas_del_autor()
+    prueba_rescate_json()
     prueba_subtitulos()
     prueba_encajar_mide_el_ancho()
     prueba_cartelas_composicion()
@@ -4301,6 +4687,7 @@ def main():
     prueba_transiciones()
     prueba_sonido()
     prueba_reloj_de_cartela()
+    prueba_cartela_que_no_cabe()
     prueba_mascaras_en_la_hoja()
     prueba_unidades_fantasma()
     prueba_lo_que_la_receta_no_nombra()

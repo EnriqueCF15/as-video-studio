@@ -374,6 +374,23 @@ def prueba_tramos():
     igual(a_mano[1]["tramo"], "intro", "lo fijado a mano manda")
     igual(p4_voz.separar_intro(secciones, bloques, {"estilos": {"cuerpo": CUERPO}}),
           secciones, "sin estilo de intro no se corta nada")
+    hasta = secciones[0]["bloques"][3]
+    a_medida = p4_voz.separar_intro(secciones, bloques, dict(cfg, intro_hasta=hasta))
+    igual(a_medida[0]["bloques"][-1], hasta, "con intro_hasta el gancho acaba en ESE bloque")
+    igual(sum(len(s["bloques"]) for s in a_medida), len(bloques), "tambien sin perder bloques")
+    igual(p4_voz.separar_intro(secciones, bloques, dict(cfg, intro_hasta="B99"))[0]["bloques"],
+          partidas[0]["bloques"], "un intro_hasta que no esta en la primera seccion se ignora")
+
+    # 3.1 Flash se apaga en peticiones largas: piezas cortas y PARECIDAS
+    frases = " ".join(f"Sentence number {i} is here." for i in range(60))
+    partes = goo.trocear_equilibrado(frases, 700)
+    comprobar(len(partes) == len(goo.trocear_por_bytes(frases, 700)) and
+              max(map(len, partes)) - min(map(len, partes)) < 60,
+              f"troceo equilibrado: mismas piezas, de tamano parecido ({[len(p) for p in partes]})")
+    comprobar(all(len(p.encode()) <= 700 for p in partes) and " ".join(partes) == frases,
+              "sin pasar del tope ni perder texto")
+    igual(goo.BYTES_PIEZA_POR_MODELO.get("gemini-3.1-flash-tts-preview"), 700,
+          "3.1 Flash va en piezas de 700 bytes")
 
 
 def prueba_toma_y_regrabado(base):
@@ -420,13 +437,46 @@ def prueba_toma_y_regrabado(base):
         igual(doble_google.llamadas[-1][0]["estilo"], INTRO,
               "regrabar la intro usa el estilo de intro")
         ultima = meta["secciones"][-1]["id"]
-        p4_voz.regrabar_seccion(bloques, ultima, cfg, nuevas,
-                                os.path.dirname(salidas["pista"]))
+        cierre, _ = p4_voz.regrabar_seccion(bloques, ultima, cfg, nuevas,
+                                            os.path.dirname(salidas["pista"]))
         igual(doble_google.llamadas[-1][0]["estilo"], CIERRE,
               "regrabar el cierre usa el de cierre")
         igual([s.get("tramo") for s in nuevas["secciones"]],
               [s.get("tramo") for s in salidas["secciones"]],
               "tras regrabar, cada seccion sigue en su tramo")
+
+        # regrabar UN bloque suelto: se graba con sus vecinos, se queda con lo
+        # suyo y se cose sin mover lo de antes
+        destino = os.path.dirname(salidas["pista"])
+        actuales = [{"id": b["id"], "texto": b["texto"]} for b in cierre["bloques"]]
+        pedidos = [dict(b) for b in actuales]
+        pedidos[1]["texto"] = "A brand new sentence for this block — said a little differently."
+        llamadas = len(doble_google.llamadas)
+        toma = p4_voz.grabar_bloques(pedidos, [pedidos[1]["id"]], cfg,
+                                     tramo="intro", estilo="Lively.")
+        igual(doble_google.llamadas[llamadas][0]["estilo"], "Lively.",
+              "un bloque suelto se graba con el estilo que se pida")
+        vecinos = " ".join(marcas_tts.limpiar(b["texto"]) for b in pedidos[:3])
+        igual(doble_alineador.llamadas[-1], vecinos,
+              "con el bloque de antes y el de despues en la misma peticion")
+        igual([p["w"] for p in toma["palabras"]],
+              alin.tokens_del_guion(marcas_tts.limpiar(pedidos[1]["texto"])),
+              "y se queda solo con las palabras del bloque (la raya suelta no cuenta)")
+        cosidas, nuevos = p4_voz.regrabar_bloques(actuales, [toma], cierre, destino)
+        igual(nuevos[1]["texto"], pedidos[1]["texto"], "el texto nuevo viaja con la toma")
+        igual([b["texto"] for b in nuevos[:1] + nuevos[2:]],
+              [b["texto"] for b in actuales[:1] + actuales[2:]],
+              "los demas bloques no cambian")
+        igual((cosidas["bloques"][0]["t_in"], cosidas["bloques"][0]["t_out"]),
+              (cierre["bloques"][0]["t_in"], cierre["bloques"][0]["t_out"]),
+              "lo de antes del bloque no se mueve")
+        delta = cosidas["duracion"] - cierre["duracion"]
+        igual(round(cosidas["bloques"][-1]["t_out"], 2),
+              round(cierre["bloques"][-1]["t_out"] + delta, 2),
+              "lo de despues se corre justo lo que cambio la duracion")
+        igual(len(cosidas["palabras"]),
+              sum(len(alin.tokens_del_guion(marcas_tts.limpiar(b["texto"]))) for b in nuevos),
+              "una marca por palabra tras coser")
     finally:
         p4_voz.motor_google, p4_voz.alineador = real_google, real_alineador
         if simular is None:

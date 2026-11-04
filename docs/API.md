@@ -98,6 +98,8 @@ Reglas que valen para toda la API y no se repiten en cada fila:
 | | Ruta | Qué hace |
 |---|---|---|
 | `POST` | `/api/proyectos/{pid}/guion/bloques/reescribir` | Reescribe unos bloques del guion con una frase. Sin tocar el audio. |
+| `GET` | `/api/proyectos/{pid}/ideas-visuales` | Lo que el autor quiere VER: las notas de imagen de su guion. |
+| `PUT` | `/api/proyectos/{pid}/ideas-visuales` | Cambia (o quita, con texto vacío) las ideas de imagen del vídeo. |
 
 ## Voz
 
@@ -106,6 +108,8 @@ Reglas que valen para toda la API y no se repiten en cada fila:
 | `POST` | `/api/proyectos/{pid}/voz/describir` | Describe como quieres que suene y devuelve voz y mandos propuestos. |
 | `POST` | `/api/proyectos/{pid}/voz/previsualizar` | Sintetiza unos segundos con estos mandos de voz para escucharlos. |
 | `POST` | `/api/proyectos/{pid}/voz/secciones/{seccion_id}/regrabar` | Regraba una seccion de la toma, con microcambio si se pide. |
+| `POST` | `/api/proyectos/{pid}/voz/bloques/probar` | Graba tomas de prueba de unos bloques (con sus vecinos), SIN tocar la voz. |
+| `POST` | `/api/proyectos/{pid}/voz/bloques/regrabar` | Cose en la voz las tomas de prueba elegidas, sin volver a grabar. |
 | `GET` | `/api/voces` | Catalogo de voces (Cartesia, o Google con ?proveedor=google). |
 | `GET` | `/api/voces/elevenlabs/creditos` | Los creditos de ElevenLabs del mes: usados, limite, restantes, renovacion. |
 
@@ -148,6 +152,7 @@ Reglas que valen para toda la API y no se repiten en cada fila:
 | `GET` | `/api/proyectos/{pid}/direccion` | Qué se ve en cada plano: lo dirigido, y los planos que lo admiten. |
 | `PUT` | `/api/proyectos/{pid}/direccion` | Guarda qué se ve en cada plano. Un texto vacío la quita. |
 | `POST` | `/api/proyectos/{pid}/direccion/proponer` | Escribe qué se ve en cada plano, con TODOS los planos delante de una vez. |
+| `POST` | `/api/proyectos/{pid}/direccion/rehacer` | «Rehacer con Opus»: vuelve a pedir SOLO los planos `ids` al director «escena entera», con Opus xhigh y todas las frases delante. |
 
 ## Sonido y transiciones
 
@@ -164,6 +169,8 @@ Reglas que valen para toda la API y no se repiten en cada fila:
 | `POST` | `/api/proyectos/{pid}/sonido/banda` | Monta la banda sonora SOLA: un tema por tramo, elegido por el ritmo. |
 | `POST` | `/api/proyectos/{pid}/sonido/efectos` | Llena el banco de efectos del canal para los papeles que se pidan. |
 | `POST` | `/api/proyectos/{pid}/sonido/escuchar` | La voz con la música y los efectos elegidos, en un MP3, SIN montar el vídeo. |
+| `GET` | `/api/proyectos/{pid}/sonido/mapa` | Cómo se parte la música ahora: arco («ritmo» o «guion») y secciones legibles con sus canciones. |
+| `POST` | `/api/proyectos/{pid}/sonido/mapa` | La música por lo que se cuenta: Claude lee la narración (o, sin él, los tonos de cada plano), guarda el mapa y monta la banda. |
 | `POST` | `/api/proyectos/{pid}/sonido/musica` | Temas de Jamendo que pegan con el tono. Devuelve candidatos, no elige. |
 | `POST` | `/api/proyectos/{pid}/sonido/vetados` | Prohíbe un efecto en TODO el canal, o levanta el veto con `quitar`. |
 | `GET` | `/api/proyectos/{pid}/transiciones` | Las transiciones que existen, con su GLSL, y cuales entran en este video. |
@@ -274,4 +281,4 @@ Reglas que valen para toda la API y no se repiten en cada fila:
 
 ---
 
-**160 endpoints.** Escrito por `generar_api.py` desde `app.py`.
+**162 endpoints.** Escrito por `generar_api.py` desde `app.py`.
