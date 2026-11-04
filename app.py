@@ -5786,6 +5786,62 @@ def _correr_mezcla(avisar, ctx):
     return {**{k: v for k, v in hecho.items() if k != "mp3"}, "ruta": RUTA_MEZCLA}
 
 
+# ------------------------------------------------------------------ shorts
+#: Shorts verticales del video montado (fork, 04-11-2026; pasos/shorts.py).
+TRABAJO_SHORTS = "shorts"
+
+
+def _modulo_shorts():
+    import shorts as SHORTS                                    # noqa: PLC0415
+    return SHORTS
+
+
+@app.get("/api/proyectos/{pid}/shorts")
+def leer_shorts(pid: str):
+    """Las tandas de shorts ya hechas (la última primero) y si hay una en marcha."""
+    ctx = contexto(pid)
+    activo = next((t for t in ctx.gestor.listar(activos=True)
+                   if t["nombre"] == TRABAJO_SHORTS), None)
+    return {"tandas": _modulo_shorts().listar(ctx.proyecto),
+            "en_marcha": activo["id"] if activo else None}
+
+
+@app.post("/api/proyectos/{pid}/shorts", status_code=202)
+def hacer_shorts(pid: str, cuerpo: dict = Body(default=None)):
+    """Elige con Claude (Sonnet) los mejores momentos y monta los shorts.
+
+    Cuerpo opcional: {"cuantos": 3} o {"remontar": "v2"} para volver a montar
+    una tanda ya elegida sin preguntar a Claude. De uno en uno: 409 si hay
+    cualquier trabajo en marcha en el vídeo (un render a medias cambiaría el
+    MP4 del que se cortan).
+    """
+    ctx = contexto(pid)
+    cuerpo = cuerpo or {}
+    try:
+        cuantos = max(1, min(6, int(cuerpo.get("cuantos") or 3)))
+    except (TypeError, ValueError):
+        cuantos = 3
+    remontar = cuerpo.get("remontar")
+    if remontar is not None and not re.fullmatch(r"v\d+", str(remontar)):
+        raise ErrorApi(422, "remontar tiene que ser una tanda como 'v1'")
+    with _cerrojo_de_cadena(f"{ctx.id}:shorts"):
+        _exigir_sin_trabajos(ctx, "hacer los shorts")
+        trabajo_id = ctx.gestor.lanzar(TRABAJO_SHORTS, _correr_shorts, ctx,
+                                       cuantos, remontar)
+    _registrar_trabajo(trabajo_id, ctx.id)
+    return {"trabajo_id": trabajo_id, "trabajo": ctx.gestor.estado(trabajo_id)}
+
+
+def _correr_shorts(avisar, ctx, cuantos, remontar):
+    hecho = _modulo_shorts().ejecutar(ctx.proyecto, cuantos, avisar=avisar,
+                                      remontar=remontar, estado=ctx.estado)
+    ctx.bitacora.anotar("shorts", "render", {
+        "version": hecho["version"], "cuantos": len(hecho["shorts"]),
+        "remontado_de": remontar})
+    return {"version": hecho["version"], "carpeta": hecho["carpeta"],
+            "cuantos": len(hecho["shorts"])}
+
+
 @app.get("/api/proyectos/{pid}/sonido/arco")
 def leer_arco(pid: str):
     """El arco que sale del RITMO del montaje. Gratis, sin salir a la red.

@@ -9404,12 +9404,136 @@ function vistaVideoLight() {
   const avisos = avisosDeMontajeLight();
   if (avisos) caja.appendChild(avisos);
   if (hayMp4Light() && !trabajoVideoLight()) caja.appendChild(panelRepaso());
+  if (hayMp4Light() && !trabajoVideoLight()) caja.appendChild(panelShortsLight());
   /* LA MÚSICA, con los planos ya cortados: el arco de tramos sale del ritmo
      del montaje, así que antes de eso no hay tramos que enseñar. */
   if (versionDe(videoAbierto().fichas.assets || {}) && !trabajoVideoLight()) {
     caja.appendChild(panelMusicaLight());
     caja.appendChild(panelMontajeLight());
   }
+  return caja;
+}
+
+/* SHORTS VERTICALES (fork, 04-11-2026; pasos/shorts.py). Del vídeo ya
+   montado: Claude (Sonnet) elige 2-4 momentos por short y se montan en 9:16,
+   el plano entero sobre fondo difuminado, título arriba y subtítulos dentro.
+   Es un trabajo de fondo: el botón se queda en «Haciendo shorts…» y la lista
+   aparece sola al acabar. Los <video> se guardan por URL para que un repintado
+   no los devuelva al segundo cero. */
+const _videosShorts = new Map();
+
+function estadoShortsLight() {
+  const v = videoAbierto();
+  if (!v.shorts) v.shorts = { cargado: false, cargando: false, tandas: [],
+    trabajando: false, mensaje: '', error: '' };
+  return v.shorts;
+}
+
+async function cargarShortsLight(forzar) {
+  const v = videoAbierto();
+  const s = estadoShortsLight();
+  if (!v.pid || s.cargando || (s.cargado && !forzar)) return;
+  s.cargando = true;
+  try {
+    const r = await pedir(`${BASE}/api/proyectos/${encodeURIComponent(v.pid)}/shorts`);
+    s.tandas = r.tandas || [];
+    s.error = '';
+    if (r.en_marcha && !s.trabajando) setTimeout(() => hacerShortsLight(null, r.en_marcha), 0);
+  } catch (e) {
+    s.error = e.message;
+  }
+  s.cargado = true;
+  s.cargando = false;
+  repintarVideo();
+}
+
+async function hacerShortsLight(remontar, enMarcha) {
+  const v = videoAbierto();
+  const s = estadoShortsLight();
+  if (s.trabajando) return;
+  s.trabajando = true;
+  s.mensaje = remontar ? 'volviendo a montar los shorts…' : 'Claude está eligiendo los momentos…';
+  repintarVideo();
+  try {
+    let tid = enMarcha;
+    if (!tid) {
+      const r = await pedir(`${BASE}/api/proyectos/${encodeURIComponent(v.pid)}/shorts`,
+        { method: 'POST', cuerpo: remontar ? { remontar } : { cuantos: 3 } });
+      tid = r.trabajo_id;
+    }
+    // hasta 30 min: la elección de Claude y tres montajes
+    let fin = null;
+    for (let vuelta = 0; vuelta < 1200 && !fin; vuelta++) {
+      await new Promise(r => setTimeout(r, 1500));
+      const t = await pedir(`${BASE}/api/trabajos/${encodeURIComponent(tid)}`);
+      if (['listo', 'error', 'cancelado'].includes(t.estado)) fin = t;
+      else if (t.mensaje && t.mensaje !== s.mensaje) { s.mensaje = t.mensaje; repintarVideo(); }
+    }
+    if (fin && fin.estado === 'listo') toast('shorts listos: están debajo del vídeo');
+    else toast((fin && (fin.error || fin.mensaje)) || 'los shorts están tardando demasiado', true);
+  } catch (e) {
+    toast(e.message, true);
+  }
+  s.trabajando = false;
+  s.mensaje = '';
+  await cargarShortsLight(true);
+}
+
+function videoDeShort(url) {
+  let nodo = _videosShorts.get(url);
+  if (!nodo) {
+    nodo = h('video', { controls: true, preload: 'metadata', src: url, clase: 'short-video' });
+    _videosShorts.set(url, nodo);
+  }
+  return nodo;
+}
+
+function panelShortsLight() {
+  const v = videoAbierto();
+  const s = estadoShortsLight();
+  if (!s.cargado && !s.cargando) setTimeout(() => cargarShortsLight(), 0);
+  const caja = h('div', { clase: 'repaso shorts-light' });
+  caja.appendChild(h('div', { clase: 'repaso-cab' },
+    h('h3', {}, 'Shorts verticales'),
+    h('span', { clase: 'meta' }, '3 shorts de 30-40 s con los mejores momentos')));
+  if (s.error) caja.appendChild(h('div', { clase: 'caja-aviso' }, s.error));
+  const ultima = s.tandas[0];
+  caja.appendChild(h('div', { clase: 'fila' },
+    h('button', {
+      clase: 'mini', disabled: s.trabajando,
+      title: s.trabajando ? 'Ya se están haciendo: no hace falta volver a pulsar' : '',
+      onclick: () => hacerShortsLight(),
+    }, s.trabajando ? h('span', { clase: 'latiendo' }, '⏳ Haciendo shorts…')
+      : (ultima ? '✂️ Hacer otros 3 shorts' : '✂️ Hacer 3 shorts')),
+    ultima ? h('button', {
+      clase: 'mini', disabled: s.trabajando,
+      title: 'Monta otra vez los mismos momentos (p. ej. tras regenerar el vídeo). Sin Claude.',
+      onclick: () => hacerShortsLight(ultima.version),
+    }, '🔁 Volver a montar estos') : null,
+    h('span', { clase: 'meta' }, s.trabajando
+      ? `${s.mensaje || 'trabajando…'} Tarda 2-5 minutos. No cierres el estudio ni regeneres el vídeo mientras tanto.`
+      : 'Claude (Sonnet, poco gasto del plan) elige los momentos; montarlos es gratis (0 $ de Google).')));
+  if (!ultima) {
+    if (s.cargado && !s.trabajando) caja.appendChild(h('div', { clase: 'meta' }, 'Todavía no hay shorts de este vídeo.'));
+    return caja;
+  }
+  caja.appendChild(h('div', { clase: 'meta' },
+    `Tanda ${ultima.version} · ${ultima.fecha || ''} · del vídeo ${ultima.render || ''} · carpeta: ${ultima.carpeta || ''}`
+    + ' (ahí está también para_subir.txt con títulos y descripciones)'));
+  const rejilla = h('div', { clase: 'shorts-rejilla' });
+  (ultima.shorts || []).forEach((short, i) => {
+    const url = `${API.archivo(v.pid, short.ruta)}?v=${encodeURIComponent(ultima.fecha || '')}`;
+    rejilla.appendChild(h('div', { clase: 'short-ficha' },
+      videoDeShort(url),
+      h('strong', {}, `${i + 1}. ${short.titulo_pantalla || ''}`),
+      h('div', { clase: 'meta' }, `${Math.round(short.duracion || 0)} s · momentos: `
+        + (short.piezas || []).map(p => `${p.minuto} (${Math.round(p.segundos)} s)`).join(' + ')),
+      h('div', {}, short.porque || ''),
+      h('div', { clase: 'meta' }, `YouTube: ${short.titulo_youtube || ''}`),
+      (short.avisos || []).length
+        ? h('div', { clase: 'caja-aviso' }, short.avisos.join(' · ')) : null));
+  });
+  caja.appendChild(rejilla);
   return caja;
 }
 

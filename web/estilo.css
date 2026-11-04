@@ -2546,3 +2546,8 @@ button.avisa:hover:not(:disabled) { border-color: var(--aviso); }
 }
 .previa-feedback .aportadas { margin: 6px 0 8px; }
 .previa-feedback .zona-suelta { padding: 9px 11px; font-size: 12px; }
+
+/* SHORTS VERTICALES (fork, 04-11-2026) */
+.shorts-light .shorts-rejilla { display: flex; flex-wrap: wrap; gap: 16px; margin-top: 10px; }
+.shorts-light .short-ficha { width: 240px; display: flex; flex-direction: column; gap: 4px; }
+.shorts-light .short-video { width: 240px; aspect-ratio: 9 / 16; background: #000; border-radius: 8px; }

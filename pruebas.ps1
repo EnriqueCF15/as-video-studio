@@ -77,7 +77,8 @@ $suites = @(
   'pasos\prueba_encuadres.py', 'pasos\prueba_orden_corta.py',
   'pasos\prueba_presets.py',
   'pasos\prueba_presets_light.py',
-  'pasos\prueba_camara.py', 'pasos\prueba_escena_entera.py'
+  'pasos\prueba_camara.py', 'pasos\prueba_escena_entera.py',
+  'pasos\prueba_shorts.py'
 )
 
 $fallos = 0
