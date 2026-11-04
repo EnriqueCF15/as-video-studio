@@ -107,6 +107,9 @@ for e in ESCENAS:
     peor = max(peor, seguidos)
 cierto(peor <= camara.MOVIDOS_SEGUIDOS, f"nunca mas de dos seguidos moviendose ({peor})")
 igual(camara.decidir(ESCENAS, "variada", SECCIONES), d, "es determinista")
+cierre = ESCENAS + [plano(13, "B003", 8.0, "general", "tenso", sitio="calle")]
+igual(camara.decidir(cierre, "variada", SECCIONES)["S013"]["mov"], "quieto",
+      "el ultimo plano (pantalla final de YouTube) va quieto")
 igual(camara.ids_del_gancho(ESCENAS, []), {"S001", "S002", "S003", "S004", "S005"},
       "sin secciones el gancho son los primeros 30 s")
 

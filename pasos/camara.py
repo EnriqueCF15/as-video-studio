@@ -166,6 +166,11 @@ def _movimiento(escena, indice, escenas, modo, gancho, abren, quietos, movidos):
     carta = escena.get("carta")
     if sid in gancho:
         return "quieto", None, "gancho: plano a plano"
+    if indice == len(escenas) - 1:
+        # LA PANTALLA FINAL (03-11-2026): YouTube pone encima el boton de
+        # suscribirse y los videos recomendados, y el plano lleva el SUBSCRIBE
+        # dibujado arriba y la derecha libre para ellos; un zoom los descuadra.
+        return "quieto", None, "pantalla final: YouTube pone encima sus elementos"
     if escena.get("cartela"):
         return "quieto", None, "cartela: el texto se lee entero"
     if carta in CARTAS_INFORMATIVAS or escena.get("abstracta"):

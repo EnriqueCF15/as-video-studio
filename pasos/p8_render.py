@@ -726,7 +726,13 @@ COLA_NEGRO_S = 3.0
 #: Y el negro ENTRA desde el ultimo fotograma en vez de aparecer de golpe. Es
 #: el mismo motivo por el que existe la cola: cortar en seco de un dibujo a
 #: negro se lee como que el fichero se ha roto.
-ENTRADA_NEGRO_S = 0.8
+#:
+#: 0 DESDE EL 03-11-2026 (Enrique: «que siempre acabe en imagen»): el ultimo
+#: plano es la pantalla final de YouTube --SUBSCRIBE dibujado arriba y la
+#: derecha libre para los videos recomendados-- y YouTube pone sus elementos
+#: encima. La cola se queda (mas tiempo de pantalla final), pero es el ultimo
+#: fotograma QUIETO, sin fundir a negro.
+ENTRADA_NEGRO_S = 0.0
 
 
 def _cola_negra(clips, trabajo, fps, calidad, segundos=COLA_NEGRO_S):
@@ -764,11 +770,14 @@ def _cola_negra(clips, trabajo, fps, calidad, segundos=COLA_NEGRO_S):
             return clips
         # CON EL COLOR DE LOS CLIPS: la concatenacion no recodifica, y un
         # «solo montar» puede juntar clips viejos (BT.601) con esta cola
-        fundido = f"fade=t=out:st=0:d={entrada:g}:color=black"
+        # sin entrada no hay fundido: el ultimo fotograma, quieto
+        fundido = [f"fade=t=out:st=0:d={entrada:g}:color=black"] if entrada > 0 else []
         if _es_709(ultimo):
-            color = ["-vf", f"{fundido},{_filtro_color('png')}", *ETIQUETAS_709]
+            color = ["-vf", ",".join(fundido + [_filtro_color('png')]), *ETIQUETAS_709]
+        elif fundido:
+            color = ["-vf", fundido[0]]
         else:
-            color = ["-vf", fundido]
+            color = []
         hacer = subprocess.run(
             [medios.ffmpeg(), "-y", "-loglevel", "error", "-loop", "1",
              "-framerate", str(fps), "-t", f"{segundos:g}", "-i", fotograma,
