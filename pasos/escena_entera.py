@@ -167,12 +167,65 @@ def orden(ficha_, feedback=""):
     return salida
 
 
-def referencias(ficha_, estilo, dir_reparto, normalizar):
-    """La referencia de estilo elegida + las hojas, en el orden de la ficha. -> [ref]"""
+#: 07-11-2026 (video 4): las referencias de la biblioteca son planos del video de Halloween
+#: (granja de EE. UU. de 1900, calle de los anos 30, fabrica de caramelos, biblioteca de
+#: Oxford...) y Gemini COPIA su contenido: salieron graneros, gorras, fabricas y casas
+#: europeas en el antiguo Egipto. Un proyecto puede llevar sus referencias de la MISMA epoca
+#: en `<proyecto>/referencias_epoca/`: `epoca.json` = {"sustituir": {"S055": "S191", ...},
+#: "por_defecto": "S115", "planos": {"S147": "biblioteca"}} y las imagenes `S191.png`...
+#: (COPIAS de planos buenos del propio video: rehacer el plano no cambia la referencia).
+#: El director sigue eligiendo la clase y la luz con las claves de la biblioteca; al dibujar,
+#: la imagen que se manda es la de la epoca. "planos" manda sobre "sustituir" para un plano
+#: concreto ("biblioteca" = la de siempre, p. ej. un laboratorio de hoy).
+CARPETA_EPOCA = "referencias_epoca"
+
+
+def epoca(raiz):
+    """Las referencias de epoca de un proyecto (ver CARPETA_EPOCA), o None. -> dict"""
+    if not raiz:
+        return None
+    ruta = os.path.join(raiz, CARPETA_EPOCA)
+    try:
+        with open(os.path.join(ruta, "epoca.json"), encoding="utf-8") as fh:
+            datos = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(datos, dict):
+        return None
+    return {"carpeta": ruta,
+            "sustituir": dict(datos.get("sustituir") or {}),
+            "planos": dict(datos.get("planos") or {}),
+            "por_defecto": str(datos.get("por_defecto") or "").strip()}
+
+
+def raiz_de_reparto(dir_reparto):
+    """La carpeta del proyecto desde la de las hojas del trabajo de assets
+    (`<proyecto>/pasos/assets/trabajo/assets/reparto`). -> ruta"""
+    return os.path.normpath(os.path.join(dir_reparto, *[os.pardir] * 5))
+
+
+def imagen_epoca(epoca_, clave, sid=None):
+    """La imagen de epoca para la clave de biblioteca `clave` (y el plano `sid`), o None
+    si toca la de la biblioteca. -> ruta"""
+    if not epoca_:
+        return None
+    elegida = (epoca_["planos"].get(sid) if sid else None)         or epoca_["sustituir"].get(clave) or epoca_["por_defecto"]
+    if not elegida or str(elegida).lower() == "biblioteca":
+        return None
+    nombre = str(elegida) if str(elegida).lower().endswith(".png") else f"{elegida}.png"
+    ruta = os.path.join(epoca_["carpeta"], nombre)
+    return ruta if os.path.isfile(ruta) else None
+
+
+def referencias(ficha_, estilo, dir_reparto, normalizar, epoca_=None, sid=None):
+    """La referencia de estilo elegida + las hojas, en el orden de la ficha. -> [ref]
+    Con `epoca_` (ver CARPETA_EPOCA) la referencia de estilo es la de la epoca del video."""
     salida = []
     ruta = carpeta(estilo)
     ref = ((cargar(estilo).get("referencias") or {}).get(ficha_.get("estilo")) or {})
     imagen = os.path.join(ruta, ref.get("imagen") or "") if ruta and ref else ""
+    if ref or epoca_:
+        imagen = imagen_epoca(epoca_, ficha_.get("estilo"), sid) or imagen
     if imagen and os.path.isfile(imagen):
         salida.append({"papel": "estilo", "ruta": normalizar(imagen)})
     for quien in ficha_.get("hojas") or []:

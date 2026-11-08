@@ -17,6 +17,7 @@ NINGUNA PAGA NADA: solo arma textos.
 
     python pasos\prueba_escena_entera.py
 """
+import json
 import os
 import shutil
 import sys
@@ -97,7 +98,16 @@ igual(direccion.limpiar_linea(linea), (linea, ""), "el limite de palabras no la 
 orden = escena_entera.orden(FICHA_S003)
 r3 = r"E:\AutomatizacionYT\revision\video2\piloto_estudio3\S003_r3.txt"
 if os.path.exists(r3):
-    igual(orden, open(r3, encoding="utf-8").read().split("\nrefs: ")[0],
+    # 07-11-2026: + reglas del cuerpo (una cabeza al derecho, rostro, piel blanca, con ropa)
+    cuerpo = ("every person has exactly one head, upright on the neck, with small dot eyes, "
+              "eyebrows and a mouth, never a blank face; skin everywhere (face, neck, arms, "
+              "hands, legs and feet) is the same plain white as the head, never tan, brown, "
+              "beige or grey; everyone, children included, is fully dressed; "
+              "figures painted or carved on a wall are drawn in this same doodle style too "
+              "(round white heads, white skin), never in another art style or skin colour, "
+              "never as ghosts or blank silhouettes; ")
+    cierto(cuerpo in orden, "la orden lleva las reglas del cuerpo (07-11)")
+    igual(orden.replace(cuerpo, ""), open(r3, encoding="utf-8").read().split("\nrefs: ")[0],
           "la orden es la del piloto aprobado")
 cierto("TRICK OR TREAT!" in orden and FICHA_S003["escena"] in orden, "lleva letras y escena")
 cierto("Correction requested" in escena_entera.orden(FICHA_S003, "make it bigger"),
@@ -117,6 +127,36 @@ refs = escena_entera.referencias(FICHA_S003, HISTORIA, reparto, lambda r: r)
 igual([(r["papel"], os.path.basename(r["ruta"])) for r in refs],
       [("estilo", "S135.png"), ("reparto", "muneco.png"), ("reparto", "ninos_puerta.png")],
       "una referencia de la biblioteca y las hojas pedidas, en orden")
+# 4b. REFERENCIAS DE LA EPOCA DEL VIDEO (07-11-2026)
+raiz = os.path.join(tmp, "proyecto")
+rep2 = os.path.join(raiz, "pasos", "assets", "trabajo", "assets", "reparto")
+os.makedirs(rep2)
+igual(os.path.normcase(escena_entera.raiz_de_reparto(rep2)), os.path.normcase(raiz),
+      "la carpeta del proyecto sale de la de las hojas")
+cierto(escena_entera.epoca(raiz) is None, "sin epoca.json: None (la biblioteca de siempre)")
+ep_dir = os.path.join(raiz, escena_entera.CARPETA_EPOCA)
+os.makedirs(ep_dir)
+for nombre in ("S191", "S115"):
+    Image.new("RGB", (8, 8)).save(os.path.join(ep_dir, f"{nombre}.png"))
+with open(os.path.join(ep_dir, "epoca.json"), "w", encoding="utf-8") as fh:
+    json.dump({"sustituir": {"S135": "S191"}, "por_defecto": "S115",
+               "planos": {"S009": "biblioteca", "S010": "S999"}}, fh)
+ep = escena_entera.epoca(raiz)
+
+
+def base(refs):
+    return [(r["papel"], os.path.basename(r["ruta"])) for r in refs]
+
+
+igual(base(escena_entera.referencias(FICHA_S003, HISTORIA, reparto, lambda r: r, ep, "S003"))[0],
+      ("estilo", "S191.png"), "la clave de la biblioteca se cambia por el plano de la epoca")
+otra = dict(FICHA_S003, estilo="S004")
+igual(base(escena_entera.referencias(otra, HISTORIA, reparto, lambda r: r, ep, "S003"))[0],
+      ("estilo", "S115.png"), "clave sin sustituto: la de por defecto")
+igual(base(escena_entera.referencias(FICHA_S003, HISTORIA, reparto, lambda r: r, ep, "S009"))[0],
+      ("estilo", "S135.png"), "un plano marcado «biblioteca» usa la de siempre")
+igual(base(escena_entera.referencias(FICHA_S003, HISTORIA, reparto, lambda r: r, ep, "S010"))[0],
+      ("estilo", "S135.png"), "si falta la imagen de epoca, la de la biblioteca (no se queda sin)")
 dirs = {"reparto": reparto, "escenas": os.path.join(tmp, "escenas")}
 os.makedirs(dirs["escenas"])
 PLAN = {"escenas": [{"id": "S003", "direccion": linea, "personajes": ["otro"]}]}

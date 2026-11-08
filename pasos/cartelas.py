@@ -304,11 +304,33 @@ PLANTILLA_POR_DEFECTO = "tesis"
 #: Cuantos planos como poco entre dos cartelas. Sin esto, un guion con cuatro
 #: cifras seguidas encadena cuatro pantallas de texto y el video deja de ser un
 #: video. No es una cuota (el agente decide si hace falta ninguna): es un suelo.
-SEPARACION_MINIMA = 4
+SEPARACION_MINIMA = 6
 
 #: Y cuantas como mucho, en fraccion de planos. Un video no puede ser mitad
 #: texto: si el agente se pasa, se quedan las mejores y se avisa.
 FRACCION_MAXIMA = 0.22
+
+#: Y CUANTAS CARTELAS como mucho por minuto de video (06-11-2026, Enrique, video
+#: 4): el agente puso 23 en 20 min, mas que en el video 3 (21 en 21 min), algunas
+#: casi pegadas (S088/S091) -- «va a bombardear de texto». Su regla: unas 13-14
+#: para 20 minutos, solo los datos MAS relevantes, no todos. 0,7/min = 14 en 20.
+CARTELAS_POR_MINUTO = 0.7
+#: y nunca menos de estas, para que un video corto pueda tener alguna
+CARTELAS_MINIMAS_DEL_TOPE = 3
+
+
+def maximo_de_cartelas(escenas):
+    """Cuantas cartelas caben como mucho en el video, por su duracion."""
+    escenas = [e for e in (escenas or []) if e]
+    if not escenas:
+        return 0
+    segundos = 0.0
+    for e in escenas:
+        segundos += (float(e.get("duracion") or 0)
+                     or float((e.get("t_out") or 0) - (e.get("t_in") or 0)))
+    if segundos <= 0:
+        return len(escenas)          # sin tiempos no hay con que medir: sin tope
+    return max(CARTELAS_MINIMAS_DEL_TOPE, round(segundos / 60.0 * CARTELAS_POR_MINUTO))
 
 
 def plantilla_de(nombre):
@@ -2331,6 +2353,7 @@ def repartir(escenas, plan_bruto, avisar_tope=True, ocupacion=None):
     ocupacion = ocupacion or {}
     puestas, avisos, ultima, ocupados = {}, [], -10 ** 9, 0
     tope = max(1, int(len(escenas) * FRACCION_MAXIMA)) if escenas else 0
+    maximo = maximo_de_cartelas(escenas)
     for indice, escena in enumerate(escenas or []):
         sid = escena.get("id")
         ficha = plan.get(sid)
@@ -2347,6 +2370,11 @@ def repartir(escenas, plan_bruto, avisar_tope=True, ocupacion=None):
         if desde - ultima < SEPARACION_MINIMA:
             avisos.append(f"{sid}: descartada, a menos de {SEPARACION_MINIMA} "
                           f"planos de la anterior")
+            continue
+        if len(puestas) >= maximo:
+            if avisar_tope:
+                avisos.append(f"{sid}: descartada, ya hay {len(puestas)} cartelas "
+                              f"(tope {maximo}: {CARTELAS_POR_MINUTO} por minuto)")
             continue
         if ocupados + cuantos > tope:
             if avisar_tope:
@@ -2444,6 +2472,14 @@ COMO SE ELIGE
 - NO hay cuota. Si el guion no pide ninguna, devuelve la lista vacia: es una
   respuesta correcta. Un video de treinta planos rara vez pide mas de tres o
   cuatro cartelas.
+- Y HAY TOPE: COMO MUCHO {maximo} CARTELAS EN TODO EL VIDEO. No se pone una
+  cartela por cada dato: se eligen SOLO los datos MAS relevantes (las cifras que
+  sorprenden, los nombres que vuelven), y se reparten a lo largo del video, sin
+  amontonarlas. Un CHISTE nunca lleva cartela. Una FRASE CLAVE que la voz
+  dice (la idea que resume un tramo) SI puede llevarla, sobre todo en un video
+  con pocos datos: ahi son las frases las que se quedan en la cabeza. Si te
+  sobran candidatas, quedate con las mejores y tira el resto: las que pasen del
+  tope se descartan.
 - Nunca dos seguidas ni casi seguidas: entre dos cartelas tiene que haber al
   menos {separacion} planos. Si dudas entre dos vecinas, elige la mejor.
 - El texto de la cartela NO repite la narracion palabra por palabra: la
@@ -2678,6 +2714,7 @@ def proponer(escenas, params=None, ajuste=None, avisar=None, proyecto_id=None,
         catalogo=_catalogo_para_el_agente(activas),
         iconos=", ".join(sorted(ICONOS)),
         separacion=SEPARACION_MINIMA,
+        maximo=maximo_de_cartelas(escenas),
         planos=_planos_legibles(escenas))
     arranque = time.time()
     try:

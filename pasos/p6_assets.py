@@ -2967,7 +2967,28 @@ def _prompt_completo(escena, referencias, estilo, feedback="", idioma="",
     if orden_corta(estilo):
         entera = escena_entera.ficha(escena)       # 30-10: la orden del metodo a mano
         if entera and escena_entera.activa(estilo):
-            return escena_entera.orden(entera, feedback)
+            # 06-11-2026: quien sale en un solo plano no tiene hoja; sin esto la
+            # orden decia «the X from the character sheet» sin hoja que mirar
+            con_hoja = {r.get("nombre") for r in referencias or []
+                        if r.get("papel") == "reparto"}
+            # solo al dibujar de verdad: con las fichas del plan y sus referencias
+            sueltos = ([h for h in entera.get("hojas") or [] if h not in con_hoja]
+                       if fichas_reparto and referencias else [])
+            if sueltos:
+                entera = dict(entera, hojas=[h for h in entera["hojas"] if h in con_hoja])
+            salida = escena_entera.orden(entera, feedback)
+            fichas = fichas_reparto or {}
+            notas = []
+            for h in sueltos:
+                desc = str((fichas.get(f"asset:{h}") or {}).get("descripcion") or "").strip()
+                if desc and desc != h:
+                    notas.append(desc.rstrip('. '))
+            if notas:
+                salida += (" Some people in this scene have no character sheet "
+                           "(ignore 'from the character sheet' for them); draw them "
+                           "like this, in the same style, white skin and no nose: "
+                           + "; ".join(notas) + ".")
+            return salida
         return _prompt_corto(escena, referencias, estilo, feedback, idioma,
                              formato, fichas_reparto)
     reglas = medios.motor("reglas/reglas.py")
@@ -3243,6 +3264,22 @@ def _rizo_y_epoca(ficha, estilo):
     return lineas
 
 
+#: Un personaje que sale en estos planos o menos no lleva hoja (06-11-2026).
+PLANOS_SIN_HOJA = 0   # 07-11-2026: APAGADO (0 = todos con hoja): los extras sin hoja salen
+#: con otro estilo y otra piel; se deja el mecanismo por si se quiere volver a probar
+
+
+def sin_hoja_de(nombre, veces, estilo=None):
+    """True si ese personaje se dibuja sin hoja: sale en PLANOS_SIN_HOJA planos o
+    menos y no es el protagonista ni tiene hoja fija en la biblioteca."""
+    if not orden_corta(estilo or {}):
+        return False
+    nombre = str(nombre or "")
+    if nombre.startswith("muneco") or escena_entera.hoja_fija(estilo, nombre):
+        return False
+    return 0 < int(veces.get(nombre, 0)) <= PLANOS_SIN_HOJA
+
+
 def _prompt_reparto(ficha, estilo):
     """Prompt de una hoja de personaje.
 
@@ -3305,6 +3342,24 @@ def _prompt_reparto(ficha, estilo):
                   "mentioned in that description: it describes where these "
                   "characters appear in the film, not what this sheet shows. Draw "
                   "only the characters, evenly lit, on an empty flat background.")
+    if corta and not es_animal(ficha.get("descripcion")):
+        # 06-11-2026 (video 4, Enrique): de 41 hojas, 8 mal por lo mismo -- cuerpos
+        # morenos o beis (litigantes, campesinos, obreros), figuras TODO blancas
+        # en las que la ropa se pierde contra la piel (Naunakhte, sus hijos), la
+        # nariz que aparece solo en el perfil (ancianos), ojos enormes, y letras
+        # o fotos pegadas en la hoja. Se dice siempre, no solo cuando falla.
+        lineas.append("Skin: every person's face, neck, arms, hands, legs and feet "
+                      "are the same plain white as the round head, exactly like "
+                      "the protagonist -- never tan, brown, beige or grey skin. "
+                      "Clothes may be white, but never a plain white blob that "
+                      "merges with the body: give them clear outlines, fold lines "
+                      "and some coloured detail -- a belt or sash, a collar, a "
+                      "trim, a headband, an apron, jewellery -- so every garment "
+                      "reads against the white skin. No nose "
+                      "on any face in any view, profile included: the profile is "
+                      "the same round head with one dot eye. Eyes are small dots, "
+                      "never large round eyes. No words, labels, captions, speech "
+                      "bubbles, photos or pasted pictures anywhere on the sheet.")
     if es_animal(ficha.get("descripcion")):
         # 02-11 (video 3): la regla del estilo («cabeza redonda, sin cuello...»)
         # mandaba sobre la descripcion y «the family cow» salio como una nina
@@ -4415,8 +4470,11 @@ def _referencias_escena(escena, plan, dirs, p, cache, hechas, anteriores=None,
     # director, y nada mas (el dibujante copia lo que ve). Las de la nota siguen detras.
     entera = escena_entera.ficha(escena) if corta else None
     if entera and escena_entera.activa(p.get("estilo")):
+        # 07-11-2026: con las referencias de la epoca del propio video, si las tiene
+        epoca = escena_entera.epoca(escena_entera.raiz_de_reparto(dirs["reparto"]))
         return (escena_entera.referencias(entera, p.get("estilo"), dirs["reparto"],
-                                          lambda ruta: imagen.normalizar(ruta, cache))
+                                          lambda ruta: imagen.normalizar(ruta, cache),
+                                          epoca, escena.get("id"))
                 + _referencias_de_la_nota(escena, dirs, p, cache, notas))
     referencias = list(_referencias_estilo(p, cache, escena, sueltas=corta))
     # La MISMA ficha con la que se dibujo la hoja (`_assets_necesarios`), que es
@@ -4900,6 +4958,15 @@ def ejecutar(proyecto, params, avisar=None, unidades=None, solo_assets=False,
     inventario = {}
     pendientes = [(uid, ficha) for uid, ficha in sorted(necesarios.items())
                   if tipos is None or ficha["tipo"] in tipos]
+    # 06-11-2026 (video 4, Enrique): 11 de 43 hojas eran de personajes que salen
+    # en UN solo plano (barbero, alfarero...): pagar una hoja para fijar una cara
+    # que no se repite no sirve. Esos se dibujan en su plano con la descripcion
+    # del catalogo (`_prompt_completo`). Lo ya dibujado se conserva, y una hoja
+    # pedida a mano (unidades) se dibuja igual.
+    veces = {}
+    for escena in plan.get("escenas") or []:
+        for quien in set(escena.get("personajes") or []):
+            veces[quien] = veces.get(quien, 0) + 1
     for indice, (uid, ficha) in enumerate(pendientes):
         # El numero va en el mensaje, no solo en la barra: "12 de 44" dice de
         # un vistazo cuanto queda; un porcentaje hay que traducirlo mentalmente.
@@ -4916,6 +4983,12 @@ def ejecutar(proyecto, params, avisar=None, unidades=None, solo_assets=False,
                 resultados[uid] = {"tipo": "reparto", "origen": "biblioteca",
                                    "png": os.path.relpath(destino, trabajo),
                                    "fija": os.path.basename(fija), "coste": 0.0}
+            elif (sin_hoja_de(ficha["nombre"], veces, p.get("estilo"))
+                    and not os.path.exists(destino)
+                    and not (pedidas is not None and uid in pedidas)):
+                resultados[uid] = {"tipo": "reparto", "origen": "sin_hoja",
+                                   "planos": veces.get(ficha["nombre"], 0),
+                                   "coste": 0.0}
             elif pedido(uid) or not os.path.exists(destino):
                 prompt = _prompt_reparto(ficha, p["estilo"])
                 # a una hoja de personaje le tocan los ejes de personas: la

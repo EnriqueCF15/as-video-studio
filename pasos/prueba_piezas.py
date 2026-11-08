@@ -1007,22 +1007,34 @@ def prueba_callouts():
     # cabe, la que se come medio bloque--, que no absorben nada. Colandose en el
     titulo("cabeceras: el reparto cuenta PLANOS, no cartelas")
     escenas_r = [{"id": f"S{i:03d}"} for i in range(1, 21)]
-    plan_r = {"S002": {"plantilla": "tesis", "datos": {"texto": "una"}},
-              "S009": {"plantilla": "tesis", "datos": {"texto": "otra"}},
+    # 06-11-2026: separacion minima 6 planos (antes 4)
+    plan_r = {"S001": {"plantilla": "tesis", "datos": {"texto": "una"}},
+              "S007": {"plantilla": "tesis", "datos": {"texto": "otra"}},
               "S014": {"plantilla": "tesis", "datos": {"texto": "y otra"}},
-              "S019": {"plantilla": "tesis", "datos": {"texto": "la ultima"}}}
+              "S020": {"plantilla": "tesis", "datos": {"texto": "la ultima"}}}
     puestas_r, _ = cartelas.repartir(escenas_r, plan_r)
-    igual(sorted(puestas_r), ["S002", "S009", "S014", "S019"],
+    igual(sorted(puestas_r), ["S001", "S007", "S014", "S020"],
           "cuatro sueltas caben en veinte planos")
-    # las dos primeras ocupan dos planos cada una: 2+2+1 ya son cinco, y el
-    # techo de veinte planos son cuatro
+    # la segunda y la tercera ocupan dos planos: 1+2+2 ya son cinco, y el
+    # techo de veinte planos son cuatro; la cuarta (1+2+1) si entra
     puestas_r, avisos_r = cartelas.repartir(
-        escenas_r, plan_r, ocupacion={"S002": (1, 2), "S009": (8, 9)})
-    igual(sorted(puestas_r), ["S002", "S009"],
+        escenas_r, plan_r, ocupacion={"S007": (6, 7), "S014": (13, 14)})
+    igual(sorted(puestas_r), ["S001", "S007", "S020"],
           "con dos que ocupan dos planos, el techo se llena antes")
     ok(any("techo" in a for a in avisos_r), f"y se dice por que: {avisos_r}")
+    titulo("cartelas: tope por minuto de video (0,7/min, 06-11-2026)")
+    largos = [{"id": f"S{i:03d}", "duracion": 6.0} for i in range(1, 201)]
+    igual(cartelas.maximo_de_cartelas(largos), 14,
+          "200 planos de 6 s = 20 min -> 14 cartelas como mucho")
+    igual(cartelas.maximo_de_cartelas(largos[:10]), 3,
+          "un video de un minuto puede tener 3")
+    muchas = {f"S{i:03d}": {"plantilla": "tesis", "datos": {"texto": "x"}}
+              for i in range(1, 201, 7)}
+    puestas_m, avisos_m = cartelas.repartir(largos, muchas)
+    igual(len(puestas_m), 14, f"de {len(muchas)} propuestas se quedan 14")
+    ok(any("tope 14" in a for a in avisos_m), f"y se avisa: {avisos_m[-1:]}")
     puestas_r, avisos_r = cartelas.repartir(
-        escenas_r, {"S002": plan_r["S002"], "S007": plan_r["S009"]},
+        escenas_r, {"S002": plan_r["S001"], "S007": plan_r["S007"]},
         ocupacion={"S002": (1, 3)})
     igual(sorted(puestas_r), ["S002"],
           "y el suelo de separacion se mide desde el ULTIMO plano que ocupa")

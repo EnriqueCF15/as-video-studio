@@ -144,7 +144,7 @@ DEVUELVE ESTE JSON:
 Los {cuantos} planos, ninguno menos y ninguno de mas.
 """
 
-ORDEN = """Draw a NEW picture in exactly the same drawing style as the FIRST reference image: copy only its style (line work, colours, shading, paper texture, the simple round-headed people), not its content or composition. {hojas}Every head is one round white circle with no ears and no nose; {reglas} {lleno} {texto}
+ORDEN = """Draw a NEW picture in exactly the same drawing style as the FIRST reference image: copy only its style (line work, colours, shading, paper texture, the simple round-headed people), not its content or composition. {hojas}Every head is one round white circle with no ears and no nose; every person has exactly one head, upright on the neck, with small dot eyes, eyebrows and a mouth, never a blank face; skin everywhere (face, neck, arms, hands, legs and feet) is the same plain white as the head, never tan, brown, beige or grey; everyone, children included, is fully dressed; figures painted or carved on a wall are drawn in this same doodle style too (round white heads, white skin), never in another art style or skin colour, never as ghosts or blank silhouettes; {reglas} {lleno} {texto}
 Scene: {escena}"""
 
 LLENO = """The picture is full-bleed: the drawing fills the whole frame edge to edge, with no paper border, no empty margins and no blank band at the top or the sides. Every person is drawn in full in this style, clearly lit, with a white round head and coloured clothes, never as a dark silhouette or shadow. Draw only what the scene below describes: no extra objects, signs or screens."""

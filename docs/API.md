@@ -173,6 +173,8 @@ Reglas que valen para toda la API y no se repiten en cada fila:
 | `POST` | `/api/proyectos/{pid}/sonido/mapa` | La música por lo que se cuenta: Claude lee la narración (o, sin él, los tonos de cada plano), guarda el mapa y monta la banda. |
 | `POST` | `/api/proyectos/{pid}/sonido/musica` | Temas de Jamendo que pegan con el tono. Devuelve candidatos, no elige. |
 | `POST` | `/api/proyectos/{pid}/sonido/vetados` | Prohíbe un efecto en TODO el canal, o levanta el veto con `quitar`. |
+| `GET` | `/api/proyectos/{pid}/shorts` | Las tandas de shorts ya hechas (la última primero) y si hay una en marcha. |
+| `POST` | `/api/proyectos/{pid}/shorts` | Elige con Claude (Sonnet) los mejores momentos y monta los shorts verticales (9:16); `remontar` lo hace sin Claude. |
 | `GET` | `/api/proyectos/{pid}/transiciones` | Las transiciones que existen, con su GLSL, y cuales entran en este video. |
 
 ## Render y montaje
