@@ -11195,6 +11195,9 @@ function mandosDeVozLight(ficha, voz) {
   const eleven = proveedor === 'elevenlabs';
   const avanzadas = opcionesAvanzadas({
     clave: `voz-light-${ficha.id}`,
+    // 09-11 (Enrique): dos plegables llamados igual («Opciones avanzadas») no
+    // se distinguian; este es el de AJUSTAR la voz puesta, el otro el de comparar.
+    titulo: '⚙ Ajustes de la voz',
     resumen: google ? 'el proveedor, el modelo, la voz, los estilos por tramo y el aire'
       : (eleven ? 'el proveedor, el modelo, la voz, la velocidad y el aire'
         : 'la voz concreta, la velocidad, el color y el aire'),
@@ -11277,80 +11280,240 @@ function mandosDeVozLight(ficha, voz) {
  *
  * Se paga, poco: cada voz son ~70 s de audio. Por eso se dice antes de pulsar,
  * y cada toma se guarda por firma: repetir con la misma voz no vuelve a pagar.
+ *
+ * 09-11-2026 (Enrique): DINÁMICA. Antes era una lista fija de cinco voces y un
+ * guion de finanzas. Ahora: el TEXTO lo pone él (o el principio de cualquiera
+ * de sus vídeos), las VOCES se añaden de las 30 de Google con el modelo que
+ * quiera, y cada una lleva un RITMO: la frase de estilo con la que se grabó un
+ * vídeo de verdad (`GET /api/voz/ritmos`). De partida salen como referencia la
+ * voz del vídeo más lento, la del más rápido y la del punto medio.
  */
-const CANDIDATOS_AB = [
-  { id: 'g-orus', etiqueta: 'Gemini 2.5 Flash · Orus', proveedor: 'google',
-    modelo: 'gemini-2.5-flash-tts', voz_id: 'Orus', usd: 0.02, porDefecto: true },
-  { id: 'g-charon', etiqueta: 'Gemini 2.5 Flash · Charon', proveedor: 'google',
-    modelo: 'gemini-2.5-flash-tts', voz_id: 'Charon', usd: 0.02, porDefecto: true },
-  { id: 'gp-orus', etiqueta: 'Gemini 2.5 Pro · Orus', proveedor: 'google',
-    modelo: 'gemini-2.5-pro-tts', voz_id: 'Orus', usd: 0.04 },
-  { id: 'c-orus', etiqueta: 'Chirp 3 HD · Orus (sin estilos)', proveedor: 'google',
-    // fuera de las marcadas: en la primera escucha sonó monótona (01-10-2026)
-    modelo: 'chirp3-hd', voz_id: 'Orus', usd: 0.03 },
-  // ElevenLabs no son dólares sino créditos del plan: ~800 caracteres a 0,2
-  { id: 'e-flash', etiqueta: 'ElevenLabs Flash v2.5 · Adam', proveedor: 'elevenlabs',
-    modelo: 'eleven_flash_v2_5', voz_id: 'pNInz6obpgDQGcFmaJgB', usd: 0, creditos: 160 },
-];
 const CLAVE_AB_VOZ = 'voz_ab';
+const MAX_VOCES_AB = 6;
+/* $ por segundo de audio (tarifas.json: tokens de audio × 25 por segundo). */
+const USD_SEGUNDO_AB = { 'gemini-2.5-flash-tts': 0.00025, 'gemini-2.5-pro-tts': 0.0005,
+  'gemini-3.1-flash-tts-preview': 0.0005, 'gemini-2.5-flash-lite-preview-tts': 0.00025 };
+const MODELO_CORTO_AB = { 'gemini-2.5-flash-tts': '2.5 Flash', 'gemini-2.5-pro-tts': '2.5 Pro',
+  'gemini-3.1-flash-tts-preview': '3.1 Flash', 'gemini-2.5-flash-lite-preview-tts': '2.5 Flash Lite',
+  'chirp3-hd': 'Chirp 3 HD' };
+
+function usdDeCandidatoAB(c, caracteres) {
+  if (c.modelo === 'chirp3-hd') return caracteres * 3e-5;
+  return (caracteres / 15) * (USD_SEGUNDO_AB[c.modelo] || 0.0005);
+}
+
+/* Los ritmos de referencia: uno por frase de estilo distinta (dos vídeos
+   grabados con la misma frase son el mismo ritmo), más el del Estilo. */
+function ritmosAB(ficha, crudos) {
+  const ritmos = [];
+  (crudos || []).forEach(r => {
+    const estilo = ((r.estilos || {}).cuerpo || (r.estilos || {}).intro || '').trim();
+    if (!estilo) return;
+    const ya = ritmos.find(x => x.estilo === estilo);
+    if (ya) { ya.nombres.push(r.nombre); return; }
+    ritmos.push({ clave: `r${ritmos.length + 1}`, estilo, nombres: [r.nombre],
+      car_s: r.car_s, modelo: r.modelo, voz_id: r.voz_id });
+  });
+  const propio = (((ficha.datos || {}).voz || {}).estilos || {});
+  const delEstilo = (propio.cuerpo || propio.intro || '').trim();
+  if (delEstilo && !ritmos.find(x => x.estilo === delEstilo)) {
+    ritmos.push({ clave: 'estilo', estilo: delEstilo, nombres: ['el Estilo'], car_s: null });
+  }
+  ritmos.forEach(r => {
+    const corto = r.nombres[0].length > 30 ? `${r.nombres[0].slice(0, 28)}…` : r.nombres[0];
+    r.nombre = `ritmo de «${corto}»` + (r.nombres.length > 1 ? ` (+${r.nombres.length - 1})` : '')
+      + (r.car_s ? ` · ${String(r.car_s).replace('.', ',')} letras/s` : '');
+  });
+  return ritmos;
+}
+
+function candidatoAB(modelo, vozId, ritmo) {
+  return { proveedor: 'google', modelo, voz_id: vozId, estilo: ritmo ? ritmo.estilo : '',
+    etiqueta: `${vozId} · ${MODELO_CORTO_AB[modelo] || modelo}`
+      + (ritmo ? ` · ${ritmo.nombre}` : '') };
+}
 
 function comparacionDeVoces(ficha) {
+  const idioma = ((ficha.datos || {}).voz || {}).idioma || 'en';
   const estado = (APP.light.ab && APP.light.ab.preset === ficha.id)
     ? APP.light.ab
     : (APP.light.ab = { preset: ficha.id, corriendo: false, resultado: null,
-      elegidos: CANDIDATOS_AB.filter(c => c.porDefecto).map(c => c.id) });
+      ritmos: null, voces: [], videos: [], candidatos: [], texto: '', maxTexto: 1800,
+      nuevo: { modelo: 'gemini-3.1-flash-tts-preview', voz_id: 'Charon', ritmo: '' } });
   const dentro = h('div', { clase: 'comparar-voces' });
   const caja = h('div', {}, opcionesAvanzadas({
     clave: `ab-voz-${ficha.id}`,
-    resumen: 'comparar voces con el mismo texto (prueba A/B)',
+    titulo: '🎧 Comparar voces (prueba A/B)',
+    resumen: 'ábrelo para oír varias voces con el mismo texto y elegir una',
   }, dentro));
+
+  /* Lo que sale de inicio: la voz de los vídeos de verdad, el más lento, el
+     más rápido y el del medio, con el principio del vídeo más reciente. */
+  const cargar = () => {
+    if (estado.cargando || estado.ritmos) return;
+    estado.cargando = true;
+    Promise.all([
+      pedir(`${BASE}/api/voz/ritmos`),
+      pedir(API.voces(idioma, true, 'google')).catch(() => ({ voces: [] })),
+    ]).then(([datos, voces]) => {
+      estado.videos = (datos.ritmos || []).filter(r => r.muestra);
+      estado.maxTexto = datos.max_caracteres || estado.maxTexto;
+      estado.ritmos = ritmosAB(ficha, datos.ritmos);
+      estado.voces = (voces.voces || []).map(v => ({ valor: v.id,
+        nombre: `${v.nombre} (${v.genero === 'femenina' ? 'mujer' : 'hombre'})` }));
+      const medidos = estado.ritmos.filter(r => r.car_s).sort((a, b) => a.car_s - b.car_s);
+      let base = medidos;
+      if (medidos.length > 3) {
+        const medio = (medidos[0].car_s + medidos[medidos.length - 1].car_s) / 2;
+        const centro = medidos.slice(1, -1).sort((a, b) =>
+          Math.abs(a.car_s - medio) - Math.abs(b.car_s - medio))[0];
+        base = [medidos[0], centro, medidos[medidos.length - 1]];
+      }
+      if (!estado.candidatos.length) {
+        estado.candidatos = base.map(r => Object.assign(
+          candidatoAB(r.modelo || 'gemini-3.1-flash-tts-preview', r.voz_id || 'Orus', r),
+          { referencia: true }));
+      }
+      if (!estado.texto && estado.videos.length) estado.texto = estado.videos[0].muestra;
+      const medio = base[Math.floor(base.length / 2)] || estado.ritmos[0];
+      if (!estado.nuevo.ritmo && medio) estado.nuevo.ritmo = medio.clave;
+    }).catch(e => {
+      estado.ritmos = [];
+      estado.mensaje = `no he podido leer las voces de los vídeos: ${e.message}`;
+    }).finally(() => {
+      estado.cargando = false;
+      if (estado.repintar) estado.repintar();
+    });
+  };
 
   const pintar = () => {
     vaciar(dentro);
+    if (!estado.ritmos) {
+      dentro.appendChild(h('div', { clase: 'pista' }, 'cargando las voces de tus vídeos…'));
+      return;
+    }
     dentro.appendChild(h('div', { clase: 'pista' },
-      'Un minuto de un guion de finanzas, con el estilo de la intro y el del cuerpo. '
-      + 'Escúchalas con cascos y elige con «Usar esta».'));
-    const lista = h('div', { clase: 'herramientas' });
-    CANDIDATOS_AB.forEach(c => {
-      const marcado = estado.elegidos.includes(c.id);
-      lista.appendChild(h('button', {
-        clase: 'mini' + (marcado ? ' activo' : ''),
-        onclick: () => {
-          estado.elegidos = marcado ? estado.elegidos.filter(x => x !== c.id)
-            : estado.elegidos.concat([c.id]);
-          pintar();
-        },
-      }, c.etiqueta));
+      'Graba el mismo texto con varias voces para oírlas seguidas. 1) Pon el texto. 2) Añade las voces que quieras oír (máximo 6). '
+      + '3) «Grabar y comparar». 4) Escúchalas con cascos y elige con «Usar esta», '
+      + 'que deja en el Estilo la voz Y su ritmo.'));
+
+    /* 1. EL TEXTO */
+    const elegirVideo = h('select', {
+      disabled: estado.corriendo,
+      onchange: ev => {
+        const v = estado.videos[Number(ev.target.value)];
+        if (v) { estado.texto = v.muestra; pintar(); }
+      },
+    }, h('option', { value: '' }, 'usar el principio de un vídeo…'),
+    ...estado.videos.map((v, i) => h('option', { value: String(i) }, v.nombre)));
+    const contador = h('span', { clase: 'meta' });
+    const contar = () => {
+      const n = estado.texto.length;
+      contador.textContent = `${n} / ${estado.maxTexto} letras`
+        + (n > estado.maxTexto ? ' — demasiado largo, acórtalo' : '');
+    };
+    const area = h('textarea', {
+      rows: 6, disabled: estado.corriendo, value: estado.texto,
+      placeholder: 'Pega aquí el texto que quieres oír (cualquier tema). Deja una línea '
+        + 'en blanco entre el gancho y el resto.',
+      oninput: ev => { estado.texto = ev.target.value; contar(); pintarCoste(); },
     });
-    dentro.appendChild(lista);
-    const elegidos = CANDIDATOS_AB.filter(c => estado.elegidos.includes(c.id));
-    const usd = elegidos.reduce((s, c) => s + c.usd, 0);
-    const creditos = elegidos.reduce((s, c) => s + (c.creditos || 0), 0);
-    dentro.appendChild(h('div', { clase: 'fila' },
-      h('button', {
-        clase: 'mini', disabled: estado.corriendo || !elegidos.length,
-        onclick: () => lanzar(elegidos),
-      }, estado.corriendo ? 'grabando…' : 'Generar comparación'),
-      h('span', { clase: 'meta' }, elegidos.length
-        ? `${elegidos.length} voces · ≈ ${usd.toFixed(2)} $ del crédito de Google Cloud`
-          + (creditos ? ` + ≈ ${miles(creditos)} créditos de ElevenLabs` : '')
-        : 'elige al menos una voz')));
+    contar();
+    dentro.appendChild(h('div', { clase: 'campo' },
+      h('label', {}, 'PASO 1 · Texto que leerán todas las voces'), area,
+      h('div', { clase: 'fila' }, elegirVideo, contador)));
+
+    /* 2. LAS VOCES */
+    const lista = h('div', { clase: 'herramientas' });
+    estado.candidatos.forEach((c, i) => {
+      lista.appendChild(h('span', { clase: 'mini activo' }, c.etiqueta,
+        c.referencia ? ' (referencia)' : '',
+        h('button', {
+          clase: 'mini', title: 'quitar', disabled: estado.corriendo,
+          onclick: () => { estado.candidatos.splice(i, 1); pintar(); },
+        }, '✕')));
+    });
+    if (!estado.candidatos.length) lista.appendChild(h('span', { clase: 'meta' }, 'ninguna voz todavía'));
+    dentro.appendChild(h('div', { clase: 'campo' }, h('label', {}, 'PASO 2 · Voces que se compararán'), lista));
+
+    const opciones = (lista2, valor, alCambiar) => {
+      const sel = h('select', { disabled: estado.corriendo, onchange: ev => alCambiar(ev.target.value) },
+        ...lista2.map(o => h('option', { value: o.valor }, o.nombre)));
+      sel.value = valor;
+      return sel;
+    };
+    const lleno = estado.candidatos.length >= MAX_VOCES_AB;
+    dentro.appendChild(h('div', { clase: 'campo' },
+      h('label', {}, 'Añadir otra voz a la lista (elige voz, modelo y ritmo, y pulsa «+ Añadir»)'),
+      h('div', { clase: 'fila' },
+        opciones(estado.voces.length ? estado.voces : [{ valor: 'Orus', nombre: 'Orus' }],
+          estado.nuevo.voz_id, v => { estado.nuevo.voz_id = v; }),
+        opciones(MODELOS_GOOGLE.map(m => ({ valor: m.valor, nombre: MODELO_CORTO_AB[m.valor] || m.nombre })),
+          estado.nuevo.modelo, v => { estado.nuevo.modelo = v; }),
+        opciones(estado.ritmos.map(r => ({ valor: r.clave, nombre: r.nombre })),
+          estado.nuevo.ritmo, v => { estado.nuevo.ritmo = v; }),
+        h('button', {
+          clase: 'mini', disabled: estado.corriendo || lleno,
+          onclick: () => {
+            const ritmo = estado.ritmos.find(r => r.clave === estado.nuevo.ritmo) || null;
+            const c = candidatoAB(estado.nuevo.modelo, estado.nuevo.voz_id, ritmo);
+            if (estado.candidatos.some(x => x.etiqueta === c.etiqueta)) {
+              toast('esa voz con ese ritmo ya está en la lista');
+              return;
+            }
+            estado.candidatos.push(c);
+            pintar();
+          },
+        }, lleno ? `máximo ${MAX_VOCES_AB}` : '+ Añadir')),
+      h('div', { clase: 'pista' }, 'Voz · modelo · ritmo. El ritmo es la frase de estilo '
+        + 'con la que se grabó ese vídeo; Chirp 3 HD no tiene estilos y lo ignora.')));
+
+    /* 3. GENERAR */
+    const coste = h('span', { clase: 'meta' });
+    const pintarCoste = () => {
+      const n = estado.texto.trim().length || 800;
+      const usd = estado.candidatos.reduce((s, c) => s + usdDeCandidatoAB(c, n), 0);
+      coste.textContent = estado.candidatos.length
+        ? `${estado.candidatos.length} voces · ≈ ${usd.toFixed(2)} $ del crédito de Google Cloud`
+          + ' (las que ya se grabaron con el mismo texto no se vuelven a pagar)'
+        : 'añade al menos una voz';
+    };
+    pintarCoste();
+    dentro.appendChild(h('div', { clase: 'campo' },
+      h('label', {}, 'PASO 3 · Grabar las voces (se paga: mira el coste a la derecha)'),
+      h('div', { clase: 'fila' },
+        h('button', {
+          clase: 'primario', disabled: estado.corriendo || !estado.candidatos.length,
+          onclick: () => {
+            if (estado.texto.length > estado.maxTexto) {
+              toast('el texto es demasiado largo: acórtalo');
+              return;
+            }
+            lanzar(estado.candidatos);
+          },
+        }, estado.corriendo ? '⏳ grabando… no cierres esta pestaña' : '🎙 Grabar y comparar'),
+        coste),
+      estado.resultado ? null : h('div', { clase: 'pista' },
+        'PASO 4 · Cuando acabe, aparecerá aquí debajo un reproductor por voz. '
+        + 'Escúchalas y pulsa «Usar esta» en la que quieras para el canal.')));
     if (estado.mensaje) dentro.appendChild(h('div', { clase: 'pista' }, estado.mensaje));
     ((estado.resultado || {}).candidatos || []).forEach(r => {
       dentro.appendChild(filaComparacion(ficha, r));
     });
   };
+  estado.repintar = pintar;
 
   const lanzar = async elegidos => {
     estado.corriendo = true;
-    estado.mensaje = 'grabando las voces…';
+    estado.mensaje = 'grabando las voces… (tarda ~1 minuto por voz)';
     pintar();
     try {
       await volcarPresetLight();
       const datos = await pedir(`${API.presetLight(ficha.id)}/voz/comparar`, {
         method: 'POST',
-        cuerpo: { candidatos: elegidos.map(c => ({ proveedor: c.proveedor,
-          modelo: c.modelo, voz_id: c.voz_id, etiqueta: c.etiqueta })) },
+        cuerpo: { texto: estado.texto.trim(),
+          candidatos: elegidos.map(c => ({ proveedor: c.proveedor, modelo: c.modelo,
+            voz_id: c.voz_id, estilo: c.estilo, etiqueta: c.etiqueta })) },
       });
       const tid = datos.trabajo_id || (datos.trabajo || {}).id;
       seguirTrabajo(CLAVE_AB_VOZ, tid, fin => {
@@ -11371,6 +11534,7 @@ function comparacionDeVoces(ficha) {
   };
 
   pintar();
+  cargar();
   return caja;
 }
 
@@ -11394,8 +11558,14 @@ function filaComparacion(ficha, r) {
       h('button', {
         clase: 'mini',
         onclick: () => {
-          apuntarVozLight(ficha, { proveedor: c.proveedor, modelo: c.modelo,
-            voz_id: c.voz_id, voz_nombre: c.voz_id });
+          const cambios = { proveedor: c.proveedor, modelo: c.modelo,
+            voz_id: c.voz_id, voz_nombre: c.voz_id };
+          // con su RITMO: la frase de estilo con la que se ha oído aquí
+          if (c.estilo) {
+            cambios.estilos = Object.assign({}, ((ficha.datos || {}).voz || {}).estilos || {},
+              { intro: c.estilo, cuerpo: c.estilo });
+          }
+          apuntarVozLight(ficha, cambios);
           repintarBloqueVoz(ficha);
           toast(`voz del estilo: ${nombre}`);
         },

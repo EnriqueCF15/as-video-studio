@@ -8683,13 +8683,39 @@ def previsualizar_voz_light(preset_id: str, cuerpo: dict = Body(default=None)):
 MAX_CANDIDATOS_AB = 6
 
 
-def _correr_comparar_voces(avisar, ctx, base, candidatos, idioma):
+@app.get("/api/voz/ritmos")
+def ritmos_de_voz():
+    """Las voces con las que se grabaron los videos, como referencias para la
+    prueba A/B (09-11-2026, Enrique: comparar contra el ritmo del video 1, el
+    del 3 y el del 4). Sale de los proyectos que haya en el disco, no de una
+    lista fija: cada video nuevo aparece solo. Del mas reciente al mas viejo.
+    """
+    if PASOS_MODULOS is None:
+        raise ErrorApi(503, f"los pasos no se han podido cargar: {ERROR_PASOS}")
+    ritmos = []
+    for ficha in Proyecto.listar(raiz_proyectos()):
+        if ficha.get(CONFIG_TALLER):
+            continue
+        ritmo = PASOS_MODULOS.p4_voz.ritmo_de_proyecto(ficha.get("raiz"))
+        if ritmo:
+            ritmo.update({"proyecto": ficha.get("id"), "nombre": ficha.get("nombre"),
+                          "creado": ficha.get("creado", "")})
+            ritmos.append(ritmo)
+    ritmos.sort(key=lambda r: str(r.get("creado")), reverse=True)
+    return {"ritmos": ritmos, "max_caracteres": PASOS_MODULOS.p4_voz.MAX_CARACTERES_AB}
+
+
+def _correr_comparar_voces(avisar, ctx, base, candidatos, idioma, bloques=None):
     p4 = PASOS_MODULOS.p4_voz
-    bloques = p4.bloques_ab(idioma)
+    bloques = bloques or p4.bloques_ab(idioma)
     resultados = []
     for indice, candidato in enumerate(candidatos):
         params = dict(base)
-        params.update(candidato)
+        params.update({c: v for c, v in candidato.items() if c != "estilo"})
+        # EL RITMO: una frase de estilo para toda la toma (gancho y cuerpo),
+        # la misma con la que se grabo el video de referencia.
+        if candidato.get("estilo"):
+            params["estilos"] = {"intro": candidato["estilo"], "cuerpo": candidato["estilo"]}
         params["idioma"] = idioma
         etiqueta = candidato.get("etiqueta") or candidato.get("voz_id") or f"voz {indice + 1}"
         params.pop("etiqueta", None)
@@ -8756,14 +8782,29 @@ def comparar_voces_light(preset_id: str, cuerpo: dict = Body(default=None)):
     for crudo in candidatos:
         if not isinstance(crudo, dict):
             raise ErrorApi(400, "cada candidata es un objeto {proveedor, modelo, voz_id}")
-        limpios.append({c: str(crudo[c]) for c in ("proveedor", "modelo", "voz_id", "etiqueta")
-                        if crudo.get(c)})
+        limpio = {c: str(crudo[c]) for c in ("proveedor", "modelo", "voz_id", "etiqueta")
+                  if crudo.get(c)}
+        estilo = str(crudo.get("estilo") or "").strip()
+        if len(estilo) > 400:
+            raise ErrorApi(400, "la frase de estilo pasa de 400 caracteres")
+        if estilo:
+            limpio["estilo"] = estilo
+        limpios.append(limpio)
+    # EL TEXTO: el que ponga el usuario (09-11: nada de un tema fijo); sin el,
+    # el pasaje de siempre.
+    texto = str(datos.get("texto") or "").strip()
+    bloques = None
+    if texto:
+        if len(texto) > PASOS_MODULOS.p4_voz.MAX_CARACTERES_AB:
+            raise ErrorApi(400, f"el texto pasa de {PASOS_MODULOS.p4_voz.MAX_CARACTERES_AB} "
+                                "caracteres: acórtalo (un minuto basta para comparar)")
+        bloques = PASOS_MODULOS.p4_voz.bloques_de_texto_ab(texto)
     ctx = _taller_de(ficha)
     base = {c: v for c, v in ((ficha.get("datos") or {}).get("voz") or {}).items()
             if c in ("estilos", "hueco_minimo")}
     idioma = str(datos.get("idioma") or presets.idioma_de(ficha) or "en").lower()
     trabajo_id = ctx.gestor.lanzar("voz:comparar", _correr_comparar_voces, ctx, base,
-                                   limpios, idioma, paso=None)
+                                   limpios, idioma, bloques, paso=None)
     _registrar_trabajo(trabajo_id, ctx.id)
     return {"trabajo_id": trabajo_id, "candidatos": len(limpios),
             "trabajo": ctx.gestor.estado(trabajo_id),

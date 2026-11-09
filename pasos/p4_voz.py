@@ -2046,6 +2046,80 @@ def bloques_ab(idioma):
     return copy.deepcopy(TEXTOS_AB.get(str(idioma or "en").lower(), TEXTOS_AB["en"]))
 
 
+#: Tope del texto libre de la prueba A/B: ~1 min y medio de voz por candidata.
+#: Mas no ayuda a elegir y multiplica el gasto por seis.
+MAX_CARACTERES_AB = 1800
+
+
+def bloques_de_texto_ab(texto):
+    """El texto que pega el usuario en la prueba A/B -> [bloques].
+
+    09-11-2026 (Enrique): la prueba no puede ir atada a un tema fijo (era un
+    guion de finanzas). Cada parrafo es un bloque; el PRIMERO abre la seccion
+    del gancho y el SEGUNDO la del cuerpo, asi se oye la costura entre los dos
+    estilos igual que con el pasaje de siempre. Un solo parrafo = todo cuerpo.
+    """
+    limpio = re.sub(r"<[^>]+>", " ", str(texto or ""))
+    parrafos = [re.sub(r"[ \t]+", " ", p).strip()
+                for p in re.split(r"\n\s*\n", limpio.replace("\r", ""))]
+    parrafos = [p.replace("\n", " ") for p in parrafos if p]
+    bloques = []
+    for indice, parrafo in enumerate(parrafos, 1):
+        ficha = {"id": f"AB{indice:02d}", "texto": parrafo}
+        if indice <= 2 and len(parrafos) > 1:
+            ficha["abre_seccion"] = True
+        bloques.append(ficha)
+    return bloques
+
+
+def _muestra_de_transcript(transcript, palabras=170):
+    """Las primeras ~170 palabras (~1 min) de una locucion, en dos parrafos
+    (gancho y arranque), cortando en final de frase. Sin las marcas <break/>.
+    Una frase acaba en . ! ? seguido de MAYUSCULA: asi «B.C.» o «in... grain»
+    no se parten."""
+    texto = re.sub(r"<[^>]+>", " ", str(transcript or ""))
+    texto = re.sub(r"\s+", " ", texto).strip()
+    frases = [f for f in re.split(r"(?<=[.!?])\s+(?=[\"'¿¡A-ZÁÉÍÓÚÑ])", texto) if f.strip()]
+    gancho, resto, cuenta = [], [], 0
+    for frase in frases:
+        n = len(frase.split())
+        if cuenta and cuenta + n > palabras:
+            break
+        (gancho if cuenta < palabras * 0.45 else resto).append(frase.strip())
+        cuenta += n
+    partes = [" ".join(gancho), " ".join(resto)]
+    return "\n\n".join(p for p in partes if p)
+
+
+def ritmo_de_proyecto(raiz):
+    """La voz con la que se grabo un video, para usarla de referencia en la
+    prueba A/B: modelo, voz, estilos (la frase de estilo es la que marca el
+    ritmo: «slightly brisk, lively pace»...), caracteres por segundo medidos y
+    un trozo del principio del guion. -> dict o None si no tiene voz grabada."""
+    carpeta = os.path.join(raiz, "pasos", "voz")
+    try:
+        with open(os.path.join(carpeta, "activa.json"), "r", encoding="utf-8") as fh:
+            activa = int(json.load(fh).get("activa") or 0)
+        with open(os.path.join(carpeta, f"v{activa}", NOMBRE_META), "r",
+                  encoding="utf-8") as fh:
+            meta = json.load(fh)
+    except (OSError, ValueError, TypeError):
+        return None
+    controles = meta.get("controles") or {}
+    if controles.get("proveedor") != "google" or not controles.get("estilos"):
+        return None
+    google = meta.get("google") or {}
+    car_s = None
+    if google.get("caracteres") and google.get("segundos_audio"):
+        car_s = round(float(google["caracteres"]) / float(google["segundos_audio"]), 2)
+    return {
+        "modelo": controles.get("modelo"), "voz_id": controles.get("voz_id"),
+        "idioma": controles.get("idioma"), "estilos": controles.get("estilos"),
+        "car_s": car_s, "duracion": meta.get("duracion"),
+        "muestra": _muestra_de_transcript(meta.get("transcript")),
+    }
+
+
 def listar_voces_google(idioma=None):
     """Las voces de Google (Gemini TTS / Chirp 3 HD), con la misma forma de
     ficha que las de Cartesia para que la pantalla las pinte igual.
